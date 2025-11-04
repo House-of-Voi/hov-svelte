@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import type { PlayerDetail } from '$lib/types/admin';
 	import DeleteUserModal from './DeleteUserModal.svelte';
+	import { notificationStore } from '$lib/stores/notificationStore.svelte';
 
 	interface Props {
 		playerId: string;
@@ -55,15 +56,15 @@
 			const data = await response.json();
 
 			if (data.success) {
-				alert('Player updated successfully');
+				notificationStore.success('Player updated successfully');
 				editing = false;
 				await fetchPlayer();
 			} else {
-				alert(data.error || 'Failed to update player');
+				notificationStore.error(data.error || 'Failed to update player');
 			}
 		} catch (err) {
 			console.error('Error updating player:', err);
-			alert('Failed to update player');
+			notificationStore.error('Failed to update player');
 		}
 	}
 

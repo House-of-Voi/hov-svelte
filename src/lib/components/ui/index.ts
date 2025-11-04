@@ -19,3 +19,7 @@ export { default as CopyButton } from './CopyButton.svelte';
 export { default as ChainBadge } from './ChainBadge.svelte';
 export { default as Placeholder } from './Placeholder.svelte';
 export { default as FilterToggle } from './FilterToggle.svelte';
+
+// Notification components
+export { default as Notification } from './Notification.svelte';
+export { default as NotificationContainer } from './NotificationContainer.svelte';

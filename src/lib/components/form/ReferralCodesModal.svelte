@@ -6,6 +6,7 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import CopyButton from '$lib/components/ui/CopyButton.svelte';
 	import Avatar from '$lib/components/Avatar.svelte';
+	import { notificationStore } from '$lib/stores/notificationStore.svelte';
 
 	type Props = {
 		isOpen: boolean;
@@ -77,14 +78,14 @@
 			const data = await response.json();
 
 			if (!response.ok) {
-				alert(data.error || 'Failed to create referral code');
+				notificationStore.error(data.error || 'Failed to create referral code');
 				return;
 			}
 
 			fetchStats();
 		} catch (err) {
 			console.error('Error creating code:', err);
-			alert('Failed to create referral code');
+			notificationStore.error('Failed to create referral code');
 		} finally {
 			isCreating = false;
 		}
@@ -105,14 +106,14 @@
 			const data = await response.json();
 
 			if (!response.ok) {
-				alert(data.error || 'Failed to deactivate code');
+				notificationStore.error(data.error || 'Failed to deactivate code');
 				return;
 			}
 
 			fetchStats();
 		} catch (err) {
 			console.error('Error deactivating code:', err);
-			alert('Failed to deactivate code');
+			notificationStore.error('Failed to deactivate code');
 		} finally {
 			deactivatingId = null;
 		}

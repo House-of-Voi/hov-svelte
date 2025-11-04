@@ -4,6 +4,7 @@
   import favicon from '$lib/assets/favicon.svg';
   import UserNav from '$lib/components/UserNav.svelte';
   import AdminNavLink from '$lib/components/navigation/AdminNavLink.svelte';
+  import NotificationContainer from '$lib/components/ui/NotificationContainer.svelte';
   import type { SessionInfo } from '$lib/auth/session';
   import type { ProfileData } from '$lib/profile/data';
 
@@ -130,4 +131,7 @@
       </div>
     </footer>
   </div>
+
+  <!-- Global Notification Container -->
+  <NotificationContainer />
 </div>

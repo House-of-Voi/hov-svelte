@@ -5,6 +5,7 @@
   import CardHeader from '$lib/components/ui/CardHeader.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import SlotMachineIcon from '$lib/components/icons/SlotMachineIcon.svelte';
+  import { notificationStore } from '$lib/stores/notificationStore.svelte';
   import type { SlotMachineConfigListItem, PaginatedResponse } from '$lib/types/admin';
 
   interface ApiResult<T> {
@@ -94,7 +95,7 @@
   };
 
   const handleToggleGameStatus = async (game: SlotMachineConfigListItem) => {
-    alert(
+    notificationStore.info(
       `Status toggling for ${game.display_name} will be implemented in the next phase`
     );
   };

@@ -2,6 +2,7 @@
 	import Card from '$lib/components/ui/Card.svelte';
 	import CardContent from '$lib/components/ui/CardContent.svelte';
 	import ChainBadge from '$lib/components/ui/ChainBadge.svelte';
+	import { notificationStore } from '$lib/stores/notificationStore.svelte';
 	import type { PlayerListItem, PaginatedResponse } from '$lib/types/admin';
 
 	const PAGE_LIMIT = 50;
@@ -73,7 +74,7 @@
 
 	async function handleBulkAction(action: string) {
 		if (selectedPlayers.size === 0) {
-			alert('No players selected');
+			notificationStore.warning('No players selected');
 			return;
 		}
 
@@ -89,7 +90,7 @@
 			const data = await response.json();
 
 			if (data.success) {
-				alert(data.message);
+				notificationStore.success(data.message);
 				selectedPlayers = new Set();
 				await fetchPlayers({
 					page: currentPage,
@@ -98,11 +99,11 @@
 					waitlistStatus: waitlistFilter
 				});
 			} else {
-				alert(data.error || 'Action failed');
+				notificationStore.error(data.error || 'Action failed');
 			}
 		} catch (err) {
 			console.error('Bulk action error:', err);
-			alert('Failed to perform bulk action');
+			notificationStore.error('Failed to perform bulk action');
 		}
 	}
 
