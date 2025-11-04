@@ -50,7 +50,7 @@ export function openIBuyVoiWidget(
 ): Window | null {
   const url = buildIBuyVoiUrl({
     destination: address,
-    theme: 'dark',
+    theme: 'light',
     minimum: 2, // $2 minimum
     token: 'USDC',
   });
