@@ -121,48 +121,63 @@ export async function verifyAssetOptIn(
  */
 export async function submitTransaction(signedTxn: Uint8Array): Promise<string> {
 	try {
-		const { txId } = await algodClient.sendRawTransaction(signedTxn).do();
-		return txId;
+		// algosdk 3.x returns { txid } (lowercase)
+		const { txid } = await algodClient.sendRawTransaction(signedTxn).do();
+		if (!txid || typeof txid !== 'string') {
+			throw new Error('Failed to get transaction ID from response');
+		}
+		return txid;
 	} catch (error) {
 		console.error('Error submitting transaction:', error);
-		throw new Error('Failed to submit transaction');
+		throw error instanceof Error ? error : new Error('Failed to submit transaction');
 	}
 }
 
 /**
- * Wait for a transaction to be confirmed
+ * Wait for a transaction to be confirmed using algosdk's built-in function
  * @param txId - The transaction ID to wait for
  * @param maxRounds - Maximum number of rounds to wait (default: 4)
- * @returns true if confirmed, false if timeout
+ * @returns true if confirmed
  */
 export async function waitForConfirmation(txId: string, maxRounds: number = 4): Promise<boolean> {
 	try {
-		const status = await algodClient.status().do();
-		let lastRound = status['last-round'];
-		const targetRound = lastRound + maxRounds;
-
-		while (lastRound < targetRound) {
-			try {
-				const pendingInfo = await algodClient.pendingTransactionInformation(txId).do();
-				if (pendingInfo['confirmed-round']) {
-					return true;
-				}
-				if (pendingInfo['pool-error']) {
-					throw new Error(`Transaction pool error: ${pendingInfo['pool-error']}`);
-				}
-			} catch (error) {
-				// Transaction might not be in pool yet, continue waiting
-			}
-
-			// Wait for next round
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-			const newStatus = await algodClient.status().do();
-			lastRound = newStatus['last-round'];
-		}
-
-		return false;
+		await algosdk.waitForConfirmation(algodClient, txId, maxRounds);
+		return true;
 	} catch (error) {
 		console.error('Error waiting for confirmation:', error);
 		return false;
+	}
+}
+
+/**
+ * Create an ASA asset transfer transaction
+ * @param sender - The sender account address
+ * @param receiver - The receiver account address
+ * @param amount - The amount to transfer (in asset's smallest unit, e.g., microUSDC)
+ * @param assetId - The asset ID to transfer
+ * @returns Unsigned transaction object
+ */
+export async function createAssetTransferTransaction(
+	sender: string,
+	receiver: string,
+	amount: bigint,
+	assetId: number
+): Promise<algosdk.Transaction> {
+	try {
+		const suggestedParams = await algodClient.getTransactionParams().do();
+
+		// algosdk v3 uses 'sender' and 'receiver' instead of 'from' and 'to'
+		const transferTxn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+			sender,
+			receiver,
+			amount,
+			assetIndex: BigInt(assetId),
+			suggestedParams
+		});
+
+		return transferTxn;
+	} catch (error) {
+		console.error('Error creating asset transfer transaction:', error);
+		throw new Error('Failed to create asset transfer transaction');
 	}
 }

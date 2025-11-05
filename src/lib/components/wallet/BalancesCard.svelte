@@ -9,6 +9,7 @@
   import CardHeader from '$lib/components/ui/CardHeader.svelte';
   import SwapPlaceholderModal from './SwapPlaceholderModal.svelte';
   import AccountPrepModal from './AccountPrepModal.svelte';
+  import UsdcWithdrawModal from './UsdcWithdrawModal.svelte';
   import { checkAssetOptIn, createAssetOptInTransaction, verifyAssetOptIn, submitTransaction, waitForConfirmation } from '$lib/voi/asa-utils';
   import { requestVoi, waitForVoiReceipt, hasSufficientVoi, type FountainError } from '$lib/voi/fountain-client';
   import { signTransaction } from '$lib/voi/wallet-utils';
@@ -43,6 +44,9 @@
   let prepModalStep = $state<'checking' | 'requesting' | 'preparing' | 'ready' | 'error'>('checking');
   let prepModalError = $state('');
   let isPreparingAccount = $state(false);
+
+  // Withdraw modal state
+  let showWithdrawModal = $state(false);
 
   const loadBalances = async () => {
     loading = true;
@@ -321,12 +325,15 @@
                 Deposit USDC
               </Button>
               <Button
-                variant="secondary"
+                variant="primary"
                 size="lg"
-                class="flex-1 font-bold uppercase tracking-wide"
-                disabled
+                onclick={() => {
+                  showWithdrawModal = true;
+                }}
+                class="flex-1 font-black uppercase tracking-wide"
+                disabled={!usdcBalance || loading}
               >
-                Withdraw (Soon)
+                Withdraw USDC
               </Button>
             </div>
           </div>
@@ -424,5 +431,20 @@
     currentStep={prepModalStep}
     errorMessage={prepModalError}
     isProcessing={isPreparingAccount}
+  />
+
+  <!-- USDC Withdraw Modal -->
+  <UsdcWithdrawModal
+    isOpen={showWithdrawModal}
+    onClose={() => {
+      showWithdrawModal = false;
+    }}
+    onSuccess={() => {
+      // Refresh balance after successful withdrawal
+      loadBalances();
+    }}
+    usdcBalance={usdcBalance}
+    address={address}
+    session={$page.data.session}
   />
 {/if}

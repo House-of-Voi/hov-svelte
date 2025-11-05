@@ -27,6 +27,42 @@ export interface ReferralDetails {
 }
 
 /**
+ * Referral with enriched Mimir statistics
+ */
+export interface ReferralWithStats extends ReferralDetails {
+  referredUserAvatar: string | null;
+  mimirStats: {
+    totalSpins: number;
+    totalBet: string;
+    totalWon: string;
+    netResult: string;
+    lastPlayedAt: string | null;
+    creditsEarned: number;
+  } | null;
+  isActive: boolean;
+  referralCodeId: string | null;
+}
+
+/**
+ * Referral dashboard data with aggregated statistics
+ */
+export interface ReferralDashboardData {
+  codesGenerated: number;
+  codesAvailable: number;
+  maxReferrals: number;
+  activeReferrals: number;
+  queuedReferrals: number;
+  totalReferrals: number;
+  referrals: ReferralWithStats[];
+  aggregateStats: {
+    totalVolume: string;
+    totalCreditsEarned: number;
+    totalSpins: number;
+    activeCount: number;
+  };
+}
+
+/**
  * Calculate credits earned from a wager amount
  * @param wagerAmount - Amount wagered by referred player
  * @param percentage - Percentage to award (default 5%)

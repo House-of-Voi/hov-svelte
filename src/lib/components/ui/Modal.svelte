@@ -42,26 +42,28 @@
 
       return () => {
         document.removeEventListener('keydown', handleEscape);
-        document.body.style.overflow = 'unset';
+        document.body.style.overflow = '';
       };
     }
   });
 </script>
 
 {#if isOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="fixed top-0 left-0 right-0 bottom-0 z-[100] flex items-center justify-center" style="margin: 0; padding: 1rem;">
     <!-- Backdrop -->
     <button
       type="button"
-      class="absolute inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm focus:outline-none"
+      class="absolute top-0 left-0 right-0 bottom-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm focus:outline-none"
       onclick={onClose}
       aria-label="Close modal overlay"
+      style="margin: 0; padding: 0;"
     />
 
     <!-- Modal -->
     <div
       bind:this={modalRef}
       class="relative w-full {sizeClasses[size]} max-h-[90vh] overflow-hidden rounded-2xl bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 shadow-2xl"
+      style="margin: 0;"
     >
       <!-- Header -->
       {#if title}

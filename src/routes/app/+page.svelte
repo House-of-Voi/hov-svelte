@@ -556,7 +556,7 @@
 						</div>
 
 						<!-- Actions -->
-						<div class="flex justify-center">
+						<div class="flex justify-center gap-3">
 							<Button
 								variant="primary"
 								size="md"
@@ -579,6 +579,30 @@
 										<polyline points="17 2 12 7 7 2"></polyline>
 									</svg>
 									<span>Manage Referral Codes</span>
+								</div>
+							</Button>
+							<Button
+								variant="outline"
+								size="md"
+								className="px-8"
+								onclick={() => {
+									window.location.href = '/app/referrals';
+								}}
+							>
+								<div class="flex items-center gap-2 justify-center">
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										width="20"
+										height="20"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+									>
+										<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+										<polyline points="9 22 9 12 15 12 15 22"></polyline>
+									</svg>
+									<span>View Dashboard</span>
 								</div>
 							</Button>
 						</div>
