@@ -24,14 +24,11 @@ export const GET: RequestHandler = async ({ cookies }) => {
       .eq('chain', 'base')
       .maybeSingle();
 
-    const baseAddress = baseAccount?.address?.toLowerCase() ?? session.baseWalletAddress?.toLowerCase() ?? null;
-
-    if (!baseAddress) {
-      return json(
-        { error: 'No Base account found for current session' },
-        { status: 400 }
-      );
-    }
+    // Prefer DB value; fallback to session; as a last resort, use a placeholder string.
+    // Base address is included in the challenge payload for context but is not validated later.
+    const baseAddress = baseAccount?.address?.toLowerCase()
+      ?? session.baseWalletAddress?.toLowerCase()
+      ?? 'unknown';
 
     if (!baseAccount && session.baseWalletAddress) {
       try {

@@ -1,5 +1,5 @@
 import type { Cookies } from '@sveltejs/kit';
-import { getSessionCookie } from './cookies';
+import { getSessionCookie, getVoiAddressFromCookie } from './cookies';
 import { createAdminClient } from '../db/supabaseAdmin';
 import { createHash } from 'crypto';
 
@@ -15,6 +15,8 @@ export interface SessionInfo {
   gameAccessGranted?: boolean;
   displayName?: string | null;
   primaryEmail?: string;
+  voiAddress?: string; // CDP-derived Voi address (stored in session cookie)
+  voiAddressDerivedAt?: number; // Timestamp when address was last derived
 }
 
 export async function getServerSessionFromCookies(cookies: Cookies): Promise<SessionInfo | null> {
@@ -50,6 +52,9 @@ export async function getServerSessionFromCookies(cookies: Cookies): Promise<Ses
       .eq('id', session.profile_id)
       .single();
 
+    // Get CDP-derived Voi address from cookie (if available)
+    const voiAddressData = getVoiAddressFromCookie(cookies);
+
     return {
       sub: session.profile_id,
       profileId: session.profile_id,
@@ -58,6 +63,8 @@ export async function getServerSessionFromCookies(cookies: Cookies): Promise<Ses
       gameAccessGranted: profile?.game_access_granted || false,
       displayName: profile?.display_name,
       primaryEmail: profile?.primary_email,
+      voiAddress: voiAddressData?.address,
+      voiAddressDerivedAt: voiAddressData?.derivedAt,
     };
   } catch (error) {
     console.error('Session validation error:', error);
@@ -66,48 +73,12 @@ export async function getServerSessionFromCookies(cookies: Cookies): Promise<Ses
 }
 
 /**
- * Gets the current user's Algorand account information
+ * Gets all connected accounts for the current user
+ * (Does NOT include the primary CDP-derived Voi address, which lives in session)
  *
- * This function retrieves the derived Algorand (Voi) account for the
- * authenticated user. It hides the Base wallet address and only returns
- * the Algorand address that users interact with.
- *
- * @returns Algorand account info or null if not authenticated
+ * @returns Array of connected accounts from database
  */
-export async function getCurrentAlgorandAccount(cookies: Cookies): Promise<{
-  address: string;
-  profileId: string;
-  cdpUserId?: string;
-} | null> {
-  const session = await getServerSessionFromCookies(cookies);
-  if (!session) return null;
-
-  const supabase = createAdminClient();
-
-  // Get the Algorand account (chain='voi', is_primary=true)
-  const { data: account } = await supabase
-    .from('accounts')
-    .select('address')
-    .eq('profile_id', session.sub)
-    .eq('chain', 'voi')
-    .eq('is_primary', true)
-    .single();
-
-  if (!account) return null;
-
-  return {
-    address: account.address,
-    profileId: session.sub,
-    cdpUserId: session.cdpUserId,
-  };
-}
-
-/**
- * Gets all accounts for the current user (for advanced use cases)
- *
- * @returns Array of all linked accounts
- */
-export async function getCurrentUserAccounts(cookies: Cookies): Promise<Array<{
+export async function getConnectedAccounts(cookies: Cookies): Promise<Array<{
   chain: string;
   address: string;
   isPrimary: boolean;
@@ -119,6 +90,7 @@ export async function getCurrentUserAccounts(cookies: Cookies): Promise<Array<{
 
   const supabase = createAdminClient();
 
+  // Get only connected accounts (not the primary CDP-derived ones)
   const { data: accounts } = await supabase
     .from('accounts')
     .select('chain, address, is_primary, derived_from_chain, derived_from_address')

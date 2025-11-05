@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { SymbolId, WinningLine, ReelConfig } from '$lib/game-engine/types';
-	import { getSymbolDisplay, GAME_DEFAULTS } from '$lib/game-engine/utils/gameConstants';
-	import { onMount } from 'svelte';
+	import type { SymbolId, WinningLine } from '$lib/game-engine/types';
+	import { getSymbolDisplay } from '$lib/game-engine/utils/gameConstants';
+	import { onMount, onDestroy } from 'svelte';
 
 	interface Props {
 		/** Current visible grid (5 reels x 3 symbols) */
@@ -10,6 +10,8 @@
 		reels?: SymbolId[][];
 		/** Whether reels are currently spinning */
 		isSpinning: boolean;
+		/** Whether we're waiting for the outcome (keeps symbols flipping) */
+		waitingForOutcome?: boolean;
 		/** Winning lines to highlight */
 		winningLines?: WinningLine[];
 		/** Callback when spin animation completes */
@@ -20,16 +22,33 @@
 		grid,
 		reels,
 		isSpinning,
+		waitingForOutcome = false,
 		winningLines = [],
 		onSpinComplete
 	}: Props = $props();
 
-	// Reel positions for animation (in pixels)
-	let reelPositions = $state<number[]>([0, 0, 0, 0, 0]);
-	let spinning = $state(false);
+	// Display grid - shows random symbols while waiting, final grid when outcome is known
+	let displayGrid = $state<SymbolId[][]>([
+		['_', '_', '_'],
+		['_', '_', '_'],
+		['_', '_', '_'],
+		['_', '_', '_'],
+		['_', '_', '_']
+	]);
 
-	const SYMBOL_HEIGHT = 120; // Height of each symbol in pixels
-	const VISIBLE_SYMBOLS = 3;
+	let flipInterval: ReturnType<typeof setInterval> | null = null;
+	let animationKey = $state(0); // Key to force animation restart
+	const FLIP_SPEED = 100; // Milliseconds between flips (10 flips per second)
+
+	// Available symbols for random flipping (including blanks)
+	const SYMBOLS: SymbolId[] = ['A', 'B', 'C', 'D', '_'];
+
+	/**
+	 * Get a random symbol from available symbols
+	 */
+	function getRandomSymbol(): SymbolId {
+		return SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+	}
 
 	/**
 	 * Check if a position is part of a winning line
@@ -39,97 +58,101 @@
 	}
 
 	/**
-	 * Get the symbol at a specific position in a reel
+	 * Start random symbol flipping
 	 */
-	function getReelSymbol(reelIndex: number, position: number): SymbolId {
-		if (!reels || !reels[reelIndex]) {
-			return grid[reelIndex]?.[position % VISIBLE_SYMBOLS] || '_';
+	function startFlipping() {
+		if (flipInterval) {
+			clearInterval(flipInterval);
 		}
 
-		const reel = reels[reelIndex];
-		return reel[position % reel.length];
-	}
+		// Initialize display grid with random symbols
+		displayGrid = Array(5).fill(null).map(() => [
+			getRandomSymbol(),
+			getRandomSymbol(),
+			getRandomSymbol()
+		]);
 
-	/**
-	 * Start spin animation
-	 */
-	function startSpin() {
-		spinning = true;
-
-		// Animate each reel with staggered timing
-		reelPositions.forEach((_, index) => {
-			setTimeout(() => {
-				animateReel(index);
-			}, index * 100); // Stagger start by 100ms per reel
-		});
-	}
-
-	/**
-	 * Animate a single reel
-	 */
-	function animateReel(reelIndex: number) {
-		const duration = 2000 + reelIndex * 200; // Staggered stop times
-		const startTime = Date.now();
-		const spinSpeed = 20; // Pixels per frame
-
-		const animate = () => {
-			if (!spinning) return;
-
-			const elapsed = Date.now() - startTime;
-
-			if (elapsed < duration) {
-				// Continue spinning
-				reelPositions[reelIndex] = (reelPositions[reelIndex] + spinSpeed) % (SYMBOL_HEIGHT * 100);
-				requestAnimationFrame(animate);
-			} else {
-				// Stop at final position
-				stopReel(reelIndex);
+		// Start flipping symbols at regular intervals
+		flipInterval = setInterval(() => {
+			if (!waitingForOutcome && !isSpinning) {
+				stopFlipping();
+				return;
 			}
-		};
 
-		requestAnimationFrame(animate);
+			// Update display grid with random symbols
+			// Flip each position independently for a more dynamic effect
+			displayGrid = displayGrid.map((column, colIndex) => {
+				return column.map((_, rowIndex) => {
+					// Flip most positions, but keep some occasionally for variety
+					if (Math.random() > 0.25) {
+						return getRandomSymbol();
+					}
+					return displayGrid[colIndex][rowIndex]; // Keep current symbol sometimes
+				});
+			});
+			
+			// Update animation key to force restart
+			animationKey++;
+		}, FLIP_SPEED);
 	}
 
 	/**
-	 * Stop a reel at the correct position to show the target grid
+	 * Stop flipping and show final grid
 	 */
-	function stopReel(reelIndex: number) {
-		// Calculate position to show the target symbols from grid
-		// We want the middle row to show grid[reelIndex][1]
-		// Find where that symbol appears in the full reel
-		const targetSymbol = grid[reelIndex][1]; // Middle symbol
-
-		if (reels && reels[reelIndex]) {
-			const reel = reels[reelIndex];
-			// Find first occurrence of target symbol
-			let targetIndex = reel.findIndex((s) => s === targetSymbol);
-			if (targetIndex === -1) targetIndex = 0;
-
-			// Position so that targetIndex is in the middle (row 1)
-			reelPositions[reelIndex] = targetIndex * SYMBOL_HEIGHT;
-		} else {
-			// No full reel data, just reset to 0
-			reelPositions[reelIndex] = 0;
+	function stopFlipping() {
+		if (flipInterval) {
+			clearInterval(flipInterval);
+			flipInterval = null;
 		}
 
-		// Check if all reels have stopped
-		if (reelPositions.every((_, i) => i === reelIndex || !spinning)) {
-			setTimeout(() => {
-				spinning = false;
-				onSpinComplete?.();
-			}, 100);
+		// Update display grid to show final outcome
+		if (grid && grid.length === 5) {
+			displayGrid = grid.map((column) => [...column]);
 		}
+
+		// Call completion callback after a brief delay
+		setTimeout(() => {
+			onSpinComplete?.();
+		}, 150);
 	}
 
 	/**
 	 * React to isSpinning prop changes
 	 */
 	$effect(() => {
-		if (isSpinning && !spinning) {
-			startSpin();
-		} else if (!isSpinning && spinning) {
-			spinning = false;
-			reelPositions = [0, 0, 0, 0, 0];
+		if (isSpinning && waitingForOutcome) {
+			// Start flipping when spin begins
+			startFlipping();
+		} else if (!isSpinning && !waitingForOutcome) {
+			// Stop flipping when outcome is ready
+			stopFlipping();
+		}
+	});
+
+	/**
+	 * React to waitingForOutcome changes
+	 */
+	$effect(() => {
+		if (!waitingForOutcome && isSpinning) {
+			// Outcome is ready - stop flipping
+			stopFlipping();
+		}
+	});
+
+	/**
+	 * React to grid changes (when outcome is set)
+	 */
+	$effect(() => {
+		// If we're not waiting for outcome anymore and have a valid grid, update display
+		if (!waitingForOutcome && !isSpinning && grid && grid.length === 5) {
+			displayGrid = grid.map((column) => [...column]);
+		}
+	});
+
+	// Cleanup on destroy
+	onDestroy(() => {
+		if (flipInterval) {
+			clearInterval(flipInterval);
 		}
 	});
 </script>
@@ -138,48 +161,31 @@
 	{#each Array(5) as _, reelIndex}
 		<div class="reel-container">
 			<div class="reel-mask">
-				<div
-					class="reel-strip"
-					class:spinning
-					style="transform: translateY(-{reelPositions[reelIndex]}px)"
-				>
-					{#if spinning}
-						<!-- Show extended reel during spin -->
-						{#each Array(20) as _, symbolIndex}
-							{@const symbol = getReelSymbol(reelIndex, symbolIndex)}
-							{@const display = getSymbolDisplay(symbol)}
-							<div class="symbol">
-								<div class="symbol-content">
-									<span class="symbol-emoji" style="color: {display.color}">
-										{display.emoji}
-									</span>
-								</div>
+				<div class="reel-strip">
+					{#each Array(3) as _, row}
+						{@const symbol = displayGrid[reelIndex]?.[row] || '_'}
+						{@const display = getSymbolDisplay(symbol)}
+						{@const isWinner = isWinningPosition(reelIndex, row)}
+						{@const isFlipping = waitingForOutcome || isSpinning}
+						<div
+							class="symbol"
+							class:winning={isWinner}
+							class:flipping={isFlipping}
+							style="animation-delay: {row * 50}ms"
+							data-key={animationKey}
+						>
+							<div class="symbol-content">
+								<span
+									class="symbol-emoji"
+									style="color: {display.color}; text-shadow: {isWinner
+										? `0 0 20px ${display.glowColor}`
+										: 'none'}"
+								>
+									{display.emoji}
+								</span>
 							</div>
-						{/each}
-					{:else}
-						<!-- Show visible grid when not spinning -->
-						{#each Array(VISIBLE_SYMBOLS) as _, row}
-							{@const symbol = grid[reelIndex]?.[row] || '_'}
-							{@const display = getSymbolDisplay(symbol)}
-							{@const isWinner = isWinningPosition(reelIndex, row)}
-							<div
-								class="symbol"
-								class:winning={isWinner}
-								style="animation-delay: {row * 100}ms"
-							>
-								<div class="symbol-content">
-									<span
-										class="symbol-emoji"
-										style="color: {display.color}; text-shadow: {isWinner
-											? `0 0 20px ${display.glowColor}`
-											: 'none'}"
-									>
-										{display.emoji}
-									</span>
-								</div>
-							</div>
-						{/each}
-					{/if}
+						</div>
+					{/each}
 				</div>
 			</div>
 		</div>
@@ -203,6 +209,7 @@
 		border-radius: 0.5rem;
 		border: 1px solid rgba(255, 255, 255, 0.1);
 		overflow: hidden;
+		perspective: 800px;
 	}
 
 	.reel-mask {
@@ -214,12 +221,6 @@
 	.reel-strip {
 		display: flex;
 		flex-direction: column;
-		transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-		will-change: transform;
-	}
-
-	.reel-strip.spinning {
-		transition: none;
 	}
 
 	.symbol {
@@ -228,10 +229,16 @@
 		align-items: center;
 		justify-content: center;
 		border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+		transform-style: preserve-3d;
 	}
 
 	.symbol:last-child {
 		border-bottom: none;
+	}
+
+	.symbol.flipping {
+		animation: flipAndSpin 0.15s ease-in-out;
+		animation-iteration-count: infinite;
 	}
 
 	.symbol.winning {
@@ -249,16 +256,41 @@
 		justify-content: center;
 		width: 100%;
 		height: 100%;
+		transform-style: preserve-3d;
+		backface-visibility: hidden;
 	}
 
 	.symbol-emoji {
 		font-size: 4rem;
 		line-height: 1;
-		transition: all 0.3s ease;
+		transition: all 0.2s ease;
 	}
 
 	.symbol.winning .symbol-emoji {
 		transform: scale(1.1);
+	}
+
+	@keyframes flipAndSpin {
+		0% {
+			opacity: 1;
+			transform: rotateY(0deg) rotateX(0deg) scale(1);
+		}
+		25% {
+			opacity: 0.6;
+			transform: rotateY(45deg) rotateX(10deg) scale(0.9);
+		}
+		50% {
+			opacity: 0.3;
+			transform: rotateY(90deg) rotateX(20deg) scale(0.8);
+		}
+		75% {
+			opacity: 0.6;
+			transform: rotateY(135deg) rotateX(10deg) scale(0.9);
+		}
+		100% {
+			opacity: 1;
+			transform: rotateY(180deg) rotateX(0deg) scale(1);
+		}
 	}
 
 	@keyframes winPulse {

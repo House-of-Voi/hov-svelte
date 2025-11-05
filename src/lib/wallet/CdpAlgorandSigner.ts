@@ -74,6 +74,11 @@ export class CdpAlgorandSigner implements WalletSigner {
 			console.log('🔑 Deriving Algorand keypair...');
 			derivedAccount = deriveAlgorandAccountFromEVM(privateKey);
 
+			// Debug safeguard to ensure key type correctness
+			if (!(derivedAccount.sk instanceof Uint8Array)) {
+				throw new Error('Derived Algorand secret key must be a Uint8Array');
+			}
+
 			// Verify the derived address matches expected address
 			if (derivedAccount.addr !== this._algorandAddress) {
 				throw new Error(
@@ -85,7 +90,11 @@ export class CdpAlgorandSigner implements WalletSigner {
 			console.log(`✍️  Signing ${txns.length} transaction(s)...`);
 
 			const signedBlobs: Uint8Array[] = txns.map((txn) => {
-				const signed = algosdk.signTransaction(txn, derivedAccount!.sk);
+				const secretKey = derivedAccount!.sk instanceof Uint8Array
+					? derivedAccount!.sk
+					: new Uint8Array(derivedAccount!.sk);
+
+				const signed = algosdk.signTransaction(txn, secretKey);
 				return signed.blob;
 			});
 

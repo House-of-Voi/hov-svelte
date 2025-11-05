@@ -1,8 +1,7 @@
 import type { PageServerLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
-import { getCurrentAlgorandAccount } from '$lib/auth/session';
 
-export const load: PageServerLoad = async ({ parent, url, cookies }) => {
+export const load: PageServerLoad = async ({ parent, url, locals }) => {
   const { session, hasGameAccess } = await parent();
 
   // Redirect to auth if not logged in
@@ -18,21 +17,15 @@ export const load: PageServerLoad = async ({ parent, url, cookies }) => {
 
   const contractId = url.searchParams.get('contract');
 
-  // Fetch Algorand/Voi wallet address for game transactions
-  let algorandAddress: string | null = null;
-  try {
-    const algorandAccount = await getCurrentAlgorandAccount(cookies);
-    algorandAddress = algorandAccount?.address || null;
+  // Get CDP-derived Voi address from session (established by VoiAddressProvider)
+  const voiAddress = locals.voiAddress;
 
-    if (!algorandAddress) {
-      console.warn('No Algorand address found for user');
-    }
-  } catch (error) {
-    console.error('Failed to fetch Algorand address:', error);
+  if (!voiAddress) {
+    console.warn('No Voi address in session - VoiAddressProvider may not have run yet');
   }
 
   return {
     contractId,
-    algorandAddress,
+    algorandAddress: voiAddress, // Return as algorandAddress for backward compatibility
   };
 };

@@ -36,7 +36,8 @@ import { getWinLevel } from './types/results';
 export interface BlockchainAdapter {
   initialize(): Promise<void>;
   submitSpin(betPerLine: number, paylines: number, walletAddress: string): Promise<BetKey>;
-  claimSpin(betKey: string): Promise<SpinOutcome>;
+  claimSpin(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome>;
+  calculateOutcomeFromBlockSeed(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome>;
   getBalance(address: string): Promise<number>;
   getCurrentBlock(): Promise<number>;
   getContractConfig(): Promise<SlotMachineConfig>;
@@ -54,6 +55,7 @@ export class SlotMachineEngine {
   private slotConfig: SlotMachineConfig | null = null;
   private walletAddress: string | null = null;
   private processingQueue: Set<string> = new Set();
+  private balancePollTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: EngineConfig, adapter?: BlockchainAdapter) {
     this.config = config;
@@ -145,6 +147,12 @@ export class SlotMachineEngine {
   private startBalancePolling(): void {
     if (!this.walletAddress) return;
 
+    // Ensure previous timer is cleared before starting a new loop
+    if (this.balancePollTimeout) {
+      clearTimeout(this.balancePollTimeout);
+      this.balancePollTimeout = null;
+    }
+
     const poll = async () => {
       try {
         const balance = await this.adapter.getBalance(this.walletAddress!);
@@ -172,8 +180,8 @@ export class SlotMachineEngine {
         console.error('Balance polling error:', error);
       }
 
-      // Poll every 5 seconds
-      setTimeout(poll, 5000);
+      // Schedule next poll and keep the handle so we can cancel on destroy
+      this.balancePollTimeout = setTimeout(poll, 30000);
     };
 
     poll();
@@ -331,14 +339,17 @@ export class SlotMachineEngine {
         this.walletAddress!
       );
 
-      // Update spin with bet key
-      this.store.updateSpin(spin.id, {
+      // Update spin with bet key (store and local copy)
+      const betKeyData = {
         status: SpinStatus.WAITING,
         betKey: betKey.key,
         spinTxId: betKey.txId,
         submitBlock: betKey.submitBlock,
         claimBlock: betKey.claimBlock,
-      });
+      } as const;
+
+      this.store.updateSpin(spin.id, betKeyData);
+      Object.assign(spin, betKeyData);
 
       // Emit submitted event
       this.eventBus.emit({
@@ -371,30 +382,26 @@ export class SlotMachineEngine {
     // Update status
     this.store.updateSpin(spin.id, { status: SpinStatus.CLAIMING });
 
-    try {
-      // Claim outcome from contract
-      const outcome = await this.adapter.claimSpin(spin.betKey);
+    // Calculate outcome immediately from block seed for instant UX
+    const outcome = await this.adapter.calculateOutcomeFromBlockSeed(
+      spin.betKey,
+      spin.claimBlock,
+      spin.betPerLine,
+      spin.paylines
+    );
 
-      // Update spin with outcome
-      this.store.updateSpin(spin.id, {
-        status: SpinStatus.COMPLETED,
-        outcome,
-        winnings: outcome.totalPayout,
-      });
+    // Update spin with calculated outcome (store and local copy)
+    const outcomeData = {
+      status: SpinStatus.COMPLETED,
+      outcome,
+      winnings: outcome.totalPayout,
+    } as const;
 
-      // Emit claimed event
-      this.eventBus.emit({
-        type: GameEventType.SPIN_CLAIMED,
-        timestamp: Date.now(),
-        payload: {
-          spinId: spin.id,
-          outcome,
-          payout: outcome.totalPayout,
-        },
-      });
-    } catch (error) {
-      throw new Error(`Claim failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    this.store.updateSpin(spin.id, outcomeData);
+    Object.assign(spin, outcomeData);
+
+    // Attempt contract claim in the background; if it verifies, we can later update
+    this.attemptClaimInBackground(spin).catch(() => {});
   }
 
   /**
@@ -465,6 +472,35 @@ export class SlotMachineEngine {
   }
 
   /**
+   * Attempt to verify claim on-chain without blocking the UI
+   */
+  private async attemptClaimInBackground(spin: QueuedSpin): Promise<void> {
+    if (!spin.claimBlock || !spin.betKey) return;
+
+    try {
+      // Ensure we are PAST the claim block before attempting on-chain claim
+      // Contract/SDK may require the claim round seed to be finalized and indexable
+      while (true) {
+        const current = await this.adapter.getCurrentBlock();
+        if (current > spin.claimBlock) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      // Small grace delay for indexer/rpc availability
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      await this.adapter.claimSpin(
+        spin.betKey,
+        spin.claimBlock,
+        spin.betPerLine,
+        spin.paylines
+      );
+    } catch {
+      // Non-fatal: leave calculated outcome in place
+    }
+  }
+
+  /**
    * Wait for a specific block
    */
   private async waitForBlock(targetBlock: number): Promise<void> {
@@ -500,6 +536,8 @@ export class SlotMachineEngine {
       currentBet: state.currentBet,
       isAutoSpinning: state.isAutoSpinning,
       autoSpinCount: state.autoSpinCount,
+      activePaylineHighlights: state.activePaylineHighlights,
+      showingWinCelebration: state.showingWinCelebration,
       lastError: state.lastError,
     };
   }
@@ -607,6 +645,17 @@ export class SlotMachineEngine {
   reset(): void {
     this.store.reset();
     this.processingQueue.clear();
+  }
+
+  /**
+   * Cleanup timers and resources
+   */
+  destroy(): void {
+    if (this.balancePollTimeout) {
+      clearTimeout(this.balancePollTimeout);
+      this.balancePollTimeout = null;
+    }
+    this.initialized = false;
   }
 
   /**

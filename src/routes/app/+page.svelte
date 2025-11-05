@@ -11,21 +11,17 @@
 	import AvatarEditModal from '$lib/components/form/AvatarEditModal.svelte';
 	import ProfileEditModal from '$lib/components/form/ProfileEditModal.svelte';
 	import ReferralCodesModal from '$lib/components/form/ReferralCodesModal.svelte';
-	import { getInitializedCdp } from '$lib/auth/cdpClient';
-	import { deriveAlgorandAddressFromEVM } from '$lib/chains/algorand-derive';
+	import VoiAccountImportModal from '$lib/components/form/VoiAccountImportModal.svelte';
+	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	// Get primary Voi address from database (may be outdated if derivation changed)
-	const primaryVoiAccountFromDb =
-		data.profileData.accounts.find((account) => account.chain === 'voi' && account.is_primary) ||
-		data.profileData.accounts.find((account) => account.chain === 'voi');
-
-	// State for dynamically derived Voi address (for CDP wallets)
-	let primaryVoiAccount = $state<{ address: string; chain: string; is_primary: boolean } | undefined>(
-		primaryVoiAccountFromDb
-	);
+    // Resolve Voi address: prefer session-derived value, fall back to connected accounts
+    const primaryVoiAccount =
+        data.profileData.accounts.find((account: any) => account.chain === 'voi' && account.isPrimary) ||
+        data.profileData.accounts.find((account: any) => account.chain === 'voi');
+    const voiAddress: string | undefined = data.voiAddress ?? primaryVoiAccount?.address;
 
 	// State
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(
@@ -38,45 +34,16 @@
 	let isReferralCodesModalOpen = $state(false);
 	let profile = $state({ ...data.profileData.profile });
 
+  // Import modal state
+  let isImportModalOpen = $state(false);
+  
+  // Remove account modal state
+  let isRemoveModalOpen = $state(false);
+  let accountToRemove = $state<{ chain: string; address: string } | null>(null);
+
 	// Referral stats (loaded client-side)
 	let referralStats = $state<any>(null);
 	let loadingReferrals = $state(true);
-
-	// Derive correct Voi address for CDP users on mount
-	onMount(async () => {
-		// If user has a CDP account, derive the correct Voi address
-		if (data.session?.cdpUserId) {
-			try {
-				const cdpSdk = await getInitializedCdp();
-				const currentUser = await cdpSdk.getCurrentUser();
-				const baseWalletAddress =
-					(Array.isArray((currentUser as { evmAccounts?: string[] }).evmAccounts)
-						? (currentUser as { evmAccounts: string[] }).evmAccounts[0]
-						: undefined) || (currentUser as { walletAddress?: string }).walletAddress;
-
-				if (baseWalletAddress) {
-					// Export the private key to derive the Voi address
-					const { privateKey } = await cdpSdk.exportEvmAccount({
-						evmAccount: baseWalletAddress as `0x${string}`
-					});
-
-					if (privateKey) {
-						const derivedVoiAddress = deriveAlgorandAddressFromEVM(privateKey);
-
-						// Update the primary Voi account with correct address
-						primaryVoiAccount = {
-							address: derivedVoiAddress,
-							chain: 'voi',
-							is_primary: true
-						};
-					}
-				}
-			} catch (error) {
-				console.error('Failed to derive Voi address from CDP:', error);
-				// Fall back to database address
-			}
-		}
-	});
 
 	// Load referral stats
 	async function fetchReferralStats() {
@@ -107,6 +74,50 @@
 			status = null;
 		}, delayMs);
 	}
+
+  async function handleLinked(address: string) {
+    status = { type: 'success', message: 'Voi account linked successfully!' };
+    clearStatusAfter(3000);
+    await invalidateAll();
+  }
+
+  function handleRemoveClick(chain: string, address: string) {
+    accountToRemove = { chain, address };
+    isRemoveModalOpen = true;
+  }
+
+  async function handleRemoveConfirm() {
+    if (!accountToRemove) return;
+
+    try {
+      const response = await fetch('/api/profile/accounts', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chain: accountToRemove.chain,
+          address: accountToRemove.address,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to remove account');
+      }
+
+      status = { type: 'success', message: 'Account removed successfully!' };
+      clearStatusAfter(3000);
+      await invalidateAll();
+      accountToRemove = null;
+    } catch (err) {
+      console.error('Remove account error:', err);
+      status = {
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to remove account',
+      };
+      clearStatusAfter(5000);
+    }
+  }
 
 	// Copy address to clipboard
 	function copyAddress(address: string) {
@@ -339,18 +350,18 @@
 							</p>
 
 							<!-- Primary Address -->
-							{#if primaryVoiAccount}
+                            {#if voiAddress}
 								<div class="mt-3 flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
 									<a
-										href="https://block.voi.network/explorer/account/{primaryVoiAccount.address}"
+                                        href="https://block.voi.network/explorer/account/{voiAddress}"
 										target="_blank"
 										rel="noopener noreferrer"
 										class="font-mono text-sm hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
 									>
-										{primaryVoiAccount.address.slice(0, 6)}...{primaryVoiAccount.address.slice(-4)}
+                                        {voiAddress.slice(0, 6)}...{voiAddress.slice(-4)}
 									</a>
 									<button
-										onclick={() => copyAddress(primaryVoiAccount.address)}
+                                        onclick={() => copyAddress(voiAddress)}
 										class="p-1 hover:bg-primary-50 dark:hover:bg-primary-950 rounded transition-colors"
 										title="Copy address"
 									>
@@ -423,10 +434,60 @@
 		onClose={handleReferralCodesModalClose}
 	/>
 
-	<!-- Unified Balances Card -->
-	{#if primaryVoiAccount}
-		<BalancesCard address={primaryVoiAccount.address} />
+	<!-- Unified Balances Card for primary address -->
+	{#if voiAddress}
+		<BalancesCard address={voiAddress} />
 	{/if}
+
+	<!-- Linked Accounts List -->
+	<Card>
+		<CardHeader>
+			<div class="flex items-center justify-between">
+				<h2 class="text-xl font-semibold text-neutral-950 dark:text-white">Your Linked Accounts</h2>
+				<Button variant="primary" size="sm" onclick={() => (isImportModalOpen = true)}>Import Voi Account</Button>
+			</div>
+		</CardHeader>
+		<CardContent>
+			{#if voiAddress || (data.profileData.accounts?.some((a: any) => a.chain === 'voi'))}
+				<div class="space-y-3">
+					{#if voiAddress}
+						<div class="flex items-center justify-between gap-3 border border-primary-300 dark:border-primary-800 rounded-lg p-3 bg-primary-50/60 dark:bg-primary-900/20">
+							<div class="flex items-center gap-2 text-neutral-800 dark:text-neutral-200">
+								<span class="px-2 py-0.5 text-xs rounded bg-primary-200 dark:bg-primary-800 text-primary-900 dark:text-primary-200">Primary</span>
+								<a class="font-mono text-sm hover:text-primary-600 dark:hover:text-primary-400" href="https://block.voi.network/explorer/account/{voiAddress}" target="_blank" rel="noopener noreferrer">{voiAddress.slice(0,6)}...{voiAddress.slice(-4)}</a>
+							</div>
+							<button class="p-1 hover:bg-primary-50 dark:hover:bg-primary-950 rounded" onclick={() => copyAddress(voiAddress)} title="Copy address">
+								<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+							</button>
+						</div>
+					{/if}
+					{#each data.profileData.accounts.filter((a: any) => a.chain === 'voi') as acc}
+						<div class="flex items-center justify-between gap-3 border border-neutral-200 dark:border-neutral-800 rounded-lg p-3">
+							<a class="font-mono text-sm text-neutral-700 dark:text-neutral-300 hover:text-primary-600 dark:hover:text-primary-400" href="https://block.voi.network/explorer/account/{acc.address}" target="_blank" rel="noopener noreferrer">{acc.address.slice(0,6)}...{acc.address.slice(-4)}</a>
+							<div class="flex items-center gap-2">
+								<button class="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded" onclick={() => copyAddress(acc.address)} title="Copy address">
+									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+								</button>
+								<button
+									class="p-1 hover:bg-error-50 dark:hover:bg-error-950 rounded text-error-600 dark:text-error-400"
+									onclick={() => handleRemoveClick(acc.chain, acc.address)}
+									title="Remove account"
+								>
+									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<path d="M3 6h18"></path>
+										<path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+										<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+									</svg>
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<div class="text-neutral-600 dark:text-neutral-300">No Voi accounts linked yet.</div>
+			{/if}
+		</CardContent>
+	</Card>
 
 	<!-- Referral Section - Only show if user has referral slots -->
 	{#if data.profileData.profile.max_referrals > 0}
@@ -528,6 +589,22 @@
 			</CardContent>
 		</Card>
 	{/if}
+
+	<VoiAccountImportModal
+		isOpen={isImportModalOpen}
+		onClose={() => (isImportModalOpen = false)}
+		onLinked={handleLinked}
+	/>
+
+	<RemoveAccountModal
+		isOpen={isRemoveModalOpen}
+		address={accountToRemove?.address ?? ''}
+		onClose={() => {
+			isRemoveModalOpen = false;
+			accountToRemove = null;
+		}}
+		onConfirm={handleRemoveConfirm}
+	/>
 
 	<!-- Account Actions -->
 	<Card>

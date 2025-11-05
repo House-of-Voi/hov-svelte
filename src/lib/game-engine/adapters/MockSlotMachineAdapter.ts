@@ -122,9 +122,22 @@ export class MockSlotMachineAdapter implements BlockchainAdapter {
   }
 
   /**
+   * Calculate outcome from block seed immediately - doesn't wait for claim
+   */
+  async calculateOutcomeFromBlockSeed(
+    betKey: string,
+    claimBlock: number,
+    betPerLine: number,
+    paylines: number
+  ): Promise<SpinOutcome> {
+    // For mock adapter, just call claimSpin
+    return this.claimSpin(betKey, claimBlock, betPerLine, paylines);
+  }
+
+  /**
    * Claim spin outcome
    */
-  async claimSpin(betKey: string): Promise<SpinOutcome> {
+  async claimSpin(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome> {
     await this.delay(this.config.networkDelay);
 
     const pendingBet = this.pendingBets.get(betKey);

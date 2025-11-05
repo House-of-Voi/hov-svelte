@@ -43,9 +43,10 @@ export const load: PageServerLoad = async ({ parent, cookies }) => {
 		}
 	}
 
-	return {
-		profileData,
-		isActivated: activated,
-		referralFlash
-	};
+    return {
+        profileData,
+        isActivated: activated,
+        referralFlash,
+        voiAddress: session.voiAddress ?? null,
+    };
 };

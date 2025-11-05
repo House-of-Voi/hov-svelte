@@ -172,10 +172,24 @@ export function createGameStore() {
     },
 
     /**
-     * Set balance
+     * Set balance (replaces optimistic balance with actual on-chain balance)
      */
     setBalance(balance: number) {
       state.balance = balance;
+    },
+
+    /**
+     * Add to balance optimistically (before on-chain confirmation)
+     */
+    addToBalance(amount: number) {
+      state.balance = state.balance + amount;
+    },
+
+    /**
+     * Subtract from balance optimistically (before on-chain confirmation)
+     */
+    subtractFromBalance(amount: number) {
+      state.balance = Math.max(0, state.balance - amount);
     },
 
     /**

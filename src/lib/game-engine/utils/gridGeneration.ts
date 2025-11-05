@@ -17,12 +17,20 @@ export async function generateGridFromSeed(
 	windowLength: number = 3
 ): Promise<SymbolId[][]> {
 	// Get reel tops from seed (5 positions, one per reel)
-	const reelTops = getReelTopsFromSeed(seed, reelLength);
+	const reelTops = await getReelTopsFromSeed(seed, reelLength, windowLength);
+
+	// Verify reel data length
+	if (reelData.length !== reelLength * 5) {
+		throw new Error(`Invalid reel data length: expected ${reelLength * 5} (${reelLength} per reel × 5 reels), got ${reelData.length}`);
+	}
 
 	// Generate grid from reel tops
 	const grid: SymbolId[][] = [];
 	for (let reelIndex = 0; reelIndex < 5; reelIndex++) {
 		const reelWindow = getReelWindow(reelData, reelIndex, reelTops[reelIndex], reelLength, windowLength);
+		if (reelWindow.length !== windowLength) {
+			throw new Error(`Invalid reel window length for reel ${reelIndex}: expected ${windowLength}, got ${reelWindow.length}`);
+		}
 		grid[reelIndex] = reelWindow.split('') as SymbolId[];
 	}
 
@@ -31,21 +39,34 @@ export async function generateGridFromSeed(
 
 /**
  * Get reel top positions from seed
- * Maps 32-byte seed to 5 reel positions
+ * Matches contract algorithm: hash(seed + reelNumber), take last 8 bytes, convert to BigUint64BE, mod maxReelStop
  */
-function getReelTopsFromSeed(seed: Uint8Array, reelLength: number): number[] {
+async function getReelTopsFromSeed(seed: Uint8Array, reelLength: number, windowLength: number = 3): Promise<number[]> {
 	const reelTops: number[] = [];
+	const maxReelStop = reelLength - (windowLength + 1);
 
-	for (let i = 0; i < 5; i++) {
-		// Use 4 bytes per reel top (bytes 0-3, 4-7, 8-11, 12-15, 16-19)
-		const offset = i * 4;
-		const value =
-			(seed[offset] << 24) | (seed[offset + 1] << 16) | (seed[offset + 2] << 8) | seed[offset + 3];
-
-		// Map to reel position using modulo
-		reelTops[i] = value % reelLength;
+	// For each reel (1-5), hash the seed with the reel number
+	for (let reelIndex = 1; reelIndex <= 5; reelIndex++) {
+		// Create reel number byte (0x31 = "1", 0x32 = "2", etc.)
+		const reelIdByte = new Uint8Array([0x30 + reelIndex]);
+		
+		// Combine seed + reel number byte (seed first, then reel ID byte)
+		const combined = new Uint8Array(seed.length + 1);
+		combined.set(seed);
+		combined.set(reelIdByte, seed.length);
+		
+		// Hash to get reel-specific seed
+		const hashedSeed = await crypto.subtle.digest('SHA-256', combined);
+		const reelSeedBytes = new Uint8Array(hashedSeed);
+		
+		// Get last 8 bytes and convert to BigUint64 (big endian, as per contract)
+		// Match working implementation exactly: DataView with buffer offset
+		const seedValue = new DataView(reelSeedBytes.buffer, reelSeedBytes.length - 8).getBigUint64(0, false);
+		
+		// Calculate position using modulo
+		const position = Number(seedValue % BigInt(maxReelStop));
+		reelTops.push(position);
 	}
-
 	return reelTops;
 }
 
@@ -66,11 +87,17 @@ function getReelWindow(
 		reelStartInFullData + reelLength
 	);
 
-	// Build window with wrap-around
+	// Verify we got the correct slice
+	if (reelDataForThisReel.length !== reelLength) {
+		throw new Error(`Invalid reel data slice for reel ${reelIndex}: expected ${reelLength} chars, got ${reelDataForThisReel.length}. Reel data total length: ${reelData.length}, start: ${reelStartInFullData}`);
+	}
+
+	// Build window with wrap-around (matches contract: pos1 = index+0, pos2 = index+1, pos3 = index+2)
 	let window = '';
 	for (let i = 0; i < windowLength; i++) {
 		const pos = (position + i) % reelLength;
-		window += reelDataForThisReel[pos];
+		const char = reelDataForThisReel[pos];
+		window += char;
 	}
 
 	return window;
@@ -86,7 +113,7 @@ export async function generateGridFromBetKey(
 	reelLength: number = 100,
 	windowLength: number = 3
 ): Promise<SymbolId[][]> {
-	// Combine block seed and bet key
+	// Combine block seed and bet key (blockSeed first, then betKey - matches working implementation)
 	const combined = new Uint8Array(blockSeed.length + betKey.length);
 	combined.set(blockSeed);
 	combined.set(betKey, blockSeed.length);

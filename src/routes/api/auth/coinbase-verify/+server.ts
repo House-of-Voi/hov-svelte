@@ -179,31 +179,15 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
       }
     }
 
-    // Step 2: Store Base (EVM) account fetched from CDP
+    // Step 2: Profile created/updated - no need to store addresses in DB
+    // Base and Voi addresses are now derived from CDP on-demand
     if (!finalProfile) {
       throw new Error('Failed to resolve profile during Coinbase verification');
     }
 
-    await supabase.from('accounts').upsert(
-      {
-        profile_id: finalProfile.id,
-        chain: 'base',
-        address: baseWalletAddress,
-        wallet_provider: 'coinbase-embedded',
-        is_primary: false,
-        derived_from_chain: null,
-        derived_from_address: null,
-      },
-      { onConflict: 'chain,address' }
-    );
-
-    // Check whether the user has already linked an Algorand (Voi) address
-    const { data: existingVoiAccount } = await supabase
-      .from('accounts')
-      .select('id, address')
-      .eq('profile_id', finalProfile.id)
-      .eq('chain', 'voi')
-      .maybeSingle();
+    // Note: We no longer store Base or derived Voi addresses in the accounts table.
+    // Base address comes from CDP directly, Voi address is derived client-side and stored in session cookie.
+    // The accounts table is now reserved for "connected" addresses (additional wallets linked by users).
 
     // Step 3: Create session with CDP user ID and access token
     const sessionId = randomUUID();
@@ -234,7 +218,7 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
       profileId: finalProfile.id,
       cdpUserId: cdpUser.userId,
       baseWalletAddress,
-      hasLinkedAlgorand: Boolean(existingVoiAccount),
+      hasLinkedAlgorand: true, // Voi address is always derived from CDP, no linking required
       contact: {
         email: cdpUser.email ?? null,
         phoneNumber: cdpUser.phoneNumber ?? null,
