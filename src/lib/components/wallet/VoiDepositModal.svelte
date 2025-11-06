@@ -593,7 +593,7 @@
 				</div>
 
 				<!-- Optional Amount Input -->
-				<div class="space-y-3">
+				<div class="space-y-3 hidden">
 					<label class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
 						Amount (VOI) <span class="text-xs text-neutral-500">(Optional)</span>
 					</label>
@@ -613,7 +613,7 @@
 				</div>
 
 				<!-- QR Code -->
-				<div class="flex flex-col items-center space-y-4">
+				<div class="flex flex-col items-center space-y-4 hidden">
 					<div class="p-4 bg-white dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-700">
 						{#if qrCodeUrl}
 							<img src={qrCodeUrl} alt="Voi Deposit QR Code" class="w-64 h-64" />
