@@ -65,74 +65,85 @@ export const SYMBOL_DISPLAY: Record<SymbolId, SymbolDisplay> = {
 };
 
 /**
- * Default paytable (these will be fetched from contract in production)
+ * Default paytable (matches contract multipliers from paylineEvaluator)
  */
 export const DEFAULT_PAYTABLE: SymbolPayouts[] = [
 	{
 		symbol: 'A',
 		displayName: 'Diamond',
-		match3: 50,
+		match3: 200,
+		match4: 1000,
+		match5: 10000
+	},
+	{
+		symbol: 'B',
+		displayName: 'Gold',
+		match3: 60,
 		match4: 200,
 		match5: 1000
 	},
 	{
-		symbol: 'B',
-		displayName: 'Star',
-		match3: 25,
+		symbol: 'C',
+		displayName: 'Silver',
+		match3: 30,
 		match4: 100,
 		match5: 500
 	},
 	{
-		symbol: 'C',
-		displayName: 'Crown',
-		match3: 15,
-		match4: 50,
-		match5: 250
-	},
-	{
 		symbol: 'D',
-		displayName: 'Clover',
-		match3: 5,
-		match4: 20,
-		match5: 100
+		displayName: 'Bronze',
+		match3: 10,
+		match4: 55,
+		match5: 250
 	}
 ];
 
 /**
- * All 20 payline patterns
+ * All 20 payline patterns (matches contract patterns from VoiSlotMachineAdapter)
  * Pattern format: [row for reel0, row for reel1, row for reel2, row for reel3, row for reel4]
  * Row indices: 0=top, 1=middle, 2=bottom
  */
 export const PAYLINE_PATTERNS: PaylinePattern[] = [
-	// Straight lines (1-5)
-	[1, 1, 1, 1, 1], // 1. Middle horizontal
-	[0, 0, 0, 0, 0], // 2. Top horizontal
-	[2, 2, 2, 2, 2], // 3. Bottom horizontal
-
-	// V-shapes and inverted V-shapes (4-7)
-	[0, 1, 2, 1, 0], // 4. V-shape
-	[2, 1, 0, 1, 2], // 5. Inverted V-shape
-	[1, 0, 1, 2, 1], // 6. W-shape (down-up-down-up)
-	[1, 2, 1, 0, 1], // 7. M-shape (up-down-up-down)
-
-	// Zigzag patterns (8-11)
-	[0, 0, 1, 2, 2], // 8. Down diagonal zigzag
-	[2, 2, 1, 0, 0], // 9. Up diagonal zigzag
-	[0, 1, 1, 1, 0], // 10. Arch
-	[2, 1, 1, 1, 2], // 11. Inverted arch
-
-	// Wave patterns (12-15)
-	[1, 0, 0, 0, 1], // 12. Shallow U
-	[1, 2, 2, 2, 1], // 13. Shallow inverted U
-	[0, 1, 0, 1, 0], // 14. Wave up-down-up-down
-	[2, 1, 2, 1, 2], // 15. Wave down-up-down-up
-
-	// Complex patterns (16-20)
-	[0, 2, 0, 2, 0], // 16. Big wave
-	[2, 0, 2, 0, 2], // 17. Inverted big wave
-	[1, 1, 0, 1, 1], // 18. Peak in middle
-	[1, 1, 2, 1, 1], // 19. Valley in middle
-	[0, 1, 2, 2, 2] // 20. Ascending stairs
+	// 1. Middle line
+	[1, 1, 1, 1, 1],
+	// 2. Top line
+	[0, 0, 0, 0, 0],
+	// 3. Bottom line
+	[2, 2, 2, 2, 2],
+	// 4. V shape
+	[0, 1, 2, 1, 0],
+	// 5. Inverted V
+	[2, 1, 0, 1, 2],
+	// 6. Diagonal down
+	[0, 1, 1, 2, 2],
+	// 7. Diagonal up
+	[2, 1, 1, 0, 0],
+	// 8. Zigzag top
+	[0, 0, 1, 0, 0],
+	// 9. Zigzag bottom
+	[2, 2, 1, 2, 2],
+	// 10. Staircase down
+	[0, 1, 2, 2, 1],
+	// 11. Staircase up
+	[2, 1, 0, 0, 1],
+	// 12. Slight diagonal
+	[1, 0, 0, 0, 1],
+	// 13. Slight diagonal
+	[1, 2, 2, 2, 1],
+	// 14. Top-bottom-top
+	[0, 2, 0, 2, 0],
+	// 15. Bottom-top-bottom
+	[2, 0, 2, 0, 2],
+	// 16. Outer rails up
+	[0, 2, 1, 2, 0],
+	// 17. Outer rails down
+	[2, 0, 1, 0, 2],
+	// 18. Left hook
+	[0, 0, 1, 2, 2],
+	// 19. Right hook
+	[2, 2, 1, 0, 0],
+	// 20. Wave
+	[1, 0, 1, 2, 1]
 ];
 
 /**

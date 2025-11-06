@@ -177,9 +177,9 @@ async function fetchProfileStats(fetch: typeof globalThis.fetch): Promise<any | 
       return null;
     }
     const data = await response.json();
+    console.log('Profile stats data:', data);
     return data.success ? data.data : null;
   } catch (err) {
-    console.error('Error fetching profile stats:', err);
     return null;
   }
 }
@@ -229,13 +229,9 @@ export const load: PageServerLoad = async ({ fetch, parent }) => {
     }
   }
 
-  // Fetch recent winners if we have a default contract
-  let recentWinners: RecentWinnerEntry[] = [];
-  if (defaultContractId) {
-    recentWinners = await fetchRecentWinners(fetch, 5, defaultContractId);
-  }
+  // Recent wins are now loaded client-side via real-time subscription
+  // No need to fetch recent winners server-side
 
-  // Fetch profile stats if user is authenticated and has game access
   let profileStats = null;
   if (session?.gameAccessGranted) {
     profileStats = await fetchProfileStats(fetch);
@@ -245,7 +241,6 @@ export const load: PageServerLoad = async ({ fetch, parent }) => {
     games,
     platformStats: aggregatedStats,
     statsScope,
-    recentWinners,
     defaultContractId,
     profileStats,
   };

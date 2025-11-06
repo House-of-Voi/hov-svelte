@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { env } from '$lib/utils/env';
 
-const mimirUrl = env.MIMIR_SUPABASE_URL;
-const mimirAnonKey = env.MIMIR_SUPABASE_ANON_KEY;
+const mimirUrl = env.PUBLIC_MIMIR_SUPABASE_URL;
+const mimirAnonKey = env.PUBLIC_MIMIR_SUPABASE_ANON_KEY;
 
 if (!mimirUrl || !mimirAnonKey) {
   throw new Error(

@@ -1,5 +1,8 @@
 <script lang="ts">
   import type { PageData } from './$types';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
+  import { formatVoi } from '$lib/utils/format';
   import Card from '$lib/components/ui/Card.svelte';
   import CardContent from '$lib/components/ui/CardContent.svelte';
   import CardHeader from '$lib/components/ui/CardHeader.svelte';
@@ -8,13 +11,17 @@
   import CardSuitIcon from '$lib/components/icons/CardSuitIcon.svelte';
   import CheckCircleIcon from '$lib/components/icons/CheckCircleIcon.svelte';
   import ChainBadge from '$lib/components/ui/ChainBadge.svelte';
+  import HistoryReelGrid from '$lib/components/game/HistoryReelGrid.svelte';
+  import type { WinningLine } from '$lib/game-engine/types';
+  import { ensureBase32TxId } from '$lib/utils/txIdUtils';
 
   let { data }: { data: PageData } = $props();
 
   type SupportedChain = 'base' | 'voi' | 'solana';
   type SlotResult = { reels: string[]; multiplier: number };
-  type DiceResult = { roll: number; prediction: string; multiplier: number };
-  type CardResult = { hand: string[]; outcome: string; multiplier: number };
+  type KenoResult = { numbers: number[]; hits: number; multiplier: number };
+  type RouletteResult = { number: number; color: string; multiplier: number };
+  type GenericResult = { multiplier: number };
   type BaseGameHistory = {
     id: string;
     gameName: string;
@@ -25,81 +32,202 @@
     txHash: string;
     seed: string;
     createdAt: string;
+    betPerLine?: number;
+    selectedPaylines?: number;
   };
   type GameHistoryEntry =
     | (BaseGameHistory & { gameType: 'slots'; result: SlotResult })
-    | (BaseGameHistory & { gameType: 'dice'; result: DiceResult })
-    | (BaseGameHistory & { gameType: 'cards'; result: CardResult });
+    | (BaseGameHistory & { gameType: 'keno'; result: KenoResult })
+    | (BaseGameHistory & { gameType: 'roulette'; result: RouletteResult })
+    | (BaseGameHistory & { gameType: string; result: GenericResult });
 
-  // Mock game history - will be replaced with database queries
-  const gameHistory: GameHistoryEntry[] = [
-    {
-      id: '1',
-      gameType: 'slots',
-      gameName: '5-Reel Slots',
-      chain: 'base',
-      betAmount: 0.50,
-      payout: 5.00,
-      profit: 4.50,
-      result: { reels: ['💎', '💎', '💎', '⭐', '💎'], multiplier: 10 },
-      txHash: '0x7a8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b',
-      seed: 'seed_12345_abc',
-      createdAt: new Date(Date.now() - 3600000).toISOString(),
-    },
-    {
-      id: '2',
-      gameType: 'slots',
-      gameName: '5-Reel Slots',
-      chain: 'voi',
-      betAmount: 0.10,
-      payout: 0.00,
-      profit: -0.10,
-      result: { reels: ['🍒', '🍋', '🍊', '🍇', '⭐'], multiplier: 0 },
-      txHash: 'ABCD1234XYZ...',
-      seed: 'seed_67890_def',
-      createdAt: new Date(Date.now() - 7200000).toISOString(),
-    },
-    {
-      id: '3',
-      gameType: 'dice',
-      gameName: 'Dice Roll',
-      chain: 'solana',
-      betAmount: 1.00,
-      payout: 3.00,
-      profit: 2.00,
-      result: { roll: 5, prediction: 'over-4', multiplier: 3 },
-      txHash: '9WzDXwBbmkg8ZTbNMqUx...',
-      seed: 'seed_abc123_ghi',
-      createdAt: new Date(Date.now() - 10800000).toISOString(),
-    },
-    {
-      id: '4',
-      gameType: 'slots',
-      gameName: '5-Reel Slots',
-      chain: 'base',
-      betAmount: 0.25,
-      payout: 0.75,
-      profit: 0.50,
-      result: { reels: ['🍒', '🍒', '🍒', '🍋', '🍊'], multiplier: 3 },
-      txHash: '0x1a2b3c4d5e6f7a8b9c0d...',
-      seed: 'seed_jkl456_mno',
-      createdAt: new Date(Date.now() - 14400000).toISOString(),
-    },
-  ];
+  // Use data from server
+  const gameHistory: GameHistoryEntry[] = data.history || [];
+  const { totalWagered, totalPayout, totalProfit, winRate } = data.stats || {
+    totalWagered: 0,
+    totalPayout: 0,
+    totalProfit: 0,
+    winRate: '0.0',
+  };
+  const pagination = data.pagination || {
+    limit: 20,
+    offset: 0,
+    total: 0,
+    hasMore: false,
+  };
 
-  // Calculate totals
-  const totalWagered = gameHistory.reduce((sum, game) => sum + game.betAmount, 0);
-  const totalPayout = gameHistory.reduce((sum, game) => sum + game.payout, 0);
-  const totalProfit = totalPayout - totalWagered;
-  const winRate = (gameHistory.filter(g => g.profit > 0).length / gameHistory.length * 100).toFixed(1);
+  // Filter state - sync with URL params
+  let selectedGameType = $state<string>('all');
+  
+  // Sync filter with URL on mount and when URL changes
+  $effect(() => {
+    selectedGameType = $page.url.searchParams.get('gameType') || 'all';
+  });
 
-  function getGameIcon(type: GameHistoryEntry['gameType']) {
+  function getGameIcon(type: string) {
     switch (type) {
       case 'slots': return SlotMachineIcon;
       case 'dice': return DiceIcon;
       case 'cards': return CardSuitIcon;
+      case 'keno': return DiceIcon;
+      case 'roulette': return CardSuitIcon;
       default: return SlotMachineIcon;
     }
+  }
+
+  function handleGameTypeFilter(event: Event) {
+    const target = event.target as HTMLSelectElement;
+    selectedGameType = target.value;
+    
+    const url = new URL(window.location.href);
+    if (target.value === 'all') {
+      url.searchParams.delete('gameType');
+    } else {
+      url.searchParams.set('gameType', target.value);
+    }
+    url.searchParams.set('offset', '0'); // Reset to first page
+    goto(url.toString(), { noScroll: true });
+  }
+
+  function handlePrevious() {
+    const newOffset = Math.max(0, pagination.offset - pagination.limit);
+    const url = new URL(window.location.href);
+    url.searchParams.set('offset', newOffset.toString());
+    goto(url.toString(), { noScroll: true });
+  }
+
+  function handleNext() {
+    if (pagination.hasMore) {
+      const newOffset = pagination.offset + pagination.limit;
+      const url = new URL(window.location.href);
+      url.searchParams.set('offset', newOffset.toString());
+      goto(url.toString(), { noScroll: true });
+    }
+  }
+
+  function getBlockchainExplorerUrl(chain: SupportedChain, txHash: string): string {
+    if (!txHash) return '#';
+
+    // Normalize transaction ID to base32 format for VOI chain
+    const normalizedTxHash = chain === 'voi' ? ensureBase32TxId(txHash) : txHash;
+
+    switch (chain) {
+      case 'voi':
+        return `https://voi.observer/explorer/transaction/${normalizedTxHash}`;
+      case 'base':
+        return `https://basescan.org/tx/${normalizedTxHash}`;
+      case 'solana':
+        return `https://solscan.io/tx/${normalizedTxHash}`;
+      default:
+        return '#';
+    }
+  }
+
+  // Helper function to normalize transaction ID for display
+  function normalizeTxIdForDisplay(txHash: string, chain: SupportedChain): string {
+    if (!txHash) return '';
+    // Only normalize for VOI chain (others use different formats)
+    return chain === 'voi' ? ensureBase32TxId(txHash) : txHash;
+  }
+
+  // Get symbol emoji from symbol ID (for slots)
+  function getSymbolEmoji(symbolId: string | number): string {
+    const symbolIdStr = String(symbolId);
+    const symbolMap: Record<string, string> = {
+      // Letter-based IDs (from game engine)
+      'A': '💎', // Diamond
+      'B': '⭐', // Star
+      'C': '👑', // Crown
+      'D': '🍀', // Clover
+      '_': '　', // Blank
+      // Numeric IDs (legacy/alternative)
+      '0': '🍒',
+      '1': '🍋',
+      '2': '🍊',
+      '3': '🍇',
+      '4': '⭐',
+      '5': '💎',
+      '6': '7️⃣',
+      '7': '🔔',
+      '8': '💀',
+      '9': '👑',
+    };
+    return symbolMap[symbolIdStr] || symbolIdStr || '?';
+  }
+
+  // State for grid data per spin
+  const gridData = $state<Record<string, {
+    grid: string[][];
+    winningLines: WinningLine[];
+    loading: boolean;
+    error: string | null;
+  }>>({});
+
+  // Fetch grid data for a spin
+  async function fetchGridData(game: GameHistoryEntry) {
+    if (game.gameType !== 'slots' || !game.txHash) return;
+    if (!game.betPerLine || !game.selectedPaylines) return;
+
+    const gameId = game.id;
+    
+    // Check if already loaded or loading
+    if (gridData[gameId]) return;
+
+    // Set loading state
+    gridData[gameId] = {
+      grid: [],
+      winningLines: [],
+      loading: true,
+      error: null
+    };
+
+    try {
+      // Normalize transaction ID to base32 format for API call
+      const normalizedTxHash = normalizeTxIdForDisplay(game.txHash, game.chain);
+      const url = `/api/games/history/${normalizedTxHash}/grid?betPerLine=${game.betPerLine}&selectedPaylines=${game.selectedPaylines}`;
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch grid: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to reconstruct grid');
+      }
+
+      gridData[gameId] = {
+        grid: result.data.grid,
+        winningLines: result.data.winningLines,
+        loading: false,
+        error: null
+      };
+    } catch (error) {
+      gridData[gameId] = {
+        grid: [],
+        winningLines: [],
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to load grid'
+      };
+    }
+  }
+
+  // Handle details toggle
+  function handleDetailsToggle(event: Event, game: GameHistoryEntry) {
+    const details = event.target as HTMLDetailsElement;
+    if (details.open && game.gameType === 'slots') {
+      fetchGridData(game);
+    }
+  }
+
+  // Generate replay URL for a game
+  function getReplayUrl(game: GameHistoryEntry): string | null {
+    if (game.gameType !== 'slots' || !game.txHash || !game.betPerLine || !game.selectedPaylines) {
+      return null;
+    }
+    const normalizedTxId = normalizeTxIdForDisplay(game.txHash, game.chain);
+    return `/replay?txid=${encodeURIComponent(normalizedTxId)}&betPerLine=${game.betPerLine}&selectedPaylines=${game.selectedPaylines}`;
   }
 </script>
 
@@ -110,8 +238,8 @@
 <div class="space-y-8 max-w-6xl mx-auto">
   <!-- Header -->
   <div>
-    <h1 class="text-4xl font-black text-gold-400 neon-text uppercase">Game History</h1>
-    <p class="text-neutral-400 mt-2">
+    <h1 class="text-4xl font-black text-accent-500 dark:text-accent-400 neon-text uppercase">Game History</h1>
+    <p class="text-primary-600 dark:text-primary-400 mt-2">
       Your complete gaming history with blockchain verification.
     </p>
   </div>
@@ -120,43 +248,43 @@
   <div class="grid md:grid-cols-4 gap-6">
     <Card glow={true}>
       <CardContent class="p-6">
-        <div class="text-sm text-neutral-500 uppercase tracking-wider font-bold mb-2">
+        <div class="text-sm text-primary-600 dark:text-primary-400 uppercase tracking-wider font-bold mb-2">
           Total Wagered
         </div>
-        <div class="text-3xl font-black text-gold-400">
-          ${totalWagered.toFixed(2)}
+        <div class="text-3xl font-black text-accent-600 dark:text-accent-400">
+          {formatVoi(totalWagered * 1_000_000)} VOI
         </div>
       </CardContent>
     </Card>
 
     <Card glow={true}>
       <CardContent class="p-6">
-        <div class="text-sm text-neutral-500 uppercase tracking-wider font-bold mb-2">
+        <div class="text-sm text-primary-600 dark:text-primary-400 uppercase tracking-wider font-bold mb-2">
           Total Payout
         </div>
-        <div class="text-3xl font-black text-gold-400">
-          ${totalPayout.toFixed(2)}
+        <div class="text-3xl font-black text-accent-600 dark:text-accent-400">
+          {formatVoi(totalPayout * 1_000_000)} VOI
         </div>
       </CardContent>
     </Card>
 
     <Card glow={true}>
       <CardContent class="p-6">
-        <div class="text-sm text-neutral-500 uppercase tracking-wider font-bold mb-2">
+        <div class="text-sm text-primary-600 dark:text-primary-400 uppercase tracking-wider font-bold mb-2">
           Net Profit
         </div>
-        <div class="text-3xl font-black {totalProfit >= 0 ? 'text-green-400' : 'text-ruby-400'}">
-          {totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)}
+        <div class="text-3xl font-black {totalProfit >= 0 ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}">
+          {totalProfit >= 0 ? '+' : ''}{formatVoi(totalProfit * 1_000_000)} VOI
         </div>
       </CardContent>
     </Card>
 
     <Card glow={true}>
       <CardContent class="p-6">
-        <div class="text-sm text-neutral-500 uppercase tracking-wider font-bold mb-2">
+        <div class="text-sm text-primary-600 dark:text-primary-400 uppercase tracking-wider font-bold mb-2">
           Win Rate
         </div>
-        <div class="text-3xl font-black text-gold-400">
+        <div class="text-3xl font-black text-accent-600 dark:text-accent-400">
           {winRate}%
         </div>
       </CardContent>
@@ -167,35 +295,49 @@
   <Card>
     <CardHeader>
       <div class="flex items-center justify-between">
-        <h2 class="text-2xl font-bold text-gold-400 uppercase">Recent Games</h2>
-        <select class="px-4 py-2 rounded-lg border-2 border-neutral-800 bg-neutral-900 text-sm text-neutral-300 focus:border-gold-500 focus:ring-2 focus:ring-gold-500">
-          <option>All Games</option>
-          <option>Slots</option>
-          <option>Dice</option>
-          <option>Cards</option>
+        <h2 class="text-2xl font-bold text-accent-600 dark:text-accent-400 uppercase">Recent Games</h2>
+        <select
+          value={selectedGameType}
+          onchange={handleGameTypeFilter}
+          class="px-4 py-2 rounded-lg border-2 border-primary-300 dark:border-primary-500/30 bg-primary-50 dark:bg-primary-900/20 text-sm text-primary-700 dark:text-primary-300 focus:border-accent-500 focus:ring-2 focus:ring-accent-500"
+        >
+          <option value="all">All Games</option>
+          <option value="slots">Slots</option>
+          <option value="keno">Keno</option>
+          <option value="roulette">Roulette</option>
         </select>
       </div>
     </CardHeader>
     <CardContent>
-      <div class="space-y-4">
-        {#each gameHistory as game (game.id)}
-          {@const GameIcon = getGameIcon(game.gameType)}
-          {@const isWin = game.profit > 0}
+      {#if gameHistory.length === 0}
+        <div class="text-center py-12">
+          <p class="text-primary-600 dark:text-primary-400 text-lg">No game history found</p>
+          <p class="text-primary-600/70 dark:text-primary-400/70 text-sm mt-2">Start playing to see your game history here</p>
+        </div>
+      {:else}
+        <div class="space-y-4">
+          {#each gameHistory as game (game.id)}
+            {@const GameIcon = getGameIcon(game.gameType)}
+            {@const isWin = game.profit > 0}
+            {@const totalBet = game.gameType === 'slots' && game.betPerLine && game.selectedPaylines 
+              ? (game.betPerLine * game.selectedPaylines) / 1_000_000 
+              : game.betAmount}
+            {@const Icon = GameIcon}
 
           <div
-            class="p-6 rounded-xl border-2 transition-all hover:bg-gold-500/5 {isWin
-              ? 'border-green-500/30 bg-green-500/5'
-              : 'border-ruby-500/30 bg-ruby-500/5'}"
+            class="p-6 rounded-xl border-2 transition-all hover:bg-accent-500/5 {isWin
+              ? 'border-success-300 dark:border-success-500/30 bg-success-50 dark:bg-success-900/10'
+              : 'border-error-300 dark:border-error-500/30 bg-error-50 dark:bg-error-900/10'}"
           >
             <div class="grid md:grid-cols-12 gap-4 items-center">
               <!-- Game Icon & Name -->
               <div class="md:col-span-3 flex items-center gap-3">
-                <div class="text-gold-400">
-                  <svelte:component this={GameIcon} size={32} />
+                <div class="text-accent-600 dark:text-accent-400">
+                  <Icon size={32} />
                 </div>
                 <div>
-                  <div class="font-bold text-neutral-200">{game.gameName}</div>
-                  <div class="text-xs text-neutral-500">
+                  <div class="font-bold text-primary-700 dark:text-primary-300">{game.gameName}</div>
+                  <div class="text-xs text-primary-600/70 dark:text-primary-400/70">
                     {new Date(game.createdAt).toLocaleString()}
                   </div>
                 </div>
@@ -206,112 +348,227 @@
                 <ChainBadge chain={game.chain} />
               </div>
 
-              <!-- Bet Amount -->
+              <!-- Total Bet Amount -->
               <div class="md:col-span-2 text-center">
-                <div class="text-xs text-neutral-500 mb-1">Bet</div>
-                <div class="font-bold text-neutral-300">
-                  ${game.betAmount.toFixed(2)}
+                <div class="text-xs text-primary-600 dark:text-primary-400 mb-1">Total Bet</div>
+                <div class="font-bold text-primary-700 dark:text-primary-300">
+                  {formatVoi(totalBet * 1_000_000)} VOI
                 </div>
+                {#if game.gameType === 'slots' && game.betPerLine && game.selectedPaylines}
+                  <div class="text-xs text-primary-600/70 dark:text-primary-400/70 mt-0.5">
+                    {formatVoi(game.betPerLine)} × {game.selectedPaylines}
+                  </div>
+                {/if}
               </div>
 
               <!-- Payout -->
               <div class="md:col-span-2 text-center">
-                <div class="text-xs text-neutral-500 mb-1">Payout</div>
-                <div class="font-bold text-neutral-300">
-                  ${game.payout.toFixed(2)}
+                <div class="text-xs text-primary-600 dark:text-primary-400 mb-1">Payout</div>
+                <div class="font-bold text-primary-700 dark:text-primary-300">
+                  {formatVoi(game.payout * 1_000_000)} VOI
                 </div>
               </div>
 
               <!-- Profit -->
               <div class="md:col-span-2 text-center">
-                <div class="text-xs text-neutral-500 mb-1">Profit</div>
-                <div class="font-black text-lg {isWin ? 'text-green-400' : 'text-ruby-400'}">
-                  {isWin ? '+' : ''}${game.profit.toFixed(2)}
+                <div class="text-xs text-primary-600 dark:text-primary-400 mb-1">Profit</div>
+                <div class="font-black text-lg {isWin ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}">
+                  {isWin ? '+' : ''}{formatVoi(game.profit * 1_000_000)} VOI
                 </div>
               </div>
 
-              <!-- Verify Button -->
-              <div class="md:col-span-1 flex justify-center">
-                <button
-                  class="p-2 rounded-lg border border-gold-500/30 text-gold-400 hover:bg-gold-500/10 transition-colors"
-                  title="Verify on blockchain"
-                >
-                  <CheckCircleIcon size={20} />
-                </button>
+              <!-- Action Buttons -->
+              <div class="md:col-span-1 flex justify-center gap-2">
+                {#if game.gameType === 'slots' && game.txHash && game.betPerLine && game.selectedPaylines}
+                  <a
+                    href={getReplayUrl(game) || '#'}
+                    target="_blank"
+                    class="p-2 rounded-lg border border-accent-500/30 text-accent-600 dark:text-accent-400 hover:bg-accent-500/10 transition-colors"
+                    title="View replay"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+                      <path d="M21 3v5h-5"></path>
+                      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+                      <path d="M3 21v-5h5"></path>
+                    </svg>
+                  </a>
+                {/if}
               </div>
             </div>
 
             <!-- Expandable Details -->
-            <details class="mt-4">
-              <summary class="cursor-pointer text-sm text-neutral-500 hover:text-gold-400 uppercase tracking-wide font-bold">
+            <details class="mt-4" ontoggle={(e) => handleDetailsToggle(e, game)}>
+              <summary class="cursor-pointer text-sm text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 uppercase tracking-wide font-bold transition-colors">
                 View Details
               </summary>
-              <div class="mt-4 p-4 bg-neutral-900 rounded-lg border border-gold-900/20 space-y-3">
-                <!-- Result -->
-                <div>
-                  <div class="text-xs text-neutral-500 mb-2">Result:</div>
-                  {#if game.gameType === 'slots'}
-                    <div class="flex gap-2">
-                      {#each game.result.reels as symbol, idx (idx)}
-                        <div
-                          class="w-12 h-12 rounded-lg bg-neutral-800 border border-gold-900/20 flex items-center justify-center text-2xl"
-                        >
-                          {symbol}
+              <div class="mt-4 p-4 rounded-lg border-2 space-y-3 {isWin
+                ? 'bg-success-100 dark:bg-success-900/20 border-success-300 dark:border-success-500/30'
+                : 'bg-error-100 dark:bg-error-900/20 border-error-300 dark:border-error-500/30'}"
+              >
+                <!-- Grid Display for Slots -->
+                {#if game.gameType === 'slots'}
+                  {@const gameGridData = gridData[game.id]}
+                  {#if gameGridData?.loading}
+                    <div class="text-center py-8">
+                      <div class="text-primary-600 dark:text-primary-400">Loading grid...</div>
+                    </div>
+                  {:else if gameGridData?.error}
+                    <div class="text-center py-8">
+                      <div class="text-error-600 dark:text-error-400 text-sm font-medium">Unable to reconstruct grid: {gameGridData.error}</div>
+                      <div class="text-primary-600/70 dark:text-primary-400/70 text-xs mt-2">Showing simplified result instead</div>
+                    </div>
+                    <!-- Fallback to simple display -->
+                    {#if 'reels' in game.result}
+                      <div>
+                        <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Result:</div>
+                        <div class="flex gap-2 items-center">
+                          {#each game.result.reels as symbol, idx (idx)}
+                            <div
+                              class="w-12 h-12 rounded-lg bg-primary-100 dark:bg-primary-900/30 border-2 border-primary-300 dark:border-primary-500/30 flex items-center justify-center text-2xl shadow-sm"
+                            >
+                              {getSymbolEmoji(symbol)}
+                            </div>
+                          {/each}
+                          <div class="flex items-center ml-4">
+                            <span class="text-primary-600 dark:text-primary-400 font-bold text-lg">
+                              {game.result.multiplier > 0 ? `${game.result.multiplier.toFixed(2)}x` : '0x'}
+                            </span>
+                          </div>
                         </div>
-                      {/each}
-                      <div class="flex items-center ml-4">
-                        <span class="text-gold-400 font-bold">
-                          {game.result.multiplier}x
-                        </span>
                       </div>
+                    {/if}
+                  {:else if gameGridData?.grid && gameGridData.grid.length > 0}
+                    <div>
+                      <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Grid Outcome:</div>
+                      <HistoryReelGrid grid={gameGridData.grid} winningLines={gameGridData.winningLines} />
+                      {#if gameGridData.winningLines.length > 0}
+                        <div class="mt-3 p-3 rounded-md bg-success-100 dark:bg-success-900/20 border border-success-300 dark:border-success-500/30">
+                          <div class="font-bold text-success-700 dark:text-success-300 mb-2 text-sm">Winning Lines: {gameGridData.winningLines.length}</div>
+                          <div class="space-y-1">
+                            {#each gameGridData.winningLines as line}
+                              <div class="text-primary-700 dark:text-primary-300 text-xs">
+                                Payline {line.paylineIndex + 1}: <span class="font-semibold text-accent-600 dark:text-accent-400">{line.matchCount}x {line.symbol}</span> = <span class="font-bold text-success-600 dark:text-success-400">{formatVoi(line.payout)} VOI</span>
+                              </div>
+                            {/each}
+                          </div>
+                        </div>
+                      {:else}
+                        <div class="mt-3 text-xs text-primary-600/70 dark:text-primary-400/70">No winning lines</div>
+                      {/if}
                     </div>
-                  {:else if game.gameType === 'dice'}
-                    <div class="text-neutral-300">
-                      Roll: <span class="font-bold">{game.result.roll}</span> |
-                      Prediction: <span class="font-bold">{game.result.prediction}</span> |
-                      Multiplier: <span class="text-gold-400 font-bold">{game.result.multiplier}x</span>
-                    </div>
-                  {:else if game.gameType === 'cards'}
-                    <div class="text-neutral-300">
-                      Outcome: <span class="font-bold">{game.result.outcome}</span> |
-                      Multiplier: <span class="text-gold-400 font-bold">{game.result.multiplier}x</span>
-                    </div>
+                  {:else}
+                    <!-- Fallback to simple display if grid not loaded yet -->
+                    {#if 'reels' in game.result}
+                      <div>
+                        <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Result:</div>
+                        <div class="flex gap-2 items-center">
+                          {#each game.result.reels as symbol, idx (idx)}
+                            <div
+                              class="w-12 h-12 rounded-lg bg-primary-100 dark:bg-primary-900/30 border-2 border-primary-300 dark:border-primary-500/30 flex items-center justify-center text-2xl shadow-sm"
+                            >
+                              {getSymbolEmoji(symbol)}
+                            </div>
+                          {/each}
+                          <div class="flex items-center ml-4">
+                            <span class="text-primary-600 dark:text-primary-400 font-bold text-lg">
+                              {game.result.multiplier > 0 ? `${game.result.multiplier.toFixed(2)}x` : '0x'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    {/if}
                   {/if}
-                </div>
+                {:else if game.gameType === 'keno' && 'numbers' in game.result}
+                  <div>
+                    <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Result:</div>
+                    <div class="text-primary-700 dark:text-primary-300">
+                      Numbers: <span class="font-bold text-accent-600 dark:text-accent-400">{game.result.numbers.join(', ')}</span> |
+                      Hits: <span class="font-bold text-accent-600 dark:text-accent-400">{game.result.hits}</span> |
+                      Multiplier: <span class="text-success-600 dark:text-success-400 font-bold">{game.result.multiplier.toFixed(2)}x</span>
+                    </div>
+                  </div>
+                {:else if game.gameType === 'roulette' && 'number' in game.result}
+                  <div>
+                    <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Result:</div>
+                    <div class="text-primary-700 dark:text-primary-300">
+                      Number: <span class="font-bold text-accent-600 dark:text-accent-400">{game.result.number}</span> |
+                      Color: <span class="font-bold text-accent-600 dark:text-accent-400">{game.result.color}</span> |
+                      Multiplier: <span class="text-success-600 dark:text-success-400 font-bold">{game.result.multiplier.toFixed(2)}x</span>
+                    </div>
+                  </div>
+                {:else}
+                  <div>
+                    <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Result:</div>
+                    <div class="text-primary-700 dark:text-primary-300">
+                      Multiplier: <span class="text-success-600 dark:text-success-400 font-bold">{game.result.multiplier > 0 ? `${game.result.multiplier.toFixed(2)}x` : '0x'}</span>
+                    </div>
+                  </div>
+                {/if}
 
                 <!-- Transaction Hash -->
-                <div>
-                  <div class="text-xs text-neutral-500 mb-2">Transaction:</div>
-                  <code class="block text-xs font-mono text-neutral-400 bg-neutral-950 p-2 rounded border border-gold-900/20 overflow-x-auto">
-                    {game.txHash}
-                  </code>
-                </div>
+                {#if game.txHash}
+                  <div>
+                    <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Transaction:</div>
+                    <a
+                      href={getBlockchainExplorerUrl(game.chain, game.txHash)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="block"
+                    >
+                      <code class="block text-xs font-mono text-primary-700 dark:text-primary-300 bg-primary-50 dark:bg-primary-900/20 p-2 rounded-md border-2 border-primary-300 dark:border-primary-500/30 overflow-x-auto hover:text-primary-700 dark:hover:text-primary-200 hover:border-primary-500 dark:hover:border-primary-400 transition-colors">
+                        {normalizeTxIdForDisplay(game.txHash, game.chain)}
+                      </code>
+                    </a>
+                  </div>
+                {/if}
 
                 <!-- Provably Fair Seed -->
-                <div>
-                  <div class="text-xs text-neutral-500 mb-2">Provably Fair Seed:</div>
-                  <code class="block text-xs font-mono text-neutral-400 bg-neutral-950 p-2 rounded border border-gold-900/20">
-                    {game.seed}
-                  </code>
-                </div>
+                {#if game.seed}
+                  <div>
+                    <div class="text-xs text-primary-600 dark:text-primary-400 mb-2 uppercase tracking-wide font-semibold">Provably Fair Seed:</div>
+                    <code class="block text-xs font-mono text-primary-700 dark:text-primary-300 bg-primary-50 dark:bg-primary-900/20 p-2 rounded-md border-2 border-primary-300 dark:border-primary-500/30">
+                      {game.seed}
+                    </code>
+                  </div>
+                {/if}
               </div>
             </details>
           </div>
         {/each}
-      </div>
-
-      <!-- Pagination Placeholder -->
-      <div class="mt-6 flex justify-center gap-2">
-        <button class="px-4 py-2 rounded-lg border border-gold-500/30 text-gold-400 hover:bg-gold-500/10 transition-colors disabled:opacity-50" disabled>
-          Previous
-        </button>
-        <div class="px-4 py-2 rounded-lg bg-gold-500/20 text-gold-400 font-bold">
-          1
         </div>
-        <button class="px-4 py-2 rounded-lg border border-gold-500/30 text-gold-400 hover:bg-gold-500/10 transition-colors disabled:opacity-50" disabled>
-          Next
-        </button>
-      </div>
+
+        <!-- Pagination -->
+                <div class="mt-6 flex justify-center items-center gap-4">
+                  <button
+                    onclick={handlePrevious}
+                    disabled={pagination.offset === 0}
+                    class="px-4 py-2 rounded-lg border border-accent-500/30 text-accent-600 dark:text-accent-400 hover:bg-accent-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Previous
+                  </button>
+                  <div class="text-sm text-primary-600 dark:text-primary-400">
+                    Page {Math.floor(pagination.offset / pagination.limit) + 1} of {Math.ceil(pagination.total / pagination.limit) || 1}
+                  </div>
+                  <button
+                    onclick={handleNext}
+                    disabled={!pagination.hasMore}
+                    class="px-4 py-2 rounded-lg border border-accent-500/30 text-accent-600 dark:text-accent-400 hover:bg-accent-500/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
+      {/if}
     </CardContent>
   </Card>
 </div>

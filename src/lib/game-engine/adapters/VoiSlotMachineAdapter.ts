@@ -147,48 +147,8 @@ export class VoiSlotMachineAdapter implements BlockchainAdapter {
 		// Reel data is 500 chars (5 reels × 100 chars each) - take only first 500 from config
 		const fullReelData = "_CCC__BD___D_____D_____D__DBDDCC_D_C_D__AD_D_CB_C_A_B___B_______DD___D_C_A_____B__C__D______D_______C_A_____C__DC_____B__B_CD_B___CD__DAD__C__C______CDD_______C_DA________DDD____CDDD___DB____BD__B_______D_D_B_________CD__D__C_C____B__A___CDB__BC_D__D__CD_C_________D___A_DC__B______B_DDDDD_____C_CDA_C___C_CDDDDC__D__CCB____D_B__B______D______BD_____A____D_D__AD__D__B___B__C____A____C_D_D___C__CDD___________________CC___DC___DDB_BDADDC______B____C__D___D__CA_______CD__D_D_C_______BD_C_DBA_BDD__CD_";
 		this.cachedReels = fullReelData.substring(0, 500); // Take only first 500 chars (5 reels × 100)
-		this.cachedPaylines = [
-			// 1. Middle line
-			[1, 1, 1, 1, 1],
-			// 2. Top line
-			[0, 0, 0, 0, 0],
-			// 3. Bottom line
-			[2, 2, 2, 2, 2],
-			// 4. V shape
-			[0, 1, 2, 1, 0],
-			// 5. Inverted V
-			[2, 1, 0, 1, 2],
-			// 6. Diagonal down
-			[0, 1, 1, 2, 2],
-			// 7. Diagonal up
-			[2, 1, 1, 0, 0],
-			// 8. Zigzag top
-			[0, 0, 1, 0, 0],
-			// 9. Zigzag bottom
-			[2, 2, 1, 2, 2],
-			// 10. Staircase down
-			[0, 1, 2, 2, 1],
-			// 11. Staircase up
-			[2, 1, 0, 0, 1],
-			// 12. Slight diagonal
-			[1, 0, 0, 0, 1],
-			// 13. Slight diagonal
-			[1, 2, 2, 2, 1],
-			// 14. Top-bottom-top
-			[0, 2, 0, 2, 0],
-			// 15. Bottom-top-bottom
-			[2, 0, 2, 0, 2],
-			// 16. Outer rails up
-			[0, 2, 1, 2, 0],
-			// 17. Outer rails down
-			[2, 0, 1, 0, 2],
-			// 18. Left hook
-			[0, 0, 1, 2, 2],
-			// 19. Right hook
-			[2, 2, 1, 0, 0],
-			// 20. Wave
-			[1, 0, 1, 2, 1]
-		];
+		// Use PAYLINE_PATTERNS from gameConstants instead of duplicating
+		this.cachedPaylines = PAYLINE_PATTERNS as number[][];
 
 		log.debug('contract data set from config', {
 			reelCount: this.cachedReelCount,
@@ -669,10 +629,11 @@ export class VoiSlotMachineAdapter implements BlockchainAdapter {
 			reels.push(reel);
 		}
 
-		const maxPaylines = this.cachedPaylines?.length ?? 20;
+		const maxPaylines = this.cachedPaylines?.length ?? PAYLINE_PATTERNS.length;
 
 		// Build paytable from cached multipliers - NO FALLBACKS
 		// If multipliers aren't cached, getContractConfig should not be called
+		// Use DEFAULT_PAYTABLE from gameConstants as base (now has correct contract multipliers)
 		const paytableSymbols = DEFAULT_PAYTABLE.map((symbolConfig) => {
 			const match3Key = `${symbolConfig.symbol}_3`;
 			const match4Key = `${symbolConfig.symbol}_4`;

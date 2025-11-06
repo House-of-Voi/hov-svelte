@@ -109,6 +109,7 @@ export interface MimirSpinEvent {
   amount: string;
   payout: string;
   net_result: string;
+  max_payline_index?: number;
   result_data?: {
     reelStops: number[];
     wins: unknown[];

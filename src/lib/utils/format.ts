@@ -24,11 +24,11 @@ export function formatNumberCompact(num: number): string {
 export function formatCurrency(microVoi: number): string {
   const voi = microVoi / 1_000_000;
 
-  if (voi === 0) return '$0';
-  if (voi < 0.01) return `$${voi.toExponential(2)}`;
-  if (voi < 1000) return `$${voi.toFixed(2)}`;
+  if (voi === 0) return '0';
+  if (voi < 0.01) return `${voi.toExponential(2)}`;
+  if (voi < 1000) return `${voi.toFixed(2)}`;
 
-  return `$${formatNumberCompact(voi)}`;
+  return `${formatNumberCompact(voi)}`;
 }
 
 /**

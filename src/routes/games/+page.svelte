@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PageData } from './$types';
+  import { onMount, onDestroy } from 'svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import CardContent from '$lib/components/ui/CardContent.svelte';
   import CardHeader from '$lib/components/ui/CardHeader.svelte';
@@ -14,6 +15,7 @@
     formatVoi,
     truncateAddress,
   } from '$lib/utils/format';
+  import { recentWinsStore, recentWins, recentWinsLoading, recentWinsConnected } from '$lib/stores/recentWins';
 
   let { data }: { data: PageData } = $props();
 
@@ -47,23 +49,62 @@
   const winRateLabel =
     data.statsScope === 'Today' ? 'Win Rate Today' : 'Win Rate All Time';
 
-  function resolveWinnerDisplayName(winner: typeof data.recentWinners[0]): string {
-    if (winner.display_name && winner.display_name.trim().length > 0) {
-      return winner.display_name;
-    }
-
-    if (winner.linked_addresses && winner.linked_addresses.length > 0) {
-      return truncateAddress(winner.linked_addresses[0]);
-    }
-
-    return truncateAddress(winner.identifier);
-  }
-
   // Check if user can play
   const canPlay = Boolean(data.session?.gameAccessGranted);
 
   // Check if there are profile stats to show
   const hasProfileData = data.session && data.profileStats;
+
+  // Get contract IDs from games for filtering
+  const contractIds = data.games
+    .map((game) => Number(game.contract_id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  // Initialize recent wins store on mount
+  onMount(async () => {
+    if (contractIds.length > 0) {
+      await recentWinsStore.initialize({
+        contractIds,
+        maxWins: 10,
+      });
+    }
+  });
+
+  // Cleanup on destroy
+  onDestroy(() => {
+    recentWinsStore.destroy();
+  });
+
+  function formatRelativeTime(date: Date): string {
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffSeconds = Math.floor(diffMs / 1000);
+    const diffMinutes = Math.floor(diffSeconds / 60);
+    const diffHours = Math.floor(diffMinutes / 60);
+    const diffDays = Math.floor(diffHours / 24);
+    const diffWeeks = Math.floor(diffDays / 7);
+    const diffMonths = Math.floor(diffDays / 30);
+
+    if (diffSeconds < 60) {
+      return 'just now';
+    } else if (diffMinutes < 60) {
+      return `${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''} ago`;
+    } else if (diffHours < 24) {
+      return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+    } else if (diffDays < 7) {
+      return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+    } else if (diffWeeks < 4) {
+      return `${diffWeeks} week${diffWeeks !== 1 ? 's' : ''} ago`;
+    } else if (diffMonths < 12) {
+      return `${diffMonths} month${diffMonths !== 1 ? 's' : ''} ago`;
+    } else {
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+    }
+  }
 </script>
 
 <svelte:head>
@@ -227,45 +268,58 @@
         </CardHeader>
         <CardContent class="space-y-3">
           {#if hasProfileData}
-            {@const totalPlayedDisplay = data.profileStats
+            {@const totalBetDisplay = data.profileStats
               ? `${formatVoi(data.profileStats.total_bet)} VOI`
               : '0.00 VOI'}
-            {@const netResultMicro = data.profileStats ? BigInt(data.profileStats.net_result) : 0n}
-            {@const netResultFormatted = data.profileStats
-              ? formatVoi(data.profileStats.net_result)
-              : '0.00'}
-            {@const earningsDisplay =
-              data.profileStats && netResultMicro > 0n
-                ? `+${netResultFormatted} VOI`
-                : `${netResultFormatted} VOI`}
-            {@const earningsClass =
-              netResultMicro >= 0n
-                ? 'text-success-600 dark:text-success-400'
-                : 'text-error-600 dark:text-error-400'}
-            {@const sessionsDisplay = formatNumber(data.profileStats?.total_spins ?? 0)}
+            {@const totalSpinsDisplay = formatNumber(data.profileStats?.total_spins ?? 0)}
+            {@const winRateDisplay = data.profileStats
+              ? formatPercent(Math.round(data.profileStats.win_rate))
+              : '0%'}
+            {@const biggestWinDisplay = data.profileStats
+              ? `${formatVoi(data.profileStats.largest_win)} VOI`
+              : '0.00 VOI'}
+            {@const lastSpinTime = data.profileStats?.last_spin
+              ? formatRelativeTime(new Date(data.profileStats.last_spin))
+              : 'Never'}
 
             <div class="flex justify-between py-2 border-b border-neutral-200 dark:border-neutral-700">
               <span class="text-neutral-700 dark:text-neutral-300">
-                Total Played
+                Total Bet
               </span>
               <span class="text-neutral-950 dark:text-white font-semibold">
-                {totalPlayedDisplay}
+                {totalBetDisplay}
               </span>
             </div>
             <div class="flex justify-between py-2 border-b border-neutral-200 dark:border-neutral-700">
               <span class="text-neutral-700 dark:text-neutral-300">
-                Total Earnings
+                Total Spins
               </span>
-              <span class="{earningsClass} font-semibold">
-                {earningsDisplay}
+              <span class="text-neutral-950 dark:text-white font-semibold">
+                {totalSpinsDisplay}
+              </span>
+            </div>
+            <div class="flex justify-between py-2 border-b border-neutral-200 dark:border-neutral-700">
+              <span class="text-neutral-700 dark:text-neutral-300">
+                Win Rate
+              </span>
+              <span class="text-neutral-950 dark:text-white font-semibold">
+                {winRateDisplay}
+              </span>
+            </div>
+            <div class="flex justify-between py-2 border-b border-neutral-200 dark:border-neutral-700">
+              <span class="text-neutral-700 dark:text-neutral-300">
+                Biggest Win
+              </span>
+              <span class="text-neutral-950 dark:text-white font-semibold">
+                {biggestWinDisplay}
               </span>
             </div>
             <div class="flex justify-between py-2">
               <span class="text-neutral-700 dark:text-neutral-300">
-                Sessions
+                Last Spin
               </span>
               <span class="text-neutral-950 dark:text-white font-semibold">
-                {sessionsDisplay}
+                {lastSpinTime}
               </span>
             </div>
           {:else}
@@ -281,51 +335,53 @@
         </CardContent>
       </Card>
 
-      <!-- Recent Winners Card -->
+      <!-- Recent Wins Card -->
       <Card>
         <CardHeader>
           <h3 class="text-lg font-semibold text-neutral-950 dark:text-white">
-            Recent Winners
+            Recent Wins
           </h3>
         </CardHeader>
         <CardContent class="space-y-3">
-          {#if data.recentWinners.length === 0}
+          {#if $recentWinsLoading}
+            <div class="text-neutral-500 dark:text-neutral-400 text-sm text-center py-6">
+              Loading recent wins...
+            </div>
+          {:else if !$recentWinsConnected}
+            <div class="text-neutral-500 dark:text-neutral-400 text-sm text-center py-6">
+              Connecting to live feed...
+            </div>
+          {:else if $recentWins.length === 0}
             <div class="text-neutral-500 dark:text-neutral-400 text-sm text-center py-6">
               No recent wins yet. Be the first!
             </div>
           {:else}
-            <div class="space-y-4">
-              {#each data.recentWinners as winner}
-                {@const name = resolveWinnerDisplayName(winner)}
-                {@const totalWonFormatted = formatVoi(winner.total_won ?? '0')}
-                {@const winnerNetResultMicro = BigInt(winner.net_result ?? '0')}
-                {@const winnerNetResultFormatted = formatVoi(winner.net_result ?? '0')}
-                {@const winnerNetResultDisplay =
-                  winnerNetResultMicro > 0n
-                    ? `+${winnerNetResultFormatted} VOI`
-                    : `${winnerNetResultFormatted} VOI`}
-                {@const winnerNetResultClass =
-                  winnerNetResultMicro >= 0n
-                    ? 'text-success-600 dark:text-success-400'
-                    : 'text-error-600 dark:text-error-400'}
-                {@const winRate = winner.win_rate ?? 0}
+            <div class="space-y-3">
+              {#each $recentWins as win}
+                {@const playerName = truncateAddress(win.who)}
+                {@const payoutFormatted = formatVoi(win.payout.toString())}
+                {@const betAmountFormatted = formatVoi(win.total_bet_amount.toString())}
+                {@const multiplier = Number(win.payout) / Number(win.total_bet_amount)}
+                {@const timeAgo = formatRelativeTime(win.created_at)}
 
-                <div class="flex justify-between items-start gap-4">
-                  <div>
-                    <p class="text-sm font-semibold text-neutral-950 dark:text-white">
-                      {name}
+                <div class="flex justify-between items-start gap-4 py-2 border-b border-neutral-200 dark:border-neutral-700 last:border-0">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-semibold text-neutral-950 dark:text-white truncate">
+                      {playerName}
                     </p>
                     <p class="text-xs text-neutral-600 dark:text-neutral-400">
-                      Won {totalWonFormatted} VOI • {formatNumber(winner.total_spins ?? 0)} spins
+                      {timeAgo}
                     </p>
                   </div>
-                  <div class="text-right">
-                    <p class="text-sm font-semibold {winnerNetResultClass}">
-                      {winnerNetResultDisplay}
+                  <div class="text-right flex-shrink-0">
+                    <p class="text-sm font-semibold text-success-600 dark:text-success-400">
+                      {payoutFormatted} VOI
                     </p>
-                    <p class="text-xs text-neutral-600 dark:text-neutral-400">
-                      {formatPercent(winRate)}
-                    </p>
+                    {#if multiplier > 0}
+                      <p class="text-xs text-neutral-600 dark:text-neutral-400">
+                        {multiplier.toFixed(1)}x
+                      </p>
+                    {/if}
                   </div>
                 </div>
               {/each}
