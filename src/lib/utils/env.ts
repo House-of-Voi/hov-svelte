@@ -3,7 +3,8 @@ import {
   PUBLIC_SUPABASE_URL,
   PUBLIC_SUPABASE_ANON_KEY,
   PUBLIC_CDP_PROJECT_ID,
-  PUBLIC_CDP_API_KEY_NAME
+  PUBLIC_CDP_API_KEY_NAME,
+  PUBLIC_SWAP_API_URL
 } from '$env/static/public';
 import {
   NODE_ENV,
@@ -31,6 +32,11 @@ const ServerEnv = z.object({
   VOI_NODE_URL: z.string().url().optional(),
   VOI_INDEXER_URL: z.string().url().optional(),
 });
+
+// Public environment variables (client-side accessible)
+export const publicEnv = {
+  SWAP_API_URL: PUBLIC_SWAP_API_URL || 'http://localhost:3000'
+};
 
 export const env = ServerEnv.parse({
   NODE_ENV,

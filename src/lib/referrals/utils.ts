@@ -17,3 +17,4 @@ export function formatReferralLink(code: string): string {
   return `${window.location.origin}/r/${code.toUpperCase()}`;
 }
 
+

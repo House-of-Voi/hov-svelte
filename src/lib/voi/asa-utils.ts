@@ -4,6 +4,13 @@ const VOI_NODE_URL = 'https://mainnet-api.voi.nodely.dev';
 const algodClient = new algosdk.Algodv2('', VOI_NODE_URL, '');
 
 /**
+ * Get the algod client instance
+ */
+export function getAlgodClient(): algosdk.Algodv2 {
+	return algodClient;
+}
+
+/**
  * Check if an account is opted into a specific ASA (Algorand Standard Asset)
  * @param address - The account address to check
  * @param assetId - The asset ID to check for opt-in

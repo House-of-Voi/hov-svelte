@@ -3,6 +3,11 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
 	import { generateVoiUri } from '$lib/voi/uri-utils';
+	import { signTransactions } from '$lib/voi/wallet-utils';
+	import { submitTransaction } from '$lib/voi/asa-utils';
+	import { page } from '$app/stores';
+	import { publicEnv } from '$lib/utils/publicEnv';
+	import algosdk from 'algosdk';
 	import QRCode from 'qrcode';
 
 	interface Props {
@@ -15,7 +20,7 @@
 	let { isOpen, onClose, address, usdcBalance = null }: Props = $props();
 
 	// Tab state
-	type Tab = 'transfer' | 'swap';
+	type Tab = 'transfer' | 'buy';
 	let activeTab = $state<Tab>('transfer');
 
 	// Transfer tab state
@@ -23,10 +28,21 @@
 	let copySuccess = $state(false);
 	let amountMicroVoi = $state<number | undefined>(undefined);
 
-	// Swap tab state
+	// Buy tab state
 	let usdcAmount = $state('');
 	let quoteAmount = $state<string | null>(null);
+	let quoteRate = $state<number | null>(null);
+	let priceImpact = $state<number | null>(null);
+	let quoteError = $state<string | null>(null);
 	let isLoadingQuote = $state(false);
+	let isExecutingSwap = $state(false);
+	let swapSuccess = $state(false);
+	let swapTxId = $state<string | null>(null);
+	let unsignedTransactions = $state<string[] | null>(null);
+	let quoteData = $state<any>(null);
+	
+	// Debounce timer for auto-quote
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Generate QR code when modal opens or address/amount changes
 	$effect(() => {
@@ -105,23 +121,164 @@
 		usdcAmount = value;
 		// Clear quote when amount changes
 		quoteAmount = null;
+		quoteRate = null;
+		priceImpact = null;
+		quoteError = null;
+		unsignedTransactions = null;
+		quoteData = null;
+		
+		// Clear existing debounce timer
+		if (debounceTimer) {
+			clearTimeout(debounceTimer);
+		}
+		
+		// Debounce quote fetching (500ms delay)
+		const amount = parseFloat(value);
+		if (value && !isNaN(amount) && amount > 0) {
+			debounceTimer = setTimeout(() => {
+				getQuote();
+			}, 500);
+		}
 	}
 
 	async function getQuote() {
-		if (!usdcAmount || parseFloat(usdcAmount) <= 0) {
+		if (!usdcAmount || parseFloat(usdcAmount) <= 0 || !address) {
 			return;
 		}
 
-		// Placeholder: show mock quote
-		// This will be replaced with actual DEX integration later
 		isLoadingQuote = true;
-		setTimeout(() => {
-			// Mock conversion: 1 USDC ≈ 1.5 VOI (placeholder)
-			const usdc = parseFloat(usdcAmount);
-			const voiAmount = usdc * 1.5;
-			quoteAmount = voiAmount.toFixed(6);
+		quoteError = null;
+		
+		try {
+			// Convert USDC amount to atomic units (6 decimals)
+			const usdcDecimals = 6;
+			const amountAtomic = BigInt(Math.floor(parseFloat(usdcAmount) * 10 ** usdcDecimals)).toString();
+			
+			// Call external Swap API via proxy to handle CORS
+			// If direct call fails, the proxy endpoint will handle it
+			const apiUrl = publicEnv.SWAP_API_URL;
+			const requestBody = {
+				address,
+				inputToken: 302190, // USDC (underlying ASA ID - API will resolve to wrapped ARC200)
+				outputToken: 0, // VOI (underlying ASA ID - API will resolve to wrapped ARC200)
+				amount: amountAtomic,
+				slippageTolerance: 0.01, // 1% default
+				poolId: '395553' // USDC/VOI pool
+			};
+
+			// Try direct call first, fallback to proxy if CORS fails
+			let response: Response;
+			try {
+				response = await fetch(`${apiUrl}/quote`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestBody)
+				});
+			} catch (corsError) {
+				// If CORS fails, use proxy endpoint
+				console.log('Direct API call failed, using proxy:', corsError);
+				response = await fetch('/api/proxy/swap/quote', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestBody)
+				});
+			}
+
+			const data = await response.json();
+
+			if (!response.ok) {
+				throw new Error(data.error || data.message || 'Failed to get quote');
+			}
+
+			if (data.quote) {
+				// Convert output amount from atomic units to VOI (6 decimals)
+				const voiDecimals = 6;
+				const outputAmount = BigInt(data.quote.outputAmount);
+				const voiAmount = Number(outputAmount) / 10 ** voiDecimals;
+				quoteAmount = voiAmount.toFixed(6);
+				quoteRate = data.quote.rate;
+				priceImpact = data.quote.priceImpact;
+				unsignedTransactions = data.unsignedTransactions;
+				quoteData = data;
+			}
+		} catch (error) {
+			console.error('Error getting quote:', error);
+			quoteError = error instanceof Error ? error.message : 'Failed to get quote';
+			quoteAmount = null;
+			quoteRate = null;
+			priceImpact = null;
+			unsignedTransactions = null;
+			quoteData = null;
+		} finally {
 			isLoadingQuote = false;
-		}, 500);
+		}
+	}
+
+	async function executeSwap() {
+		if (!unsignedTransactions || unsignedTransactions.length === 0) {
+			quoteError = 'No transactions available. Please get a quote first.';
+			return;
+		}
+
+		isExecutingSwap = true;
+		quoteError = null;
+		
+		try {
+			// Decode base64 transactions
+			const transactions = unsignedTransactions.map((txnBase64: string) => {
+				const binaryString = atob(txnBase64);
+				const bytes = new Uint8Array(binaryString.length);
+				for (let i = 0; i < binaryString.length; i++) {
+					bytes[i] = binaryString.charCodeAt(i);
+				}
+				return algosdk.decodeUnsignedTransaction(bytes);
+			});
+
+			// Get session from page data (contains CDP info if applicable)
+			const session = $page.data.session;
+			
+			// Sign all transactions (wallet-utils handles CDP wallet derivation)
+			const signedTxns = await signTransactions(transactions, address, session);
+
+			// Submit transactions as a GROUP (must be submitted together!)
+			// Transaction groups must be submitted in a single sendRawTransaction call
+			// Submitting them individually breaks the group and causes "incomplete group" errors
+			const { getAlgodClient } = await import('$lib/voi/asa-utils');
+			const algodClient = getAlgodClient();
+			
+			// Send all signed transactions as a group in a single call
+			const result = await algodClient.sendRawTransaction(signedTxns).do();
+			const groupTxId = result.txid || result.txId;
+			
+			if (!groupTxId) {
+				throw new Error('Failed to get transaction ID from group submission');
+			}
+
+			swapTxId = groupTxId; // Use the group transaction ID
+			swapSuccess = true;
+			
+			// Reset form after successful swap
+			setTimeout(() => {
+				usdcAmount = '';
+				quoteAmount = null;
+				quoteRate = null;
+				priceImpact = null;
+				unsignedTransactions = null;
+				quoteData = null;
+				swapSuccess = false;
+				swapTxId = null;
+			}, 5000);
+		} catch (error) {
+			console.error('Error executing swap:', error);
+			quoteError = error instanceof Error ? error.message : 'Failed to execute swap';
+			swapSuccess = false;
+		} finally {
+			isExecutingSwap = false;
+		}
 	}
 
 	function handleClose() {
@@ -129,7 +286,36 @@
 		amountMicroVoi = undefined;
 		usdcAmount = '';
 		quoteAmount = null;
+		quoteRate = null;
+		priceImpact = null;
+		quoteError = null;
+		unsignedTransactions = null;
+		quoteData = null;
+		swapSuccess = false;
+		swapTxId = null;
+		if (debounceTimer) {
+			clearTimeout(debounceTimer);
+		}
 		onClose();
+	}
+
+	// Format USDC balance with proper precision
+	function formatUsdcBalance(balance: string, decimals: number): string {
+		const balanceBigInt = BigInt(balance);
+		const divisor = BigInt(10 ** decimals);
+		const whole = balanceBigInt / divisor;
+		const remainder = balanceBigInt % divisor;
+		
+		if (remainder === 0n) {
+			return whole.toString();
+		}
+		
+		// Pad remainder with zeros to match decimals
+		const remainderStr = remainder.toString().padStart(decimals, '0');
+		// Remove trailing zeros
+		const trimmedRemainder = remainderStr.replace(/0+$/, '');
+		
+		return trimmedRemainder ? `${whole}.${trimmedRemainder}` : whole.toString();
 	}
 </script>
 
@@ -151,13 +337,13 @@
 			<button
 				type="button"
 				onclick={() => {
-					activeTab = 'swap';
+					activeTab = 'buy';
 				}}
-				class="px-4 py-2 text-sm font-medium transition-colors border-b-2 {activeTab === 'swap'
+				class="px-4 py-2 text-sm font-medium transition-colors border-b-2 {activeTab === 'buy'
 					? 'border-primary-500 text-primary-600 dark:text-primary-400'
 					: 'border-transparent text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'}"
 			>
-				Swap USDC → VOI
+				Buy with USDC
 			</button>
 		</div>
 
@@ -275,14 +461,13 @@
 			</div>
 		{/if}
 
-		<!-- Swap USDC → VOI Tab -->
-		{#if activeTab === 'swap'}
+		<!-- Buy with USDC Tab -->
+		{#if activeTab === 'buy'}
 			<div class="space-y-6">
 				<!-- Instructions -->
-				<div class="p-4 bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 rounded-lg">
-					<p class="text-sm text-warning-700 dark:text-warning-300">
-						<strong>Coming Soon:</strong> DEX swap functionality is being implemented. You can enter an amount
-						to see a placeholder quote, but the actual swap will be available in a future update.
+				<div class="p-4 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700 rounded-lg">
+					<p class="text-sm text-primary-700 dark:text-primary-300">
+						Buy VOI tokens with USDC. Enter an amount to see the current exchange rate and complete your purchase.
 					</p>
 				</div>
 
@@ -292,7 +477,7 @@
 						<div class="flex items-center justify-between">
 							<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Available USDC:</span>
 							<span class="text-lg font-bold text-warning-600 dark:text-warning-400 font-mono">
-								{(BigInt(usdcBalance.balance) / BigInt(10 ** usdcBalance.decimals)).toString()}
+								{formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)}
 							</span>
 						</div>
 					</div>
@@ -313,44 +498,79 @@
 						step="0.01"
 						min="0"
 					/>
+					{#if usdcBalance && usdcAmount}
+						{@const amount = parseFloat(usdcAmount)}
+						{@const available = parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals))}
+						{#if !isNaN(amount) && amount > available}
+							<p class="text-xs text-error-600 dark:text-error-400">
+								Insufficient balance. You have {formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)} USDC available.
+							</p>
+						{/if}
+					{/if}
 				</div>
 
-				<!-- Quote Button -->
-				<Button
-					variant="primary"
-					size="md"
-					onclick={getQuote}
-					disabled={!usdcAmount || parseFloat(usdcAmount) <= 0 || isLoadingQuote}
-					loading={isLoadingQuote}
-					class="w-full"
-				>
-					Get Quote
-				</Button>
-
-				<!-- Quote Display -->
-				{#if quoteAmount}
-					<div class="p-4 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-700 rounded-lg">
+				<!-- Quote Display (auto-updates as user types) -->
+				{#if isLoadingQuote}
+					<div class="p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
+						<p class="text-sm text-neutral-600 dark:text-neutral-400 text-center">Loading quote...</p>
+					</div>
+				{:else if quoteError}
+					<div class="p-4 bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-700 rounded-lg">
+						<p class="text-sm text-error-700 dark:text-error-300">{quoteError}</p>
+					</div>
+				{:else if quoteAmount && !quoteError}
+					<div class="p-4 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-700 rounded-lg space-y-3">
 						<div class="space-y-2">
-							<p class="text-sm font-medium text-success-700 dark:text-success-300">Estimated Quote:</p>
+							<p class="text-sm font-medium text-success-700 dark:text-success-300">Purchase Quote:</p>
 							<p class="text-2xl font-bold text-success-600 dark:text-success-400">
 								{usdcAmount} USDC ≈ {quoteAmount} VOI
 							</p>
-							<p class="text-xs text-success-600 dark:text-success-400 italic">
-								* This is a placeholder quote. Actual swap rates will vary.
+							{#if quoteRate}
+								<p class="text-xs text-success-600 dark:text-success-400">
+									Rate: {quoteRate.toFixed(6)} VOI per USDC
+								</p>
+							{/if}
+							{#if priceImpact !== null && priceImpact > 0.01}
+								<p class="text-xs text-warning-600 dark:text-warning-400">
+									Price Impact: {(priceImpact * 100).toFixed(4)}%
+								</p>
+							{/if}
+						</div>
+					</div>
+				{/if}
+
+				<!-- Success Message -->
+				{#if swapSuccess && swapTxId}
+					<div class="p-4 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-700 rounded-lg">
+						<div class="space-y-2">
+							<p class="text-sm font-medium text-success-700 dark:text-success-300">Purchase Successful!</p>
+							<p class="text-xs text-success-600 dark:text-success-400">
+								Transaction ID: <code class="font-mono">{swapTxId}</code>
 							</p>
 						</div>
 					</div>
 				{/if}
 
-				<!-- Note -->
-				<div class="p-3 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
-					<p class="text-xs text-neutral-600 dark:text-neutral-400">
-						DEX swap functionality will be implemented in a future update. For now, please use the Transfer VOI
-						option to deposit tokens directly.
-					</p>
-				</div>
+				<!-- Buy Button -->
+				<Button
+					variant="primary"
+					size="md"
+					onclick={executeSwap}
+					disabled={
+						!usdcAmount ||
+						parseFloat(usdcAmount) <= 0 ||
+						!quoteAmount ||
+						!unsignedTransactions ||
+						isExecutingSwap ||
+						isLoadingQuote ||
+						(usdcBalance && parseFloat(usdcAmount) > parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)))
+					}
+					loading={isExecutingSwap}
+					class="w-full"
+				>
+					{isExecutingSwap ? 'Processing...' : 'Buy VOI'}
+				</Button>
 			</div>
 		{/if}
 	</div>
 </Modal>
-

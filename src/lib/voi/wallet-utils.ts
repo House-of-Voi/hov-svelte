@@ -46,7 +46,7 @@ export async function signTransaction(
 /**
  * Sign multiple transactions using the appropriate wallet
  * @param txns - Array of transactions to sign
- * @param address - The Algorand/Voi address
+ * @param address - The Algorand/Voi address (used as fallback, but actual sender from transactions takes precedence)
  * @param session - The user session (contains CDP info if applicable)
  * @returns Array of signed transaction blobs
  */
@@ -55,6 +55,35 @@ export async function signTransactions(
 	address: string,
 	session: SessionInfo | null
 ): Promise<Uint8Array[]> {
+	// Extract the actual sender address from the first transaction
+	// This ensures we use the address that the transactions were built for
+	const firstTxn = txns[0];
+	if (!firstTxn) {
+		throw new Error('No transactions to sign');
+	}
+
+	// Get sender from transaction (algosdk 3.x uses 'sender' or 'from')
+	const txnSender = (firstTxn as any).sender || (firstTxn as any).from;
+	
+	// Extract address string from various formats
+	let actualAddress: string;
+	if (typeof txnSender === 'string') {
+		actualAddress = txnSender;
+	} else if (txnSender && typeof txnSender === 'object' && txnSender.publicKey) {
+		// Address object with publicKey property
+		actualAddress = algosdk.encodeAddress(txnSender.publicKey);
+	} else if (txnSender instanceof Uint8Array) {
+		// Uint8Array (public key)
+		actualAddress = algosdk.encodeAddress(txnSender);
+	} else {
+		// Fallback: try to encode as-is
+		actualAddress = algosdk.encodeAddress(txnSender);
+	}
+
+	// Use the actual transaction sender address, not the passed address
+	// This ensures CDP derivation matches the transaction sender
+	const signerAddress = actualAddress || address;
+
 	// Check if user has a CDP wallet (has cdpUserId)
 	if (session?.cdpUserId) {
 		// Use CDP wallet - get Base address from CDP directly
@@ -71,7 +100,8 @@ export async function signTransactions(
 			throw new Error('Unable to access your CDP wallet. Please refresh and try again.');
 		}
 
-		const signer = new CdpAlgorandSigner(cdpSdk, baseWalletAddress, address);
+		// Use the actual transaction sender address for CDP signer
+		const signer = new CdpAlgorandSigner(cdpSdk, baseWalletAddress, signerAddress);
 		return await signer.signTransactions(txns);
 	} else {
 		// Use native Voi wallet
