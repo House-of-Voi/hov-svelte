@@ -290,14 +290,14 @@
 			try {
 				await fetchTransactionDetails(groupTxId);
 				swapSuccess = true;
-				// Call onSuccess callback to refresh balances
-				onSuccess?.();
+				// Refresh USDC balance with retry logic in the background (don't await)
+				refreshUsdcBalanceWithRetry();
 			} catch (error) {
 				console.error('Error fetching transaction details:', error);
 				// Still show success even if details fetch fails
 				swapSuccess = true;
-				// Call onSuccess callback even if details fetch fails
-				onSuccess?.();
+				// Refresh USDC balance with retry logic in the background even if details fetch fails
+				refreshUsdcBalanceWithRetry();
 			} finally {
 				isFetchingTxDetails = false;
 			}
@@ -365,6 +365,57 @@
 				actualAmountReceived: quoteAmount
 			};
 		}
+	}
+
+	async function refreshUsdcBalanceWithRetry() {
+		if (!onSuccess) {
+			return;
+		}
+
+		if (!usdcBalance) {
+			// If no initial balance, just call onSuccess once after delay
+			await new Promise(resolve => setTimeout(resolve, 4000));
+			onSuccess();
+			return;
+		}
+
+		// Store initial USDC balance for comparison
+		const initialUsdcBalance = usdcBalance.balance;
+		const maxAttempts = 5;
+		
+		// Try up to 5 times, waiting 4 seconds between each attempt
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			// Wait 4 seconds before this attempt
+			await new Promise(resolve => setTimeout(resolve, 4000));
+			
+			// Refresh balances
+			onSuccess();
+			
+			// Wait a moment for the balance to update, then check (except on last attempt)
+			if (attempt < maxAttempts) {
+				await new Promise(resolve => setTimeout(resolve, 1000));
+				
+				// Fetch current balance to check if it changed
+				try {
+					const { fetchAllBalances } = await import('$lib/voi/balances');
+					const data = await fetchAllBalances(address);
+					const currentUsdcBalance = data.usdc?.balance;
+					
+					// If balance has changed, we're done
+					if (currentUsdcBalance !== initialUsdcBalance) {
+						console.log(`USDC balance updated after attempt ${attempt}`);
+						return;
+					}
+					
+					console.log(`USDC balance unchanged after attempt ${attempt}, retrying...`);
+				} catch (error) {
+					console.error(`Error checking USDC balance after attempt ${attempt}:`, error);
+					// Continue to next attempt even if check fails
+				}
+			}
+		}
+		
+		console.log('Completed all USDC balance refresh attempts');
 	}
 
 	function handleClose() {

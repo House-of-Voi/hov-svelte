@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { getInitializedCdp } from '$lib/auth/cdpClient';
 	import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
@@ -124,6 +124,9 @@
 		}
 
 		console.log('✅ Voi session established:', result.voiAddress);
+		
+		// Invalidate page data to refresh with new Voi address
+		await invalidateAll();
 		} catch (err) {
 			console.error('Failed to establish Voi session:', err);
 			error = err instanceof Error ? err.message : 'Failed to establish Voi session';
