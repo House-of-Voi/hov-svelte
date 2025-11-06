@@ -489,12 +489,13 @@
 		<div class="space-y-3">
 			<!-- Linked Accounts Dropdown -->
 			{#if linkedAccounts.length > 0}
-                <label class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                <label for="destination-address" class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
                     Destination Address
                 </label>
 
 				<div class="space-y-2">
 					<select
+						id="destination-address"
 						value={selectedAccountId || ''}
 						onchange={(e) => {
 							const addr = (e.target as HTMLSelectElement).value;

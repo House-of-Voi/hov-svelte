@@ -13,7 +13,10 @@
 	import ReferralCodesModal from '$lib/components/form/ReferralCodesModal.svelte';
 	import VoiAccountImportModal from '$lib/components/form/VoiAccountImportModal.svelte';
 	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
+	import TopReferralsSummary from '$lib/components/referrals/TopReferralsSummary.svelte';
 	import type { PageData } from './$types';
+	import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
+	import { formatLargeNumber } from '$lib/referrals/credits';
 
 	let { data }: { data: PageData } = $props();
 
@@ -41,29 +44,67 @@
   let isRemoveModalOpen = $state(false);
   let accountToRemove = $state<{ chain: string; address: string } | null>(null);
 
-	// Referral stats (loaded client-side)
-	let referralStats = $state<any>(null);
+	// Referral dashboard data (loaded client-side)
+	let referralDashboardData = $state<ReferralDashboardData | null>(null);
 	let loadingReferrals = $state(true);
 
-	// Load referral stats
+	// Get top 3 referrals sorted by volume
+	const topReferrals = $derived.by(() => {
+		if (!referralDashboardData?.referrals) return [];
+		
+		const sorted = [...referralDashboardData.referrals].sort((a, b) => {
+			// Get volume for comparison - use mimirStats.totalBet if available, otherwise totalWagered
+			let volumeA: number;
+			let volumeB: number;
+			
+			if (a.mimirStats?.totalBet) {
+				volumeA = parseFloat(a.mimirStats.totalBet);
+			} else {
+				volumeA = a.totalWagered * 1e6; // Convert to micro units
+			}
+			
+			if (b.mimirStats?.totalBet) {
+				volumeB = parseFloat(b.mimirStats.totalBet);
+			} else {
+				volumeB = b.totalWagered * 1e6; // Convert to micro units
+			}
+			
+			return volumeB - volumeA; // Sort descending (highest first)
+		});
+		
+		return sorted.slice(0, 3);
+	});
+
+	// Format volume from aggregate stats
+	const formattedTotalVolume = $derived.by(() => {
+		if (!referralDashboardData?.aggregateStats?.totalVolume) return '0 VOI';
+		const volume = parseFloat(referralDashboardData.aggregateStats.totalVolume) / 1e6;
+		if (volume >= 1000) {
+			return `${formatLargeNumber(volume)} VOI`;
+		}
+		return `${volume.toFixed(2)} VOI`;
+	});
+
+	// Load referral dashboard data
 	async function fetchReferralStats() {
 		try {
-			const response = await fetch('/api/referrals/info');
+			const response = await fetch('/api/referrals/dashboard');
 			const result = await response.json();
 
 			if (result.ok) {
-				referralStats = {
+				referralDashboardData = {
 					codesGenerated: result.codesGenerated,
 					codesAvailable: result.codesAvailable,
 					maxReferrals: result.maxReferrals,
 					activeReferrals: result.activeReferrals,
 					queuedReferrals: result.queuedReferrals,
 					totalReferrals: result.totalReferrals,
-					codes: result.codes
+					referrals: result.referrals || [],
+					aggregateStats: result.aggregateStats
 				};
 			}
 		} catch (error) {
-			console.error('Failed to fetch referral stats:', error);
+			console.error('Failed to fetch referral dashboard:', error);
 		} finally {
 			loadingReferrals = false;
 		}
@@ -494,73 +535,77 @@
 		<Card id="referrals">
 			<CardHeader>
 				<h2 class="text-xl font-semibold text-neutral-950 dark:text-white">
-					Your Referral Codes
+					Referral Dashboard Summary
 				</h2>
 			</CardHeader>
 			<CardContent>
 				{#if loadingReferrals}
 					<p class="text-neutral-700 dark:text-neutral-300">Loading referral information...</p>
-				{:else if referralStats}
+				{:else if referralDashboardData}
 					<div class="space-y-6">
-						<!-- Referral Codes Summary -->
-						<div
-							class="text-center p-6 bg-gradient-to-r from-primary-50 to-accent-50 dark:from-primary-950/30 dark:to-accent-950/30 border border-primary-200 dark:border-primary-800 rounded-xl"
-						>
-							<p class="text-neutral-700 dark:text-neutral-300 text-sm mb-2">Generated Codes</p>
-							<div class="flex justify-center items-baseline gap-2">
-								<span class="text-3xl font-semibold text-neutral-950 dark:text-white">
-									{referralStats.codesGenerated}
-								</span>
-								<span class="text-xl text-neutral-700 dark:text-neutral-300"
-									>/ {referralStats.maxReferrals}</span
-								>
+						<!-- Summary Statistics -->
+						<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+							<div class="text-center p-4 bg-primary-50 dark:bg-primary-950/30 border border-primary-200 dark:border-primary-800 rounded-lg">
+								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Referrals</p>
+								<p class="text-2xl font-semibold text-primary-700 dark:text-primary-300">
+									{referralDashboardData.totalReferrals}
+								</p>
 							</div>
-							<p class="text-neutral-500 dark:text-neutral-400 text-xs mt-3">
-								{#if referralStats.codesAvailable > 0}
-									You can create {referralStats.codesAvailable} more code{referralStats.codesAvailable !==
-									1
-										? 's'
-										: ''}
-								{:else}
-									All referral slots used
-								{/if}
-							</p>
+							<div class="text-center p-4 bg-success-50 dark:bg-success-950/30 border border-success-200 dark:border-success-800 rounded-lg">
+								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Credits Earned</p>
+								<p class="text-2xl font-semibold text-success-700 dark:text-success-300">
+									{formatLargeNumber(referralDashboardData.aggregateStats.totalCreditsEarned)}
+								</p>
+							</div>
+							<div class="text-center p-4 bg-accent-50 dark:bg-accent-950/30 border border-accent-200 dark:border-accent-800 rounded-lg">
+								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Volume</p>
+								<p class="text-lg font-semibold text-accent-700 dark:text-accent-300">
+									{formattedTotalVolume}
+								</p>
+							</div>
+							<div class="text-center p-4 bg-warning-50 dark:bg-warning-950/30 border border-warning-200 dark:border-warning-800 rounded-lg">
+								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Codes</p>
+								<p class="text-2xl font-semibold text-warning-700 dark:text-warning-300">
+									{referralDashboardData.codesGenerated}/{referralDashboardData.maxReferrals}
+								</p>
+							</div>
 						</div>
 
-						<!-- Stats Grid -->
-						<div class="grid grid-cols-3 gap-4">
-							<div
-								class="text-center p-4 bg-success-100 dark:bg-success-900/20 border border-success-300 dark:border-success-700 rounded-lg"
-							>
-								<div class="text-2xl font-semibold text-success-700 dark:text-success-300">
-									{referralStats.activeReferrals}
-								</div>
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mt-1">Active</p>
+						<!-- Active/Queued Breakdown -->
+						<div class="flex gap-4 justify-center">
+							<div class="text-center px-4 py-2 bg-success-100 dark:bg-success-900/20 border border-success-300 dark:border-success-700 rounded-lg">
+								<p class="text-xs text-neutral-700 dark:text-neutral-300">Active</p>
+								<p class="text-lg font-semibold text-success-700 dark:text-success-300">
+									{referralDashboardData.activeReferrals}
+								</p>
 							</div>
-							<div
-								class="text-center p-4 bg-warning-100 dark:bg-warning-900/20 border border-warning-300 dark:border-warning-700 rounded-lg"
-							>
-								<div class="text-2xl font-semibold text-warning-700 dark:text-warning-300">
-									{referralStats.queuedReferrals}
-								</div>
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mt-1">Queued</p>
-							</div>
-							<div
-								class="text-center p-4 bg-primary-100 dark:bg-primary-900/20 border border-primary-300 dark:border-primary-700 rounded-lg"
-							>
-								<div class="text-2xl font-semibold text-primary-700 dark:text-primary-300">
-									{referralStats.totalReferrals}
-								</div>
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mt-1">Total</p>
+							<div class="text-center px-4 py-2 bg-warning-100 dark:bg-warning-900/20 border border-warning-300 dark:border-warning-700 rounded-lg">
+								<p class="text-xs text-neutral-700 dark:text-neutral-300">Queued</p>
+								<p class="text-lg font-semibold text-warning-700 dark:text-warning-300">
+									{referralDashboardData.queuedReferrals}
+								</p>
 							</div>
 						</div>
+
+						<!-- Top 3 Referrals -->
+						{#if topReferrals.length > 0}
+							<div>
+								<h3 class="text-lg font-semibold text-neutral-950 dark:text-white mb-3">
+									Top Referrals
+								</h3>
+								<TopReferralsSummary
+									referrals={topReferrals}
+									totalReferrals={referralDashboardData.totalReferrals}
+								/>
+							</div>
+						{/if}
 
 						<!-- Actions -->
 						<div class="flex justify-center gap-3">
 							<Button
 								variant="primary"
 								size="md"
-								className="px-8"
+								class="px-8"
 								onclick={() => {
 									isReferralCodesModalOpen = true;
 								}}
@@ -584,7 +629,7 @@
 							<Button
 								variant="outline"
 								size="md"
-								className="px-8"
+								class="px-8"
 								onclick={() => {
 									window.location.href = '/app/referrals';
 								}}

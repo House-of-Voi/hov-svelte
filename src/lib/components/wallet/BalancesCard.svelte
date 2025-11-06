@@ -10,6 +10,7 @@
   import SwapPlaceholderModal from './SwapPlaceholderModal.svelte';
   import AccountPrepModal from './AccountPrepModal.svelte';
   import UsdcWithdrawModal from './UsdcWithdrawModal.svelte';
+  import VoiDepositModal from './VoiDepositModal.svelte';
   import { checkAssetOptIn, createAssetOptInTransaction, verifyAssetOptIn, submitTransaction, waitForConfirmation } from '$lib/voi/asa-utils';
   import { requestVoi, waitForVoiReceipt, hasSufficientVoi, type FountainError } from '$lib/voi/fountain-client';
   import { signTransaction } from '$lib/voi/wallet-utils';
@@ -47,6 +48,9 @@
 
   // Withdraw modal state
   let showWithdrawModal = $state(false);
+
+  // Voi deposit modal state
+  let showVoiDepositModal = $state(false);
 
   const loadBalances = async () => {
     loading = true;
@@ -227,6 +231,13 @@
   };
 
   const handleTokenDeposit = (tokenSymbol: string) => {
+    // If VOI, open the Voi Deposit Modal instead of swap modal
+    if (tokenSymbol === 'VOI') {
+      showVoiDepositModal = true;
+      return;
+    }
+    
+    // For other tokens, use the swap placeholder modal
     swapModal = {
       isOpen: true,
       tokenSymbol,
@@ -446,5 +457,15 @@
     usdcBalance={usdcBalance}
     address={address}
     session={$page.data.session}
+  />
+
+  <!-- Voi Deposit Modal -->
+  <VoiDepositModal
+    isOpen={showVoiDepositModal}
+    onClose={() => {
+      showVoiDepositModal = false;
+    }}
+    address={address}
+    usdcBalance={usdcBalance}
   />
 {/if}
