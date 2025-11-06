@@ -125,15 +125,23 @@
   });
 
   async function checkExistingSession() {
-    // Check if user already has a valid session
+    // Check if user already has a valid CDP session (not just HTTP session cookie)
+    // CDP session is the source of truth
     try {
-      const response = await fetch('/api/profile/me');
-      if (response.ok) {
-        // User is already authenticated, redirect to app
-        goto('/app');
+      const cdp = await ensureCdpModule();
+      const user = await cdp.getCurrentUser();
+      
+      // Only redirect if CDP is actually signed in
+      if (user) {
+        const response = await fetch('/api/profile/me');
+        if (response.ok) {
+          // User has valid CDP session and HTTP session, redirect to app
+          goto('/app');
+        }
       }
+      // If no CDP user, don't redirect - let them sign in
     } catch (err) {
-      // No existing session, continue with auth flow
+      // No existing session or CDP not signed in, continue with auth flow
     }
   }
 

@@ -47,9 +47,12 @@
 
 		// CDP session is the source of truth - if no user, CDP is not signed in
 		// This means the user needs to re-authenticate
+		// Clear the HTTP session cookie since CDP session is expired
 		if (!user) {
-			console.warn('No CDP user found - CDP session not active, redirecting to auth');
-			await goto('/auth');
+			console.warn('No CDP user found - CDP session not active, clearing session and redirecting to auth');
+			// Clear the HTTP session cookie since CDP is not signed in
+			// Use a query parameter to tell auth page not to redirect back
+			await goto('/auth?expired=true');
 			return;
 		}
 
@@ -137,7 +140,8 @@
 				)
 			) {
 				console.warn('CDP session restoration failed - redirecting to auth');
-				await goto('/auth');
+				// Use a query parameter to tell auth page not to redirect back
+				await goto('/auth?expired=true');
 				return;
 			}
 			// For other errors (network, etc.), show error UI and allow retry
