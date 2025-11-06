@@ -20,11 +20,9 @@
 
 	let { data }: { data: PageData } = $props();
 
-    // Resolve Voi address: prefer session-derived value, fall back to connected accounts
-    const primaryVoiAccount =
-        data.profileData.accounts.find((account: any) => account.chain === 'voi' && account.isPrimary) ||
-        data.profileData.accounts.find((account: any) => account.chain === 'voi');
-    const voiAddress: string | undefined = data.voiAddress ?? primaryVoiAccount?.address;
+    // CDP-derived Voi address from session is the only source of truth
+    // Never fall back to database accounts - they are "connected" accounts only
+    const voiAddress: string | undefined = data.voiAddress ?? undefined;
 
 	// State
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(

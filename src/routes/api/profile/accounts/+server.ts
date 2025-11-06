@@ -28,9 +28,12 @@ export const GET: RequestHandler = async ({ cookies }) => {
     }
 
     // Get connected accounts from database (excludes CDP-derived addresses)
+    // Note: profileData.primaryAccount from DB is NEVER used as fallback
+    // CDP-derived address from session is the only source of truth for primary accounts
     const connectedAccounts = profileData.accounts || [];
 
     // Add the CDP-derived Voi address from session as the primary account
+    // If session.voiAddress is null, primaryAccount will be null (no DB fallback)
     const primaryVoiAccount = session.voiAddress ? {
       chain: 'voi',
       address: session.voiAddress,

@@ -85,13 +85,15 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
   }
 
   // Link blockchain account
+  // Note: External wallets are NEVER primary. Only CDP-derived addresses are primary.
+  // CDP-derived addresses live in session cookies, not in the accounts table.
   await supabase.from('accounts').upsert(
     {
       profile_id: profile.id,
       chain,
       address: result.ok ? result.normalizedAddress : address,
       wallet_provider: chain === 'base' ? 'coinbase-embedded' : 'extern',
-      is_primary: true,
+      is_primary: false, // External wallets are connected accounts only, never primary
     },
     { onConflict: 'chain,address' }
   );

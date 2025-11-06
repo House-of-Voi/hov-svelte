@@ -2,6 +2,7 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
 	import { generateVoiUri } from '$lib/voi/uri-utils';
 	import { signTransactions } from '$lib/voi/wallet-utils';
 	import { submitTransaction } from '$lib/voi/asa-utils';
@@ -15,13 +16,14 @@
 		onClose: () => void;
 		address: string;
 		usdcBalance?: { balance: string; decimals: number } | null;
+		onSuccess?: () => void;
 	}
 
-	let { isOpen, onClose, address, usdcBalance = null }: Props = $props();
+	let { isOpen, onClose, address, usdcBalance = null, onSuccess }: Props = $props();
 
-	// Tab state
-	type Tab = 'transfer' | 'buy';
-	let activeTab = $state<Tab>('transfer');
+	// View state - tracks which screen we're on
+	type View = 'selection' | 'transfer' | 'buy';
+	let currentView = $state<View>('selection');
 
 	// Transfer tab state
 	let qrCodeUrl = $state<string>('');
@@ -31,6 +33,7 @@
 	// Buy tab state
 	let usdcAmount = $state('');
 	let quoteAmount = $state<string | null>(null);
+	let minimumAmount = $state<string | null>(null);
 	let quoteRate = $state<number | null>(null);
 	let priceImpact = $state<number | null>(null);
 	let quoteError = $state<string | null>(null);
@@ -40,6 +43,12 @@
 	let swapTxId = $state<string | null>(null);
 	let unsignedTransactions = $state<string[] | null>(null);
 	let quoteData = $state<any>(null);
+	let transactionDetails = $state<{
+		blockNumber: number | null;
+		timestamp: number | null;
+		actualAmountReceived: string | null;
+	} | null>(null);
+	let isFetchingTxDetails = $state(false);
 	
 	// Debounce timer for auto-quote
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,6 +57,10 @@
 	$effect(() => {
 		if (isOpen && address) {
 			generateQRCode();
+		}
+		// Reset to selection screen when modal opens
+		if (isOpen) {
+			currentView = 'selection';
 		}
 	});
 
@@ -121,6 +134,7 @@
 		usdcAmount = value;
 		// Clear quote when amount changes
 		quoteAmount = null;
+		minimumAmount = null;
 		quoteRate = null;
 		priceImpact = null;
 		quoteError = null;
@@ -200,6 +214,16 @@
 				const outputAmount = BigInt(data.quote.outputAmount);
 				const voiAmount = Number(outputAmount) / 10 ** voiDecimals;
 				quoteAmount = voiAmount.toFixed(6);
+				
+				// Extract and convert minimum output amount
+				if (data.quote.minimumOutputAmount) {
+					const minimumOutputAmount = BigInt(data.quote.minimumOutputAmount);
+					const minimumVoiAmount = Number(minimumOutputAmount) / 10 ** voiDecimals;
+					minimumAmount = minimumVoiAmount.toFixed(6);
+				} else {
+					minimumAmount = null;
+				}
+				
 				quoteRate = data.quote.rate;
 				priceImpact = data.quote.priceImpact;
 				unsignedTransactions = data.unsignedTransactions;
@@ -209,6 +233,7 @@
 			console.error('Error getting quote:', error);
 			quoteError = error instanceof Error ? error.message : 'Failed to get quote';
 			quoteAmount = null;
+			minimumAmount = null;
 			quoteRate = null;
 			priceImpact = null;
 			unsignedTransactions = null;
@@ -259,19 +284,23 @@
 			}
 
 			swapTxId = groupTxId; // Use the group transaction ID
-			swapSuccess = true;
 			
-			// Reset form after successful swap
-			setTimeout(() => {
-				usdcAmount = '';
-				quoteAmount = null;
-				quoteRate = null;
-				priceImpact = null;
-				unsignedTransactions = null;
-				quoteData = null;
-				swapSuccess = false;
-				swapTxId = null;
-			}, 5000);
+			// Wait for confirmation and fetch transaction details
+			isFetchingTxDetails = true;
+			try {
+				await fetchTransactionDetails(groupTxId);
+				swapSuccess = true;
+				// Call onSuccess callback to refresh balances
+				onSuccess?.();
+			} catch (error) {
+				console.error('Error fetching transaction details:', error);
+				// Still show success even if details fetch fails
+				swapSuccess = true;
+				// Call onSuccess callback even if details fetch fails
+				onSuccess?.();
+			} finally {
+				isFetchingTxDetails = false;
+			}
 		} catch (error) {
 			console.error('Error executing swap:', error);
 			quoteError = error instanceof Error ? error.message : 'Failed to execute swap';
@@ -281,11 +310,69 @@
 		}
 	}
 
+	async function fetchTransactionDetails(txId: string) {
+		try {
+			const { getAlgodClient, waitForConfirmation } = await import('$lib/voi/asa-utils');
+			const algodClient = getAlgodClient();
+			
+			// Wait for confirmation (up to 4 rounds)
+			await waitForConfirmation(txId, 4);
+			
+			// Fetch transaction details
+			const txInfo = await algodClient.pendingTransactionInformation(txId).do();
+			
+			const confirmedRound = txInfo['confirmed-round'];
+			const roundTime = txInfo['round-time'];
+			
+			// Calculate actual amount received from transaction
+			// For swap transactions, we need to look at the inner transactions
+			// The actual VOI received will be in one of the inner transactions
+			let actualAmountReceived: string | null = null;
+			
+			if (txInfo['inner-txns']) {
+				// Look for the VOI transfer in inner transactions
+				for (const innerTx of txInfo['inner-txns']) {
+					// VOI transfers have payment-transaction with amount > 0
+					if (innerTx['payment-transaction'] && innerTx['payment-transaction'].amount) {
+						const amount = BigInt(innerTx['payment-transaction'].amount);
+						const voiDecimals = 6;
+						const voiAmount = Number(amount) / 10 ** voiDecimals;
+						// Only count if it's a positive amount (received)
+						if (voiAmount > 0) {
+							actualAmountReceived = voiAmount.toFixed(6);
+							break;
+						}
+					}
+				}
+			}
+			
+			// If we couldn't find it in inner transactions, use the quote amount as fallback
+			if (!actualAmountReceived && quoteAmount) {
+				actualAmountReceived = quoteAmount;
+			}
+			
+			transactionDetails = {
+				blockNumber: confirmedRound || null,
+				timestamp: roundTime ? roundTime * 1000 : null, // Convert to milliseconds
+				actualAmountReceived
+			};
+		} catch (error) {
+			console.error('Error fetching transaction details:', error);
+			// Set partial details if available
+			transactionDetails = {
+				blockNumber: null,
+				timestamp: Date.now(), // Use current time as fallback
+				actualAmountReceived: quoteAmount
+			};
+		}
+	}
+
 	function handleClose() {
-		activeTab = 'transfer';
+		currentView = 'selection';
 		amountMicroVoi = undefined;
 		usdcAmount = '';
 		quoteAmount = null;
+		minimumAmount = null;
 		quoteRate = null;
 		priceImpact = null;
 		quoteError = null;
@@ -293,10 +380,47 @@
 		quoteData = null;
 		swapSuccess = false;
 		swapTxId = null;
+		transactionDetails = null;
 		if (debounceTimer) {
 			clearTimeout(debounceTimer);
 		}
 		onClose();
+	}
+
+	function handleBack() {
+		currentView = 'selection';
+	}
+
+	function handleSelectTransfer() {
+		currentView = 'transfer';
+	}
+
+	function handleSelectBuy() {
+		currentView = 'buy';
+	}
+
+	// Dynamic modal title based on current view
+	let modalTitle = $derived(
+		currentView === 'transfer' ? 'Transfer VOI' :
+		currentView === 'buy' ? 'Buy with USDC' :
+		'Deposit VOI'
+	);
+	
+	function getExplorerUrl(txId: string): string {
+		return `https://block.voi.network/explorer/transaction/${txId}`;
+	}
+	
+	function formatTimestamp(timestamp: number | null): string {
+		if (!timestamp) return 'N/A';
+		const date = new Date(timestamp);
+		return date.toLocaleString(undefined, {
+			year: 'numeric',
+			month: 'short',
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit',
+			second: '2-digit'
+		});
 	}
 
 	// Format USDC balance with proper precision
@@ -319,36 +443,112 @@
 	}
 </script>
 
-<Modal isOpen={isOpen} onClose={handleClose} title="Deposit VOI" size="md">
+<Modal isOpen={isOpen} onClose={handleClose} title={modalTitle} size="md">
 	<div class="space-y-6">
-		<!-- Tab Selector -->
-		<div class="flex gap-2 border-b border-neutral-200 dark:border-neutral-700">
+		<!-- Back Button (shown when not on selection screen) -->
+		{#if currentView !== 'selection'}
 			<button
 				type="button"
-				onclick={() => {
-					activeTab = 'transfer';
-				}}
-				class="px-4 py-2 text-sm font-medium transition-colors border-b-2 {activeTab === 'transfer'
-					? 'border-primary-500 text-primary-600 dark:text-primary-400'
-					: 'border-transparent text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'}"
+				onclick={handleBack}
+				class="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200 transition-colors mb-4"
 			>
-				Transfer VOI
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<path d="M19 12H5M12 19l-7-7 7-7"></path>
+				</svg>
+				Back
 			</button>
-			<button
-				type="button"
-				onclick={() => {
-					activeTab = 'buy';
-				}}
-				class="px-4 py-2 text-sm font-medium transition-colors border-b-2 {activeTab === 'buy'
-					? 'border-primary-500 text-primary-600 dark:text-primary-400'
-					: 'border-transparent text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200'}"
-			>
-				Buy with USDC
-			</button>
-		</div>
+		{/if}
 
-		<!-- Transfer VOI Tab -->
-		{#if activeTab === 'transfer'}
+		<!-- Selection Screen -->
+		{#if currentView === 'selection'}
+			<div class="space-y-6">
+				<p class="text-sm text-neutral-600 dark:text-neutral-400 text-center">
+					Choose how you'd like to deposit VOI
+				</p>
+				
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					<!-- Transfer VOI Card -->
+					<Card hover={true} onclick={handleSelectTransfer} class="cursor-pointer">
+						<div class="p-6 space-y-4">
+							<div class="flex items-center justify-center">
+								<div class="p-4 bg-primary-100 dark:bg-primary-900/30 rounded-full">
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										width="32"
+										height="32"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										class="text-primary-600 dark:text-primary-400"
+									>
+										<path d="M21 12v-2a5 5 0 0 0-5-5H8a5 5 0 0 0-5 5v2"></path>
+										<polyline points="7 10 12 15 17 10"></polyline>
+										<line x1="12" y1="15" x2="12" y2="3"></line>
+									</svg>
+								</div>
+							</div>
+							<div class="text-center space-y-2">
+								<h3 class="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+									Transfer VOI
+								</h3>
+								<p class="text-sm text-neutral-600 dark:text-neutral-400">
+									Send VOI tokens directly to your address using a wallet or QR code
+								</p>
+							</div>
+						</div>
+					</Card>
+
+					<!-- Buy with USDC Card -->
+					<Card hover={true} onclick={handleSelectBuy} class="cursor-pointer">
+						<div class="p-6 space-y-4">
+							<div class="flex items-center justify-center">
+								<div class="p-4 bg-success-100 dark:bg-success-900/30 rounded-full">
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										width="32"
+										height="32"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										class="text-success-600 dark:text-success-400"
+									>
+										<line x1="12" y1="1" x2="12" y2="23"></line>
+										<path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+									</svg>
+								</div>
+							</div>
+							<div class="text-center space-y-2">
+								<h3 class="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+									Buy with USDC
+								</h3>
+								<p class="text-sm text-neutral-600 dark:text-neutral-400">
+									Exchange your USDC for VOI tokens instantly
+								</p>
+							</div>
+						</div>
+					</Card>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Transfer VOI View -->
+		{#if currentView === 'transfer'}
 			<div class="space-y-6">
 				<!-- Instructions -->
 				<div class="p-4 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700 rounded-lg">
@@ -461,115 +661,279 @@
 			</div>
 		{/if}
 
-		<!-- Buy with USDC Tab -->
-		{#if activeTab === 'buy'}
+		<!-- Buy with USDC View -->
+		{#if currentView === 'buy'}
 			<div class="space-y-6">
-				<!-- Instructions -->
-				<div class="p-4 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700 rounded-lg">
-					<p class="text-sm text-primary-700 dark:text-primary-300">
-						Buy VOI tokens with USDC. Enter an amount to see the current exchange rate and complete your purchase.
-					</p>
-				</div>
-
-				<!-- USDC Balance Display -->
-				{#if usdcBalance}
-					<div class="p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
-						<div class="flex items-center justify-between">
-							<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Available USDC:</span>
-							<span class="text-lg font-bold text-warning-600 dark:text-warning-400 font-mono">
-								{formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)}
-							</span>
-						</div>
+				<!-- Instructions (hidden when showing confirmation) -->
+				{#if !swapSuccess}
+					<div class="p-4 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-700 rounded-lg">
+						<p class="text-sm text-primary-700 dark:text-primary-300">
+							Exchange your USDC for VOI tokens. Enter the amount you want to spend, and we'll show you exactly how much VOI you'll receive.
+						</p>
 					</div>
 				{/if}
 
-				<!-- USDC Amount Input -->
-				<div class="space-y-3">
-					<label class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-						Amount (USDC)
-					</label>
-					<Input
-						type="number"
-						value={usdcAmount}
-						oninput={(e) => {
-							handleUsdcAmountChange((e.target as HTMLInputElement).value);
-						}}
-						placeholder="0.00"
-						step="0.01"
-						min="0"
-					/>
-					{#if usdcBalance && usdcAmount}
-						{@const amount = parseFloat(usdcAmount)}
-						{@const available = parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals))}
-						{#if !isNaN(amount) && amount > available}
-							<p class="text-xs text-error-600 dark:text-error-400">
-								Insufficient balance. You have {formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)} USDC available.
-							</p>
-						{/if}
+				<!-- USDC Balance Display (hidden when showing confirmation) -->
+				{#if !swapSuccess}
+					{#if usdcBalance}
+						<div class="p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
+							<div class="flex items-center justify-between">
+								<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Available USDC:</span>
+								<span class="text-lg font-bold text-warning-600 dark:text-warning-400 font-mono">
+									{formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)}
+								</span>
+							</div>
+						</div>
 					{/if}
-				</div>
 
-				<!-- Quote Display (auto-updates as user types) -->
-				{#if isLoadingQuote}
-					<div class="p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
-						<p class="text-sm text-neutral-600 dark:text-neutral-400 text-center">Loading quote...</p>
+					<!-- USDC Amount Input -->
+					<div class="space-y-3">
+						<label class="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+							Amount (USDC)
+						</label>
+						<Input
+							type="number"
+							value={usdcAmount}
+							oninput={(e) => {
+								handleUsdcAmountChange((e.target as HTMLInputElement).value);
+							}}
+							placeholder="0.00"
+							step="0.01"
+							min="0"
+						/>
+						{#if usdcBalance && usdcAmount}
+							{@const amount = parseFloat(usdcAmount)}
+							{@const available = parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals))}
+							{#if !isNaN(amount) && amount > available}
+								<p class="text-xs text-error-600 dark:text-error-400">
+									Insufficient balance. You have {formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)} USDC available.
+								</p>
+							{/if}
+						{/if}
 					</div>
-				{:else if quoteError}
-					<div class="p-4 bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-700 rounded-lg">
-						<p class="text-sm text-error-700 dark:text-error-300">{quoteError}</p>
+				{/if}
+
+				<!-- Quote Display (auto-updates as user types, hidden when showing confirmation) -->
+				{#if !swapSuccess}
+					{#if isLoadingQuote}
+						<div class="p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
+							<p class="text-sm text-neutral-600 dark:text-neutral-400 text-center">Getting your quote...</p>
+						</div>
+					{:else if quoteError}
+						<div class="p-4 bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-700 rounded-lg">
+							<p class="text-sm text-error-700 dark:text-error-300">{quoteError}</p>
+						</div>
+					{:else if quoteAmount && !quoteError}
+					<div class="space-y-4">
+						<!-- Header -->
+						<div class="text-center">
+							<p class="text-sm font-medium text-neutral-700 dark:text-neutral-300">What you'll get</p>
+						</div>
+						
+						<!-- Exchange Display -->
+						<div class="flex flex-col sm:flex-row items-center gap-3">
+							<!-- Input Card: USDC -->
+							<div class="w-full sm:flex-1 p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
+								<div class="space-y-1">
+									<p class="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">You're spending</p>
+									<p class="text-2xl font-bold text-neutral-900 dark:text-neutral-100 font-mono">
+										{usdcAmount}
+									</p>
+									<p class="text-sm font-medium text-neutral-600 dark:text-neutral-400">USDC</p>
+								</div>
+							</div>
+							
+							<!-- Arrow/Divider -->
+							<div class="flex-shrink-0 flex flex-col items-center justify-center transform rotate-90 sm:rotate-0">
+								<svg
+									xmlns="http://www.w3.org/2000/svg"
+									width="24"
+									height="24"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									class="text-primary-500 dark:text-primary-400"
+								>
+									<path d="M5 12h14M12 5l7 7-7 7"></path>
+								</svg>
+							</div>
+							
+							<!-- Output Card: VOI -->
+							<div class="w-full sm:flex-1 p-4 bg-success-50 dark:bg-success-900/20 border-2 border-success-300 dark:border-success-700 rounded-lg">
+								<div class="space-y-2">
+									<p class="text-xs font-medium text-success-700 dark:text-success-300 uppercase tracking-wide">You'll receive</p>
+									<p class="text-3xl font-bold text-success-600 dark:text-success-400 font-mono">
+										{quoteAmount}
+									</p>
+									<p class="text-sm font-medium text-success-700 dark:text-success-300">VOI</p>
+									{#if minimumAmount}
+										<div class="pt-2 mt-2 border-t border-success-200 dark:border-success-800">
+											<p class="text-xs text-success-600 dark:text-success-400">
+												<span class="font-semibold">Minimum:</span> {minimumAmount} VOI
+											</p>
+											<p class="text-xs text-success-500 dark:text-success-500 mt-1">
+												(accounts for market changes)
+											</p>
+										</div>
+									{/if}
+								</div>
+							</div>
+						</div>
+						
+						<!-- Additional Info -->
+						{#if priceImpact !== null && priceImpact > 0.01}
+							<div class="p-3 bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 rounded-lg">
+								<p class="text-xs text-warning-700 dark:text-warning-300">
+									<span class="font-semibold">Note:</span> Large trade may affect price by {(priceImpact * 100).toFixed(2)}%
+								</p>
+							</div>
+						{/if}
 					</div>
-				{:else if quoteAmount && !quoteError}
-					<div class="p-4 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-700 rounded-lg space-y-3">
-						<div class="space-y-2">
-							<p class="text-sm font-medium text-success-700 dark:text-success-300">Purchase Quote:</p>
-							<p class="text-2xl font-bold text-success-600 dark:text-success-400">
-								{usdcAmount} USDC ≈ {quoteAmount} VOI
+					{/if}
+				{/if}
+
+				<!-- Confirmation Screen -->
+				{#if isFetchingTxDetails}
+					<div class="p-6 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
+						<div class="flex flex-col items-center justify-center space-y-4">
+							<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+							<p class="text-sm text-neutral-600 dark:text-neutral-400 text-center">
+								Confirming transaction...
 							</p>
-							{#if quoteRate}
-								<p class="text-xs text-success-600 dark:text-success-400">
-									Rate: {quoteRate.toFixed(6)} VOI per USDC
-								</p>
+						</div>
+					</div>
+				{:else if swapSuccess && swapTxId}
+					<div class="p-6 bg-success-50 dark:bg-success-900/20 border-2 border-success-300 dark:border-success-700 rounded-lg space-y-4">
+						<!-- Success Header -->
+						<div class="text-center space-y-2">
+							<div class="flex justify-center">
+								<svg
+									xmlns="http://www.w3.org/2000/svg"
+									width="48"
+									height="48"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									class="text-success-600 dark:text-success-400"
+								>
+									<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+									<polyline points="22 4 12 14.01 9 11.01"></polyline>
+								</svg>
+							</div>
+							<h3 class="text-xl font-bold text-success-700 dark:text-success-300">Purchase Successful!</h3>
+							<p class="text-sm text-success-600 dark:text-success-400">
+								Your exchange has been completed
+							</p>
+						</div>
+						
+						<!-- Transaction Details -->
+						<div class="space-y-3 pt-4 border-t border-success-200 dark:border-success-800">
+							<!-- Amount Paid -->
+							<div class="flex justify-between items-center">
+								<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Amount Paid:</span>
+								<span class="text-sm font-bold text-neutral-900 dark:text-neutral-100 font-mono">
+									{usdcAmount} USDC
+								</span>
+							</div>
+							
+							<!-- Amount Received -->
+							<div class="flex justify-between items-center">
+								<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Amount Received:</span>
+								<span class="text-sm font-bold text-success-600 dark:text-success-400 font-mono">
+									{transactionDetails?.actualAmountReceived || quoteAmount || 'N/A'} VOI
+								</span>
+							</div>
+							
+							<!-- Transaction ID -->
+							<div class="flex justify-between items-center">
+								<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Transaction ID:</span>
+								<a
+									href={getExplorerUrl(swapTxId)}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="text-sm font-mono text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 underline flex items-center gap-1"
+								>
+									{swapTxId.slice(0, 8)}...{swapTxId.slice(-8)}
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										width="14"
+										height="14"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									>
+										<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+										<polyline points="15 3 21 3 21 9"></polyline>
+										<line x1="10" y1="14" x2="21" y2="3"></line>
+									</svg>
+								</a>
+							</div>
+							
+							<!-- Date/Time -->
+							{#if transactionDetails?.timestamp}
+								<div class="flex justify-between items-center">
+									<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Date & Time:</span>
+									<span class="text-sm text-neutral-600 dark:text-neutral-400">
+										{formatTimestamp(transactionDetails.timestamp)}
+									</span>
+								</div>
 							{/if}
-							{#if priceImpact !== null && priceImpact > 0.01}
-								<p class="text-xs text-warning-600 dark:text-warning-400">
-									Price Impact: {(priceImpact * 100).toFixed(4)}%
-								</p>
+							
+							<!-- Block Number -->
+							{#if transactionDetails?.blockNumber}
+								<div class="flex justify-between items-center">
+									<span class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Block:</span>
+									<span class="text-sm font-mono text-neutral-600 dark:text-neutral-400">
+										#{transactionDetails.blockNumber}
+									</span>
+								</div>
 							{/if}
+						</div>
+						
+						<!-- Close Button -->
+						<div class="pt-4">
+							<Button
+								variant="primary"
+								size="md"
+								onclick={handleClose}
+								class="w-full"
+							>
+								Done
+							</Button>
 						</div>
 					</div>
 				{/if}
 
-				<!-- Success Message -->
-				{#if swapSuccess && swapTxId}
-					<div class="p-4 bg-success-50 dark:bg-success-900/20 border border-success-200 dark:border-success-700 rounded-lg">
-						<div class="space-y-2">
-							<p class="text-sm font-medium text-success-700 dark:text-success-300">Purchase Successful!</p>
-							<p class="text-xs text-success-600 dark:text-success-400">
-								Transaction ID: <code class="font-mono">{swapTxId}</code>
-							</p>
-						</div>
-					</div>
+				<!-- Buy Button (hidden when showing confirmation) -->
+				{#if !swapSuccess}
+					<Button
+						variant="primary"
+						size="md"
+						onclick={executeSwap}
+						disabled={
+							!usdcAmount ||
+							parseFloat(usdcAmount) <= 0 ||
+							!quoteAmount ||
+							!unsignedTransactions ||
+							isExecutingSwap ||
+							isLoadingQuote ||
+							(usdcBalance && parseFloat(usdcAmount) > parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)))
+						}
+						loading={isExecutingSwap}
+						class="w-full"
+					>
+						{isExecutingSwap ? 'Processing...' : 'Buy VOI'}
+					</Button>
 				{/if}
-
-				<!-- Buy Button -->
-				<Button
-					variant="primary"
-					size="md"
-					onclick={executeSwap}
-					disabled={
-						!usdcAmount ||
-						parseFloat(usdcAmount) <= 0 ||
-						!quoteAmount ||
-						!unsignedTransactions ||
-						isExecutingSwap ||
-						isLoadingQuote ||
-						(usdcBalance && parseFloat(usdcAmount) > parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals)))
-					}
-					loading={isExecutingSwap}
-					class="w-full"
-				>
-					{isExecutingSwap ? 'Processing...' : 'Buy VOI'}
-				</Button>
 			</div>
 		{/if}
 	</div>

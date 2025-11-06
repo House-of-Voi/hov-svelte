@@ -2,8 +2,14 @@ import { redirect } from '@sveltejs/kit';
 import { getServerSessionFromCookies } from '$lib/auth/session';
 import type { LayoutServerLoad } from './$types';
 
+/**
+ * App layout server load
+ * 
+ * Checks for valid HTTP session cookie. CDP session restoration happens client-side
+ * via VoiAddressProvider, which will redirect to /auth if CDP is not signed in.
+ */
 export const load: LayoutServerLoad = async ({ cookies }) => {
-	// Check authentication
+	// Check HTTP session cookie (allows client-side CDP restoration)
 	const session = await getServerSessionFromCookies(cookies);
 
 	if (!session) {

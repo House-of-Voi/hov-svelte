@@ -3,7 +3,9 @@
   import { fetchAllBalances, formatBalance, formatUsdValue } from '$lib/voi/balances';
   import type { AssetBalance } from '$lib/voi/balances';
   import SwapPlaceholderModal from './SwapPlaceholderModal.svelte';
+  import VoiWithdrawModal from './VoiWithdrawModal.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import { page } from '$app/stores';
 
   interface Props {
     address: string;
@@ -12,6 +14,7 @@
   let { address }: Props = $props();
 
   let balances = $state<AssetBalance[]>([]);
+  let usdcBalance = $state<AssetBalance | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let lastFetched = $state<Date | null>(null);
@@ -24,6 +27,7 @@
     tokenSymbol: '',
     action: 'deposit',
   });
+  let showVoiWithdrawModal = $state(false);
 
   const loadBalances = async () => {
     loading = true;
@@ -32,6 +36,7 @@
     try {
       const data = await fetchAllBalances(address);
       balances = data.otherTokens; // Only set other tokens (VOI, UNIT)
+      usdcBalance = data.usdc; // Store USDC balance for VoiWithdrawModal
       lastFetched = new Date();
     } catch (err) {
       console.error('Error loading balances:', err);
@@ -66,6 +71,13 @@
   };
 
   const handleWithdraw = (tokenSymbol: string) => {
+    // If VOI, open the Voi Withdraw Modal instead of swap modal
+    if (tokenSymbol === 'VOI') {
+      showVoiWithdrawModal = true;
+      return;
+    }
+    
+    // For other tokens, use the swap placeholder modal
     swapModal = {
       isOpen: true,
       tokenSymbol,
@@ -194,5 +206,21 @@
     onClose={closeSwapModal}
     tokenSymbol={swapModal.tokenSymbol}
     action={swapModal.action}
+  />
+
+  <!-- Voi Withdraw Modal -->
+  <VoiWithdrawModal
+    isOpen={showVoiWithdrawModal}
+    onClose={() => {
+      showVoiWithdrawModal = false;
+    }}
+    onSuccess={() => {
+      // Refresh balances after successful withdrawal
+      loadBalances();
+    }}
+    address={address}
+    voiBalance={balances.find(b => b.symbol === 'VOI') || null}
+    usdcBalance={usdcBalance}
+    session={$page.data.session}
   />
 {/if}

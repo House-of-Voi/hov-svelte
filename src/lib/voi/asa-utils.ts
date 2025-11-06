@@ -157,6 +157,36 @@ export async function waitForConfirmation(txId: string, maxRounds: number = 4): 
 }
 
 /**
+ * Create a payment transaction for native VOI
+ * @param sender - The sender account address
+ * @param receiver - The receiver account address
+ * @param amount - The amount to transfer (in microVOI)
+ * @returns Unsigned transaction object
+ */
+export async function createPaymentTransaction(
+	sender: string,
+	receiver: string,
+	amount: bigint
+): Promise<algosdk.Transaction> {
+	try {
+		const suggestedParams = await algodClient.getTransactionParams().do();
+
+		// algosdk v3 uses 'sender' and 'receiver' instead of 'from' and 'to'
+		const paymentTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+			sender,
+			receiver,
+			amount,
+			suggestedParams
+		});
+
+		return paymentTxn;
+	} catch (error) {
+		console.error('Error creating payment transaction:', error);
+		throw new Error('Failed to create payment transaction');
+	}
+}
+
+/**
  * Create an ASA asset transfer transaction
  * @param sender - The sender account address
  * @param receiver - The receiver account address

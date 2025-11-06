@@ -110,6 +110,11 @@ export async function getProfileAccounts(profileId: string): Promise<AccountData
 /**
  * Get profile with all linked accounts
  *
+ * IMPORTANT: Accounts returned from this function are "connected" accounts only.
+ * The primary CDP-derived Voi address lives in session cookies, NOT in the database.
+ * The primaryAccount field here is for legacy compatibility and should NOT be used
+ * as a fallback for the primary address. Always use session.voiAddress for the primary address.
+ *
  * @param profileId - UUID of the profile
  * @returns Profile with accounts or null if profile not found
  */
@@ -123,6 +128,8 @@ export async function getProfileWithAccounts(
   }
 
   const accounts = await getProfileAccounts(profileId);
+  // Note: primaryAccount from DB is legacy and should not be used as fallback
+  // CDP-derived addresses (in session) are the only source of truth for primary accounts
   const primaryAccount = accounts.find((acc) => acc.is_primary) || null;
 
   return {

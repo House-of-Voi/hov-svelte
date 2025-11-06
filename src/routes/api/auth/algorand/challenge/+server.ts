@@ -1,12 +1,20 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createAdminClient } from '$lib/db/supabaseAdmin';
 import { getServerSessionFromCookies } from '$lib/auth/session';
+import { getSessionCookie } from '$lib/auth/cookies';
+import { validateCdpToken } from '$lib/auth/cdp-validation';
 import {
   ALGORAND_CHALLENGE_TTL_MS,
   createAlgorandLinkChallenge,
 } from '$lib/auth/algorand-link';
 
+/**
+ * GET /api/auth/algorand/challenge
+ *
+ * Creates a challenge token for linking external Algorand/Voi accounts.
+ * Base address is fetched from CDP on-demand - no database fallbacks.
+ * CDP must be active and verified for this endpoint to work.
+ */
 export const GET: RequestHandler = async ({ cookies }) => {
   try {
     const session = await getServerSessionFromCookies(cookies);
@@ -15,39 +23,29 @@ export const GET: RequestHandler = async ({ cookies }) => {
       return json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    const supabase = createAdminClient();
-
-    const { data: baseAccount } = await supabase
-      .from('accounts')
-      .select('address')
-      .eq('profile_id', session.sub)
-      .eq('chain', 'base')
-      .maybeSingle();
-
-    // Prefer DB value; fallback to session; as a last resort, use a placeholder string.
-    // Base address is included in the challenge payload for context but is not validated later.
-    const baseAddress = baseAccount?.address?.toLowerCase()
-      ?? session.baseWalletAddress?.toLowerCase()
-      ?? 'unknown';
-
-    if (!baseAccount && session.baseWalletAddress) {
-      try {
-        await supabase.from('accounts').upsert(
-          {
-            profile_id: session.sub,
-            chain: 'base',
-            address: baseAddress,
-            wallet_provider: 'coinbase-embedded',
-            is_primary: false,
-            derived_from_chain: null,
-            derived_from_address: null,
-          },
-          { onConflict: 'chain,address' }
-        );
-      } catch (error) {
-        console.warn('Failed to backfill Base account during challenge:', error);
-      }
+    // Get CDP access token from session cookie
+    const accessToken = getSessionCookie(cookies);
+    if (!accessToken) {
+      return json(
+        { error: 'CDP session not found. Please sign in with Coinbase wallet.' },
+        { status: 401 }
+      );
     }
+
+    // Fetch Base address from CDP on-demand (no DB fallback)
+    const cdpUser = await validateCdpToken(accessToken, {
+      timeout: 5000,
+      retries: 1,
+    });
+
+    if (!cdpUser) {
+      return json(
+        { error: 'CDP session expired or invalid. Please sign in again.' },
+        { status: 401 }
+      );
+    }
+
+    const baseAddress = cdpUser.walletAddress.toLowerCase();
 
     const { token, payload } = createAlgorandLinkChallenge(
       session.sub,
