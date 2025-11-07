@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SymbolId, WinningLine } from '$lib/game-engine/types';
-	import { getSymbolDisplay } from '$lib/game-engine/utils/gameConstants';
+	import { getSymbolDisplay, PAYLINE_PATTERNS } from '$lib/game-engine/utils/gameConstants';
 	import { onMount, onDestroy } from 'svelte';
 
 	interface Props {
@@ -54,7 +54,20 @@
 	 * Check if a position is part of a winning line
 	 */
 	function isWinningPosition(col: number, row: number): boolean {
-		return winningLines.some((line) => line.pattern[col] === row);
+		return winningLines.some((line) => {
+			// Handle both postMessage API (no pattern) and internal API (with pattern)
+			if ('pattern' in line && line.pattern) {
+				// Internal API: pattern exists
+				return line.pattern[col] === row;
+			} else if (line.paylineIndex !== undefined) {
+				// PostMessage API: look up pattern from PAYLINE_PATTERNS
+				const pattern = PAYLINE_PATTERNS[line.paylineIndex];
+				if (pattern && pattern[col] === row) {
+					return true;
+				}
+			}
+			return false;
+		});
 	}
 
 	/**

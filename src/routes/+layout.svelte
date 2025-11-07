@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
   import '../app.css';
   import favicon from '$lib/assets/favicon.svg';
   import UserNav from '$lib/components/UserNav.svelte';
@@ -15,6 +16,9 @@
   }
 
   let { children, data }: { children: () => unknown; data: LayoutData } = $props();
+
+  // Check if we're on the iframe route
+  const isIframeRoute = $derived($page.route.id === '/games/slots/iframe');
 
   let isAdminUser = $state(data.isAdminUser);
 
@@ -63,6 +67,7 @@
 
 <div class="min-h-screen bg-white dark:bg-neutral-950">
   <div class="flex min-h-screen flex-col">
+    {#if !isIframeRoute}
     <header class="sticky top-0 z-50 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-xl border-b border-neutral-200 dark:border-neutral-800">
       <div class="mx-auto max-w-7xl px-6">
         <div class="flex items-center justify-between h-16">
@@ -107,11 +112,21 @@
         </div>
       </div>
     </header>
+    {/if}
 
-    <main class="mx-auto max-w-7xl px-6 py-12 w-full min-h-[calc(100vh-16rem)] transition-all duration-300 flex-1">
-      {@render children()}
-    </main>
+    {#if isIframeRoute}
+      <!-- Iframe mode: no padding, full viewport -->
+      <main class="w-full h-screen m-0 p-0">
+        {@render children()}
+      </main>
+    {:else}
+      <!-- Normal mode: with padding and constraints -->
+      <main class="mx-auto max-w-7xl px-6 py-12 w-full min-h-[calc(100vh-16rem)] transition-all duration-300 flex-1">
+        {@render children()}
+      </main>
+    {/if}
 
+    {#if !isIframeRoute}
     <footer class="border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50">
       <div class="mx-auto max-w-7xl px-6 py-12">
         <div class="text-center">
@@ -130,8 +145,11 @@
         </div>
       </div>
     </footer>
+    {/if}
   </div>
 
+  {#if !isIframeRoute}
   <!-- Global Notification Container -->
   <NotificationContainer />
+  {/if}
 </div>
