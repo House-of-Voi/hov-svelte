@@ -385,6 +385,15 @@
 		
 		const amount = parseFloat(value);
 		if (value && !isNaN(amount) && amount > 0) {
+			// Check balance before fetching quote
+			if (voiBalance) {
+				const available = parseFloat(getAvailableBalance());
+				if (amount > available) {
+					// Don't fetch quote if balance is insufficient
+					return;
+				}
+			}
+			
 			debounceTimer = setTimeout(() => {
 				getQuote();
 			}, 500);
@@ -394,6 +403,16 @@
 	async function getQuote() {
 		if (!voiAmount || parseFloat(voiAmount) <= 0 || !address) {
 			return;
+		}
+
+		// Check balance before fetching quote
+		if (voiBalance) {
+			const amount = parseFloat(voiAmount);
+			const available = parseFloat(getAvailableBalance());
+			if (!isNaN(amount) && amount > available) {
+				// Don't fetch quote if balance is insufficient
+				return;
+			}
 		}
 
 		isLoadingQuote = true;
@@ -410,7 +429,7 @@
 				outputToken: 302190, // USDC
 				amount: amountAtomic,
 				slippageTolerance: 0.01,
-				poolId: '395553'
+				// poolId: '395553'
 			};
 
 			let response: Response;
@@ -1157,54 +1176,56 @@
 							<p class="text-sm font-medium text-neutral-700 dark:text-neutral-300">What you'll get</p>
 						</div>
 						
-						<div class="flex flex-col sm:flex-row items-center gap-3">
-							<div class="w-full sm:flex-1 p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
-								<div class="space-y-1">
-									<p class="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">You're selling</p>
-									<p class="text-2xl font-bold text-neutral-900 dark:text-neutral-100 font-mono">
-										{voiAmount}
-									</p>
-									<p class="text-sm font-medium text-neutral-600 dark:text-neutral-400">VOI</p>
-								</div>
-							</div>
-							
-							<div class="flex-shrink-0 flex flex-col items-center justify-center transform rotate-90 sm:rotate-0">
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									width="24"
-									height="24"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									class="text-primary-500 dark:text-primary-400"
-								>
-									<path d="M5 12h14M12 5l7 7-7 7"></path>
-								</svg>
-							</div>
-							
-							<div class="w-full sm:flex-1 p-4 bg-success-50 dark:bg-success-900/20 border-2 border-success-300 dark:border-success-700 rounded-lg">
-								<div class="space-y-2">
-									<p class="text-xs font-medium text-success-700 dark:text-success-300 uppercase tracking-wide">You'll receive</p>
-									<p class="text-3xl font-bold text-success-600 dark:text-success-400 font-mono">
-										{quoteAmount}
-									</p>
-									<p class="text-sm font-medium text-success-700 dark:text-success-300">USDC</p>
-									{#if minimumAmount}
-										<div class="pt-2 mt-2 border-t border-success-200 dark:border-success-800">
-											<p class="text-xs text-success-600 dark:text-success-400">
-												<span class="font-semibold">Minimum:</span> {minimumAmount} USDC
-											</p>
-											<p class="text-xs text-success-500 dark:text-success-500 mt-1">
-												(accounts for market changes)
-											</p>
-										</div>
-									{/if}
-								</div>
+					<div class="flex flex-col sm:flex-row items-stretch gap-3">
+						<div class="w-full sm:flex-1 p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg flex flex-col">
+							<div class="space-y-1 flex-1 flex flex-col justify-center">
+								<p class="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">You're selling</p>
+								<p class="text-2xl font-bold text-neutral-900 dark:text-neutral-100 font-mono">
+									{voiAmount}
+								</p>
+								<p class="text-sm font-medium text-neutral-600 dark:text-neutral-400">VOI</p>
 							</div>
 						</div>
+						
+						<div class="flex-shrink-0 flex flex-col items-center justify-center transform rotate-90 sm:rotate-0">
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="24"
+								height="24"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="text-primary-500 dark:text-primary-400"
+							>
+								<path d="M5 12h14M12 5l7 7-7 7"></path>
+							</svg>
+						</div>
+						
+						<div class="w-full sm:flex-1 p-4 bg-success-50 dark:bg-success-900/20 border-2 border-success-300 dark:border-success-700 rounded-lg flex flex-col">
+							<div class="space-y-2 flex-1 flex flex-col">
+								<p class="text-xs font-medium text-success-700 dark:text-success-300 uppercase tracking-wide">You'll receive</p>
+								<p class="text-3xl font-bold text-success-600 dark:text-success-400 font-mono">
+									{quoteAmount}
+								</p>
+								<p class="text-sm font-medium text-success-700 dark:text-success-300">USDC</p>
+								{#if minimumAmount}
+									<div class="pt-2 mt-2 border-t border-success-200 dark:border-success-800">
+										<p class="text-xs text-success-600 dark:text-success-400">
+											<span class="font-semibold">Minimum:</span> {minimumAmount} USDC
+										</p>
+										<p class="text-xs text-success-500 dark:text-success-500 mt-1">
+											(accounts for market changes)
+										</p>
+									</div>
+								{:else}
+									<div class="pt-2 mt-2"></div>
+								{/if}
+							</div>
+						</div>
+					</div>
 						
 						{#if priceImpact !== null && priceImpact > 0.01}
 							<div class="p-3 bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 rounded-lg">

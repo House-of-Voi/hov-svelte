@@ -409,13 +409,13 @@
                     onclick={() => handleTokenDeposit(balance.symbol)}
                     class="flex-1 px-3 py-2 text-xs font-semibold bg-success-100 dark:bg-success-600/20 text-success-600 dark:text-success-400 border border-success-300 dark:border-success-500/30 rounded hover:bg-success-200 dark:hover:bg-success-600/30 transition-colors uppercase tracking-wide"
                   >
-                    Deposit
+                    Buy / Deposit
                   </button>
                   <button
                     onclick={() => handleTokenWithdraw(balance.symbol)}
                     class="flex-1 px-3 py-2 text-xs font-semibold bg-primary-100 dark:bg-primary-600/20 text-primary-600 dark:text-primary-400 border border-primary-300 dark:border-primary-500/30 rounded hover:bg-primary-200 dark:hover:bg-primary-600/30 transition-colors uppercase tracking-wide"
                   >
-                    Withdraw
+                    Sell / Withdraw
                   </button>
                 </div>
               </div>

@@ -1,7 +1,6 @@
 import algosdk from 'algosdk';
 import { getWalletService } from './wallet-service';
-import { getInitializedCdp } from '$lib/auth/cdpClient';
-import { CdpAlgorandSigner } from '$lib/wallet/CdpAlgorandSigner';
+import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
 import type { SessionInfo } from '$lib/auth/session';
 
 /**
@@ -16,23 +15,10 @@ export async function signTransaction(
 	address: string,
 	session: SessionInfo | null
 ): Promise<Uint8Array> {
-	// Check if user has a CDP wallet (has cdpUserId)
+	// Check if user has a CDP wallet (has cdpUserId) - use stored keys
 	if (session?.cdpUserId) {
-		// Use CDP wallet - get Base address from CDP directly
-		const cdpSdk = await getInitializedCdp();
-
-		// Always get the Base wallet address from CDP getCurrentUser
-		const currentUser = await cdpSdk.getCurrentUser();
-		const baseWalletAddress =
-			(Array.isArray((currentUser as { evmAccounts?: string[] }).evmAccounts)
-				? (currentUser as { evmAccounts: string[] }).evmAccounts[0]
-				: undefined) || (currentUser as { walletAddress?: string }).walletAddress;
-
-		if (!baseWalletAddress) {
-			throw new Error('Unable to access your CDP wallet. Please refresh and try again.');
-		}
-
-		const signer = new CdpAlgorandSigner(cdpSdk, baseWalletAddress, address);
+		// Use stored keys for signing (no CDP interaction needed)
+		const signer = new StoredKeySigner(address);
 		const signedTxns = await signer.signTransactions([txn]);
 		return signedTxns[0];
 	} else {
@@ -84,24 +70,10 @@ export async function signTransactions(
 	// This ensures CDP derivation matches the transaction sender
 	const signerAddress = actualAddress || address;
 
-	// Check if user has a CDP wallet (has cdpUserId)
+	// Check if user has a CDP wallet (has cdpUserId) - use stored keys
 	if (session?.cdpUserId) {
-		// Use CDP wallet - get Base address from CDP directly
-		const cdpSdk = await getInitializedCdp();
-
-		// Always get the Base wallet address from CDP getCurrentUser
-		const currentUser = await cdpSdk.getCurrentUser();
-		const baseWalletAddress =
-			(Array.isArray((currentUser as { evmAccounts?: string[] }).evmAccounts)
-				? (currentUser as { evmAccounts: string[] }).evmAccounts[0]
-				: undefined) || (currentUser as { walletAddress?: string }).walletAddress;
-
-		if (!baseWalletAddress) {
-			throw new Error('Unable to access your CDP wallet. Please refresh and try again.');
-		}
-
-		// Use the actual transaction sender address for CDP signer
-		const signer = new CdpAlgorandSigner(cdpSdk, baseWalletAddress, signerAddress);
+		// Use stored keys for signing (no CDP interaction needed)
+		const signer = new StoredKeySigner(signerAddress);
 		return await signer.signTransactions(txns);
 	} else {
 		// Use native Voi wallet

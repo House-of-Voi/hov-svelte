@@ -3,6 +3,7 @@
   import Avatar from './Avatar.svelte';
   import { goto } from '$app/navigation';
   import { signOutCdpSession } from '$lib/auth/cdpClient';
+  import { clearKeys } from '$lib/auth/keyStorage';
 
   interface Profile {
     id: string;
@@ -41,15 +42,21 @@
 
   async function handleLogout() {
     try {
+      // Clear stored keys from browser storage
+      clearKeys();
+
+      // Sign out from CDP (if still available)
       await signOutCdpSession();
 
-      // Call backend logout endpoint to clear session
+      // Call backend logout endpoint to clear session cookies
       await fetch('/api/auth/logout', { method: 'POST' });
 
       // Redirect to auth page
       goto('/auth');
     } catch (error) {
       console.error('Logout error:', error);
+      // Still clear keys and redirect even if CDP signout fails
+      clearKeys();
       goto('/auth');
     }
   }

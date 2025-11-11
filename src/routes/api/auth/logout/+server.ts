@@ -1,6 +1,6 @@
-import { redirect } from '@sveltejs/kit';
+import { json, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { clearSessionCookie } from '$lib/auth/cookies';
+import { clearSessionCookie, clearVoiAddressCookie, clearKeyDerivationCookie } from '$lib/auth/cookies';
 import { getServerSessionFromCookies } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 
@@ -10,14 +10,19 @@ async function handleLogout(cookies: import('@sveltejs/kit').Cookies) {
     const supabase = createAdminClient();
     await supabase.from('sessions').delete().eq('id', session.jti);
   }
+  // Clear session, Voi address, and key derivation cookies
   clearSessionCookie(cookies);
-  throw redirect(303, '/auth');
+  clearVoiAddressCookie(cookies);
+  clearKeyDerivationCookie(cookies);
+  // Note: Client should clear stored keys from localStorage on logout
 }
 
 export const POST: RequestHandler = async ({ cookies }) => {
   await handleLogout(cookies);
+  return json({ ok: true });
 };
 
 export const GET: RequestHandler = async ({ cookies }) => {
   await handleLogout(cookies);
+  throw redirect(303, '/auth');
 };

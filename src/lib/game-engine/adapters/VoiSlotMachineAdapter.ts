@@ -317,7 +317,7 @@ export class VoiSlotMachineAdapter implements BlockchainAdapter {
 		
 		// Add payment transaction with pre-wrapped signer
 		spinComposer.addTransaction(paymentTxnWithSigner);
-
+		
 		log.debug('adding spin call');
 		// Add spin call
 		// The spin method expects args directly: { betAmount, maxPaylineIndex, index }

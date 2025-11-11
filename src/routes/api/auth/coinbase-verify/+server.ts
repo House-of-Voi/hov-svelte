@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types';
 import { z } from 'zod';
 import { createHash, randomUUID } from 'crypto';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
-import { setSessionCookie } from '$lib/auth/cookies';
+import { setSessionCookie, setKeyDerivationCookie } from '$lib/auth/cookies';
 import { validateCdpToken } from '$lib/auth/cdp-validation';
 import { validateReferralCode } from '$lib/referrals/validation';
 
@@ -189,29 +189,63 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
     // Base address comes from CDP directly, Voi address is derived client-side and stored in session cookie.
     // The accounts table is now reserved for "connected" addresses (additional wallets linked by users).
 
-    // Step 3: Create session with CDP user ID and access token
-    const sessionId = randomUUID();
+    // Step 3: Create or update session with CDP user ID and access token
     const ttlSeconds = 60 * 60 * 24 * 7; // 7 days
-
     const sessionToken = accessToken;
+    const tokenHash = createHash('sha256').update(sessionToken).digest('hex');
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
 
     // Get client IP address
     const clientAddress = getClientAddress();
+    const userAgent = request.headers.get('user-agent') ?? null;
 
-    // Store session metadata
-    await supabase.from('sessions').insert({
-      id: sessionId,
-      profile_id: finalProfile.id,
-      cdp_user_id: cdpUser.userId,
-      cdp_access_token_hash: createHash('sha256').update(sessionToken).digest('hex'),
-      jwt_id: null, // No longer using custom JWTs
-      expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
-      ip: clientAddress,
-      user_agent: request.headers.get('user-agent') ?? null,
-    });
+    // Check if a session already exists for this CDP user ID
+    const { data: existingSession } = await supabase
+      .from('sessions')
+      .select('id')
+      .eq('cdp_user_id', cdpUser.userId)
+      .eq('profile_id', finalProfile.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingSession) {
+      // Update existing session with new token and expiration
+      await supabase
+        .from('sessions')
+        .update({
+          cdp_access_token_hash: tokenHash,
+          expires_at: expiresAt,
+          ip: clientAddress,
+          user_agent: userAgent,
+        })
+        .eq('id', existingSession.id);
+    } else {
+      // Create new session
+      const sessionId = randomUUID();
+      await supabase.from('sessions').insert({
+        id: sessionId,
+        profile_id: finalProfile.id,
+        cdp_user_id: cdpUser.userId,
+        cdp_access_token_hash: tokenHash,
+        jwt_id: null, // No longer using custom JWTs
+        expires_at: expiresAt,
+        ip: clientAddress,
+        user_agent: userAgent,
+      });
+    }
 
     // Step 4: Set session token in cookie (this will be the CDP access token)
     setSessionCookie(cookies, sessionToken, ttlSeconds);
+
+    // Step 5: Set key derivation cookie for client-side key encryption
+    // This cookie contains a hash of the session token that can be read by JavaScript
+    // to encrypt/decrypt stored private keys
+    const derivationValue = createHash('sha256')
+      .update(sessionToken)
+      .update('house-of-voi-key-derivation') // Add domain-specific salt
+      .digest('hex');
+    setKeyDerivationCookie(cookies, derivationValue, ttlSeconds);
 
     return json({
       ok: true,

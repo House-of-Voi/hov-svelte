@@ -5,6 +5,7 @@
 	import { getInitializedCdp } from '$lib/auth/cdpClient';
 	import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
 	import { buildProofOfOwnershipTransaction } from '$lib/chains/algorand-browser';
+	import { getStoredVoiAddress, hasKeys, getKeys } from '$lib/auth/keyStorage';
 	import algosdk from 'algosdk';
 
 	import type { SessionInfo } from '$lib/auth/session';
@@ -18,12 +19,14 @@
 
 	let isEstablishing = $state(false);
 	let error = $state<string | null>(null);
+	let hasEstablished = $state(false); // Track if we've already tried to establish
 
 	/**
 	 * Establishes the Voi session by:
 	 * 1. Checking if session already has voiAddress
-	 * 2. If not, deriving it from CDP and storing it via API
-	 * 3. Redirecting to /auth if no session exists
+	 * 2. If not, checking stored keys for Voi address
+	 * 3. If keys missing, attempting to recover from CDP (fallback)
+	 * 4. Redirecting to /auth if no session exists and recovery fails
 	 */
 	async function establishVoiSession() {
 		if (!browser) return;
@@ -32,107 +35,155 @@
 			isEstablishing = true;
 			error = null;
 
-		// Check if we already have a Voi address in session
-		// CDP is the source of truth - never fall back to API/DB
-		if (session?.voiAddress) {
-			// Session already has Voi address - nothing to do
-			console.log('✅ Voi address already in session:', session.voiAddress);
-			return;
-		}
-
-		// Need to establish Voi session
-		// 1. Get CDP SDK
-		const cdpSdk = await getInitializedCdp();
-		const user = await cdpSdk.getCurrentUser();
-
-		// CDP session is the source of truth - if no user, CDP is not signed in
-		// This means the user needs to re-authenticate
-		// Clear the HTTP session cookie since CDP session is expired
-		if (!user) {
-			console.warn('No CDP user found - CDP session not active, clearing session and redirecting to auth');
-			// Clear the HTTP session cookie since CDP is not signed in
-			// Use a query parameter to tell auth page not to redirect back
-			await goto('/auth?expired=true');
-			return;
-		}
-
-		// 2. Get EVM accounts
-		const evmAccounts = user.evmAccounts || [];
-		if (evmAccounts.length === 0) {
-			throw new Error('No Coinbase EVM accounts available for this session.');
-		}
-
-		// 3. Export Base private key
-		let exportedPrivateKey: string | null = null;
-		let baseWalletAddress: string | null = null;
-
-		for (const candidate of evmAccounts) {
-			const formatted = candidate.startsWith('0x')
-				? (candidate as `0x${string}`)
-				: (`0x${candidate.replace(/^0x/, '')}` as `0x${string}`);
-
-			try {
-				const { privateKey } = await cdpSdk.exportEvmAccount({
-					evmAccount: formatted,
-				});
-
-				if (privateKey) {
-					exportedPrivateKey = privateKey;
-					baseWalletAddress = formatted;
-					break;
-				}
-			} catch (exportError) {
-				console.warn('CDP key export failed for candidate', candidate, exportError);
+			// Check if we already have a Voi address in session
+			if (session?.voiAddress) {
+				// Session already has Voi address - nothing to do
+				console.log('✅ Voi address already in session:', session.voiAddress);
+				return;
 			}
-		}
 
-		if (!exportedPrivateKey || !baseWalletAddress) {
-			throw new Error('Failed to export Base private key from CDP wallet.');
-		}
+			// Try to get Voi address from stored keys and establish session
+			if (hasKeys()) {
+				const storedKeys = await getKeys();
+				if (storedKeys?.voiAddress) {
+					console.log('✅ Voi address found in stored keys:', storedKeys.voiAddress);
+					
+					// Establish session using stored keys
+					// Convert hex string back to Uint8Array for signing
+					const voiPrivateKeyHex = storedKeys.voiPrivateKey.replace(/^0x/, '');
+					if (voiPrivateKeyHex.length !== 128) {
+						throw new Error('Invalid stored Voi private key length');
+					}
+					
+					const voiPrivateKey = new Uint8Array(
+						voiPrivateKeyHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16))
+					);
+					
+					// Build and sign proof transaction
+					const challengeToken = `voi-session-${Date.now()}-${Math.random().toString(36)}`;
+					const proofTxn = buildProofOfOwnershipTransaction(storedKeys.voiAddress, challengeToken);
+					const signedTxn = algosdk.signTransaction(proofTxn, voiPrivateKey);
+					const signedTxnBase64 = algosdk.bytesToBase64(signedTxn.blob);
+					
+					// Clean up private key from memory
+					voiPrivateKey.fill(0);
+					
+					// Send to API to establish session
+					const response = await fetch('/api/auth/voi/session', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							voiAddress: storedKeys.voiAddress,
+							signedTransaction: signedTxnBase64,
+						}),
+					});
+					
+					const result = await response.json();
+					
+					if (!response.ok || !result.ok) {
+						throw new Error(result.error || 'Failed to establish Voi session');
+					}
+					
+					console.log('✅ Voi session established using stored keys:', result.voiAddress);
+					
+					// Small delay to ensure cookie is set, then reload
+					// This ensures the server can read the cookie on the next request
+					setTimeout(() => {
+						window.location.reload();
+					}, 100);
+					return;
+				}
+			}
 
-		// 4. Derive Voi account from EVM private key
-		const derivedAccount = deriveAlgorandAccountFromEVM(exportedPrivateKey);
+			// If no stored keys, attempt to recover from CDP (fallback)
+			console.log('⚠️ No stored keys found, attempting CDP recovery...');
+			const cdpSdk = await getInitializedCdp();
+			const user = await cdpSdk.getCurrentUser();
 
-		// Clean up private key immediately
-		exportedPrivateKey = '';
+			// If no CDP user, session is invalid - redirect to auth
+			if (!user) {
+				console.warn('No CDP user found - session invalid, redirecting to auth');
+				await goto('/auth?expired=true');
+				return;
+			}
 
-		// 5. Build and sign proof transaction
-		// Use a simple challenge token (timestamp + random)
-		const challengeToken = `voi-session-${Date.now()}-${Math.random().toString(36)}`;
-		const voiAddressStr = typeof derivedAccount.addr === 'string' ? derivedAccount.addr : derivedAccount.addr.toString();
-		const proofTxn = buildProofOfOwnershipTransaction(voiAddressStr, challengeToken);
-		const signedTxn = algosdk.signTransaction(proofTxn, derivedAccount.sk);
-		const signedTxnBase64 = algosdk.bytesToBase64(signedTxn.blob);
+			// Get EVM accounts from CDP
+			const evmAccounts = user.evmAccounts || [];
+			if (evmAccounts.length === 0) {
+				throw new Error('No Coinbase EVM accounts available for this session.');
+			}
 
-		// Clean up secret key
-		derivedAccount.sk.fill(0);
+			// Export Base private key from CDP (for recovery)
+			let exportedPrivateKey: string | null = null;
+			let baseWalletAddress: string | null = null;
 
-		// 6. Send to API to establish session
-		const response = await fetch('/api/auth/voi/session', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				voiAddress: derivedAccount.addr,
-				signedTransaction: signedTxnBase64,
-			}),
-		});
+			for (const candidate of evmAccounts) {
+				const formatted = candidate.startsWith('0x')
+					? (candidate as `0x${string}`)
+					: (`0x${candidate.replace(/^0x/, '')}` as `0x${string}`);
 
-		const result = await response.json();
+				try {
+					const { privateKey } = await cdpSdk.exportEvmAccount({
+						evmAccount: formatted,
+					});
 
-		if (!response.ok || !result.ok) {
-			throw new Error(result.error || 'Failed to establish Voi session');
-		}
+					if (privateKey) {
+						exportedPrivateKey = privateKey;
+						baseWalletAddress = formatted;
+						break;
+					}
+				} catch (exportError) {
+					console.warn('CDP key export failed for candidate', candidate, exportError);
+				}
+			}
 
-		console.log('✅ Voi session established:', result.voiAddress);
-		
-		// Invalidate page data to refresh with new Voi address
-		await invalidateAll();
+			if (!exportedPrivateKey || !baseWalletAddress) {
+				throw new Error('Failed to export Base private key from CDP wallet.');
+			}
+
+			// Derive Voi account from EVM private key
+			const derivedAccount = deriveAlgorandAccountFromEVM(exportedPrivateKey);
+
+			// Clean up private key immediately
+			exportedPrivateKey = '';
+
+			// Build and sign proof transaction
+			const challengeToken = `voi-session-${Date.now()}-${Math.random().toString(36)}`;
+			const voiAddressStr = typeof derivedAccount.addr === 'string' ? derivedAccount.addr : derivedAccount.addr.toString();
+			const proofTxn = buildProofOfOwnershipTransaction(voiAddressStr, challengeToken);
+			const signedTxn = algosdk.signTransaction(proofTxn, derivedAccount.sk);
+			const signedTxnBase64 = algosdk.bytesToBase64(signedTxn.blob);
+
+			// Clean up secret key
+			derivedAccount.sk.fill(0);
+
+			// Send to API to establish session
+			const response = await fetch('/api/auth/voi/session', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					voiAddress: derivedAccount.addr,
+					signedTransaction: signedTxnBase64,
+				}),
+			});
+
+			const result = await response.json();
+
+			if (!response.ok || !result.ok) {
+				throw new Error(result.error || 'Failed to establish Voi session');
+			}
+
+			console.log('✅ Voi session established via CDP recovery:', result.voiAddress);
+			
+			// Small delay to ensure cookie is set, then reload
+			setTimeout(() => {
+				window.location.reload();
+			}, 100);
 		} catch (err) {
 			console.error('Failed to establish Voi session:', err);
 			error = err instanceof Error ? err.message : 'Failed to establish Voi session';
 
-			// CDP session is the source of truth - if we can't restore it, user needs to re-authenticate
-			// Only redirect for authentication-related errors (not transient network errors)
+			// Only redirect for authentication-related errors
 			if (
 				err instanceof Error && (
 					err.message.includes('Not authenticated') ||
@@ -142,8 +193,7 @@
 					err.message.includes('401')
 				)
 			) {
-				console.warn('CDP session restoration failed - redirecting to auth');
-				// Use a query parameter to tell auth page not to redirect back
+				console.warn('Session restoration failed - redirecting to auth');
 				await goto('/auth?expired=true');
 				return;
 			}
@@ -153,8 +203,17 @@
 		}
 	}
 
-	onMount(() => {
-		if (browser) {
+	// Watch for session changes and establish if needed
+	$effect(() => {
+		if (browser && !isEstablishing && !hasEstablished) {
+			// If session already has voiAddress, we're done
+			if (session?.voiAddress) {
+				hasEstablished = true;
+				return;
+			}
+			
+			// Otherwise, try to establish (only once)
+			hasEstablished = true;
 			establishVoiSession();
 		}
 	});

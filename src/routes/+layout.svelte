@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { browser } from '$app/environment';
+  import { invalidateAll } from '$app/navigation';
   import '../app.css';
   import favicon from '$lib/assets/favicon.svg';
   import UserNav from '$lib/components/UserNav.svelte';
@@ -8,6 +10,7 @@
   import NotificationContainer from '$lib/components/ui/NotificationContainer.svelte';
   import type { SessionInfo } from '$lib/auth/session';
   import type { ProfileData } from '$lib/profile/data';
+  import { validateStoredKeys, handleSessionRecovery } from '$lib/auth/sessionRecovery';
 
   interface LayoutData {
     session: SessionInfo | null;
@@ -21,6 +24,7 @@
   const isIframeRoute = $derived($page.route.id === '/games/slots/iframe');
 
   let isAdminUser = $state(data.isAdminUser);
+  let recoveryAttempted = $state(false);
 
   async function refreshAdminStatus() {
     try {
@@ -39,17 +43,49 @@
     }
   }
 
+  /**
+   * Validates key storage and handles recovery if needed
+   */
+  async function validateAndRecoverKeys(): Promise<void> {
+    if (!browser || recoveryAttempted) {
+      return;
+    }
+
+    recoveryAttempted = true;
+
+    // If we have a session, check if keys are stored
+    if (data.session) {
+      const keysValid = await validateStoredKeys();
+      if (!keysValid) {
+        // Keys missing - attempt recovery
+        console.log('Keys missing, attempting recovery...');
+        await handleSessionRecovery();
+      }
+    }
+  }
+
   onMount(() => {
     const handleLoginSuccess = () => {
       refreshAdminStatus();
     };
 
     window.addEventListener('hov:login-success', handleLoginSuccess);
+
+    // Validate key storage on mount
+    if (browser) {
+      validateAndRecoverKeys();
+    }
+
     return () => window.removeEventListener('hov:login-success', handleLoginSuccess);
   });
 
   $effect(() => {
     isAdminUser = data.isAdminUser;
+
+    // Validate keys when session changes
+    if (browser && data.session && !recoveryAttempted) {
+      validateAndRecoverKeys();
+    }
   });
 
   const disabledNavClass =

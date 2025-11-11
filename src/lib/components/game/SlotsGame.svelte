@@ -21,9 +21,8 @@
 	import { SpinStatus, GameEventType } from '$lib/game-engine/types';
 
 	// Wallet signing
-	import { CdpAlgorandSigner } from '$lib/wallet/CdpAlgorandSigner';
-	import { getInitializedCdp } from '$lib/auth/cdpClient';
-	import { deriveAlgorandAddressFromEVM } from '$lib/chains/algorand-derive';
+	import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
+	import { getStoredVoiAddress } from '$lib/auth/keyStorage';
 
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
@@ -73,136 +72,53 @@
 	/**
 	 * Initialize the game engine
 	 */
-	onMount(async () => {
-		// Clean up any existing engine first
-		if (engine) {
-			console.log('🧹 Cleaning up existing engine before creating new one');
-			engine.destroy();
-			engine = null;
+	async function initializeEngine() {
+		// Don't initialize if already initializing or already initialized
+		if (engine || cleanupFn) {
+			console.log('⏭️ Engine already initialized or initializing, skipping');
+			return;
 		}
 
-		// Clean up any existing cleanup function
-		if (cleanupFn) {
-			cleanupFn();
-			cleanupFn = null;
-		}
+		console.log('🚀 Starting engine initialization...');
 
 		const unsubscribers: Array<() => void> = [];
 
 		try {
-			// Initialize CDP and create signer
-			console.log('🔐 Initializing CDP wallet signer...');
-			const cdpSdk = await getInitializedCdp();
+			// Initialize signer using stored keys
+			console.log('🔐 Initializing wallet signer from stored keys...');
 
-			const session = $page.data.session;
+			// Try to get session from page data (may not be available in all routes)
+			const session = $page.data.session || null;
 
-			if (!session?.cdpUserId) {
-				gameStore.setError('Coinbase wallet not linked. Please sign in with your CDP wallet to play.');
-				return;
+			// Get Voi address from props first, then session, then stored keys
+			playerAlgorandAddress = algorandAddress || null;
+
+			// If no address from props, try session
+			if (!playerAlgorandAddress && session?.voiAddress) {
+				playerAlgorandAddress = session.voiAddress;
 			}
 
-			let baseWalletAddress: string | null = session.baseWalletAddress ?? null;
-			playerAlgorandAddress = null;
-
-			const candidateAccounts = new Set<string>();
-
-			const addCandidate = (value?: string | null) => {
-				if (typeof value !== 'string' || value.length === 0) return;
-				candidateAccounts.add(value);
-				const lower = value.toLowerCase();
-				if (lower !== value) candidateAccounts.add(lower);
-			};
-
-			addCandidate(baseWalletAddress);
-
-			try {
-				const currentUser = await cdpSdk.getCurrentUser();
-				const userAccounts: Array<string | undefined> = [
-					...(Array.isArray((currentUser as { evmAccounts?: string[] }).evmAccounts)
-						? (currentUser as { evmAccounts: string[] }).evmAccounts
-						: []),
-					...(Array.isArray((currentUser as { evmSmartAccounts?: string[] }).evmSmartAccounts)
-						? (currentUser as { evmSmartAccounts: string[] }).evmSmartAccounts
-						: []),
-					(currentUser as { walletAddress?: string }).walletAddress,
-				];
-
-				for (const account of userAccounts) {
-					addCandidate(account ?? null);
-				}
-			} catch (lookupError) {
-				console.warn('Failed to enumerate CDP user accounts:', lookupError);
+			// If still no address, try to get it from stored keys
+			if (!playerAlgorandAddress) {
+				console.log('No address from props or session, checking stored keys...');
+				const storedVoiAddress = await getStoredVoiAddress();
+				playerAlgorandAddress = storedVoiAddress;
 			}
-
-			if (candidateAccounts.size === 0) {
-				throw new Error('No Coinbase EVM accounts available for this session.');
-			}
-
-			let exportedPrivateKey: string | null = null;
-
-			for (const candidate of candidateAccounts) {
-				const formatted =
-					candidate.startsWith('0x')
-						? (candidate as `0x${string}`)
-						: (`0x${candidate.replace(/^0x/, '')}` as `0x${string}`);
-
-				try {
-					const { privateKey } = await cdpSdk.exportEvmAccount({
-						evmAccount: formatted,
-					});
-
-					if (privateKey) {
-						exportedPrivateKey = privateKey;
-						baseWalletAddress = formatted;
-						break;
-					}
-				} catch (exportError) {
-					console.warn('CDP key export failed for candidate', candidate, exportError);
-				}
-			}
-
-			if (!exportedPrivateKey || !baseWalletAddress) {
-				throw new Error('Failed to export Base private key from CDP wallet.');
-			}
-
-			// Use the address passed from the server (derived from CDP and stored in session)
-			// We still need to derive it here to verify consistency, but we trust the session value
-			const derivedAddress = deriveAlgorandAddressFromEVM(exportedPrivateKey);
-
-			// Best-effort cleanup of exported key material
-			exportedPrivateKey = null;
-
-			// Use the algorandAddress from props (from server session) if available
-			playerAlgorandAddress = algorandAddress || derivedAddress;
 
 			if (!playerAlgorandAddress) {
+				console.warn('Voi address not available from any source');
 				gameStore.setError(
 					'Voi address not available. Please refresh the page to establish your session.'
 				);
 				return;
 			}
 
-			// Log a warning if the server-provided address doesn't match what we derived
-			if (algorandAddress && algorandAddress !== derivedAddress) {
-				console.warn('⚠️ Server Voi address mismatch! Server:', algorandAddress, 'Derived:', derivedAddress);
-			}
+			console.log('✅ Voi address found:', playerAlgorandAddress);
 
-			if (!baseWalletAddress) {
-				gameStore.setError('Unable to access your Base wallet. Please refresh and try again.');
-				return;
-			}
+			// Create signer using stored keys
+			const signer = new StoredKeySigner(playerAlgorandAddress);
 
-			if (!baseWalletAddress.startsWith('0x')) {
-				baseWalletAddress = `0x${baseWalletAddress.replace(/^0x/, '')}`;
-			}
-
-			const signer = new CdpAlgorandSigner(
-				cdpSdk,
-				baseWalletAddress,
-				playerAlgorandAddress!
-			);
-
-			console.log('✅ CDP signer created for address:', playerAlgorandAddress);
+			console.log('✅ Stored key signer created for address:', playerAlgorandAddress);
 
 			// Create Voi adapter with wallet signer
 			const adapter = new VoiSlotMachineAdapter({
@@ -255,25 +171,39 @@
 			);
 
 			// Initialize engine
+			console.log('🔧 Initializing engine...');
 			await engine.initialize();
+			console.log('✅ Engine initialized successfully');
 
 			// Get slot config
+			console.log('📋 Fetching slot config...');
 			slotConfig = await adapter.getContractConfig();
 			reels = slotConfig.reelConfig.reels;
+			console.log('✅ Slot config loaded');
+
+			// Fetch initial balance explicitly
+			console.log('💰 Fetching initial balance...');
+			const initialBalance = await engine.getBalance();
+			console.log('✅ Initial balance:', initialBalance);
 
 			console.log('✅ SlotsGame mounted and initialized');
 		} catch (error) {
-			console.error('Failed to initialize game:', error);
+			console.error('❌ Failed to initialize game:', error);
 			const errorMessage = error instanceof Error ? error.message : 'Failed to initialize game';
 
 			// Provide user-friendly error messages
-			if (errorMessage.includes('CDP') || errorMessage.includes('wallet')) {
+			if (errorMessage.includes('No stored keys') || errorMessage.includes('keys found')) {
+				gameStore.setError('Wallet keys not found. Please log in again to export and store your keys.');
+			} else if (errorMessage.includes('CDP') || errorMessage.includes('wallet')) {
 				gameStore.setError('Wallet connection failed. Please refresh and try again.');
 			} else if (errorMessage.includes('not linked')) {
 				gameStore.setError('Algorand wallet not linked. Please link your wallet first.');
 			} else {
-				gameStore.setError(errorMessage);
+				gameStore.setError(`Failed to initialize game: ${errorMessage}`);
 			}
+			
+			// Don't set cleanupFn if initialization failed
+			cleanupFn = null;
 		}
 
 		const cleanup = () => {
@@ -289,7 +219,38 @@
 		};
 
 		cleanupFn = cleanup;
-		return cleanup;
+	}
+
+	// Initialize on mount
+	onMount(() => {
+		initializeEngine();
+	});
+
+	// Re-initialize when session or address becomes available
+	$effect(() => {
+		const session = $page.data.session || null;
+		const hasAddress = algorandAddress || session?.voiAddress;
+		
+		// If we have address but no engine, try to initialize
+		// Don't require session - we can get address from stored keys
+		if (hasAddress && !engine && !cleanupFn) {
+			console.log('🔄 Address available from props/session, initializing engine...');
+			initializeEngine().catch(err => {
+				console.error('Failed to initialize engine in effect:', err);
+			});
+		} else if (!hasAddress && !engine && !cleanupFn) {
+			// If no address from props/session, try stored keys
+			getStoredVoiAddress().then(storedAddress => {
+				if (storedAddress && !engine && !cleanupFn) {
+					console.log('🔄 Stored address found, initializing engine...');
+					initializeEngine().catch(err => {
+						console.error('Failed to initialize engine with stored address:', err);
+					});
+				}
+			}).catch(err => {
+				console.error('Failed to get stored address:', err);
+			});
+		}
 	});
 
 	// Ensure cleanup on component destroy
@@ -363,7 +324,26 @@
 	 * Handle balance refresh
 	 */
 	async function handleRefreshBalance() {
-		if (!engine || isRefreshingBalance) return;
+		if (isRefreshingBalance) return;
+
+		// If engine not initialized, try to initialize it
+		if (!engine) {
+			console.log('🔄 Engine not initialized, attempting to initialize...');
+			try {
+				await initializeEngine();
+				// Wait a bit for initialization to complete
+				await new Promise(resolve => setTimeout(resolve, 500));
+			} catch (error) {
+				console.error('Failed to initialize engine on refresh:', error);
+				gameStore.setError('Failed to initialize game. Please refresh the page.');
+				return;
+			}
+		}
+
+		if (!engine) {
+			gameStore.setError('Game engine not available. Please refresh the page.');
+			return;
+		}
 
 		try {
 			isRefreshingBalance = true;

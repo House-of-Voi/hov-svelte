@@ -400,8 +400,13 @@ export class SlotMachineEngine {
     this.store.updateSpin(spin.id, outcomeData);
     Object.assign(spin, outcomeData);
 
+    // Check if this is a win
+    const isWin = outcome.totalPayout > 0;
+
     // Attempt contract claim in the background; if it verifies, we can later update
-    this.attemptClaimInBackground(spin).catch(() => {});
+    this.attemptClaimInBackground(spin, isWin).catch(() => {
+      // Claim failed, but that's okay - outcome already shown
+    });
   }
 
   /**
@@ -474,7 +479,7 @@ export class SlotMachineEngine {
   /**
    * Attempt to verify claim on-chain without blocking the UI
    */
-  private async attemptClaimInBackground(spin: QueuedSpin): Promise<void> {
+  private async attemptClaimInBackground(spin: QueuedSpin, isWin: boolean): Promise<void> {
     if (!spin.claimBlock || !spin.betKey) return;
 
     try {
@@ -497,6 +502,35 @@ export class SlotMachineEngine {
       );
     } catch {
       // Non-fatal: leave calculated outcome in place
+    } finally {
+      // If it was a win, schedule balance refresh 5 seconds after claim completes
+      if (isWin) {
+        setTimeout(async () => {
+          try {
+            const previousBalance = this.store.balance;
+            const balance = await this.adapter.getBalance(this.walletAddress!);
+            this.store.setBalance(balance);
+            
+            // Emit balance update event so GameBridge can send it via postMessage
+            this.eventBus.emit({
+              type: GameEventType.BALANCE_UPDATED,
+              timestamp: Date.now(),
+              payload: {
+                balance: {
+                  current: balance,
+                  reserved: this.store.reservedBalance,
+                  available: balance - this.store.reservedBalance,
+                  lastUpdated: Date.now(),
+                },
+                previousBalance,
+                change: balance - previousBalance,
+              },
+            });
+          } catch (error) {
+            console.error('Failed to refresh balance after claim:', error);
+          }
+        }, 5000);
+      }
     }
   }
 

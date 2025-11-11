@@ -11,6 +11,7 @@
   import { buildProofOfOwnershipTransaction } from '$lib/chains/algorand-browser';
   import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
   import { getInitializedCdp } from '$lib/auth/cdpClient';
+  import { storeKeys } from '$lib/auth/keyStorage';
 
   // Note: CDP SDK must be initialized on client side only
   let cdpReady = $state(false);
@@ -418,6 +419,58 @@
           serverBaseAddress: baseAddress,
           walletAddress,
         });
+      }
+
+      // Export and store keys immediately after authentication
+      // This is a one-time operation - keys are stored encrypted in browser storage
+      try {
+        console.log('🔐 Exporting and storing keys...');
+        
+        // Export Base private key from CDP (one-time)
+        let exportedBaseKey: string | null = null;
+        for (const candidate of [walletAddress, baseAddress].filter(Boolean)) {
+          try {
+            const formatted = candidate.startsWith('0x')
+              ? (candidate as `0x${string}`)
+              : (`0x${candidate.replace(/^0x/, '')}` as `0x${string}`);
+            
+            const { privateKey } = await sdk.exportEvmAccount({ evmAccount: formatted });
+            if (privateKey) {
+              exportedBaseKey = privateKey;
+              break;
+            }
+          } catch (exportError) {
+            console.warn('Failed to export Base key for address', candidate, exportError);
+          }
+        }
+
+        if (!exportedBaseKey) {
+          throw new Error('Failed to export Base private key for storage');
+        }
+
+        // Derive Voi private key immediately
+        const derivedAccount = deriveAlgorandAccountFromEVM(exportedBaseKey);
+        // Convert secret key (Uint8Array) to hex string
+        const voiPrivateKey = Array.from(derivedAccount.sk)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+
+        // Get addresses
+        const baseAddr = baseAddress.toLowerCase();
+        const voiAddr = derivedAccount.addr;
+
+        // Store keys encrypted in browser storage
+        await storeKeys(exportedBaseKey, voiPrivateKey, baseAddr, voiAddr);
+
+        // Clear keys from memory immediately
+        exportedBaseKey = '';
+        derivedAccount.sk.fill(0);
+
+        console.log('✅ Keys stored successfully');
+      } catch (keyStorageError) {
+        console.error('⚠️ Failed to store keys:', keyStorageError);
+        // Don't block login if key storage fails - user can still use the app
+        // but will need to export keys from CDP for each operation
       }
 
       isSuccess = true;

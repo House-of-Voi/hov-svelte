@@ -5,9 +5,9 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import { SlotMachineIcon } from '$lib/components/icons';
 	import { GameBridge } from '$lib/game-engine/bridge/GameBridge';
-	import { CdpAlgorandSigner } from '$lib/wallet/CdpAlgorandSigner';
-	import { getInitializedCdp } from '$lib/auth/cdpClient';
-	import { deriveAlgorandAddressFromEVM } from '$lib/chains/algorand-derive';
+	import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
+	import { getStoredVoiAddress } from '$lib/auth/keyStorage';
+	import { page } from '$app/stores';
 
 	interface Props {
 		contractId?: bigint;
@@ -43,11 +43,32 @@
 	});
 
 	// Initialize bridge for external mode
-	onMount(async () => {
-		if (mode === 'external' && contractId && algorandAddress) {
-			await initializeBridge();
+	onMount(() => {
+		if (mode === 'external' && contractId) {
+			initializeBridge();
 		}
-		});
+	});
+
+	// Re-initialize when address becomes available
+	$effect(() => {
+		if (mode === 'external' && contractId && !bridge && !isInitializing) {
+			const hasAddress = algorandAddress || $page.data.session?.voiAddress;
+			if (hasAddress) {
+				console.log('🔄 Address available, initializing bridge...');
+				initializeBridge();
+			} else {
+				// Try to get from stored keys
+				getStoredVoiAddress().then(storedAddress => {
+					if (storedAddress && !bridge && !isInitializing) {
+						console.log('🔄 Stored address found, initializing bridge...');
+						initializeBridge();
+					}
+				}).catch(err => {
+					console.error('Failed to get stored address:', err);
+				});
+			}
+		}
+	});
 
 	onDestroy(() => {
 		if (bridge) {
@@ -57,7 +78,7 @@
 	});
 
 	async function initializeBridge() {
-		if (!contractId || !algorandAddress || isInitializing) {
+		if (!contractId || isInitializing || bridge) {
 			return;
 		}
 
@@ -65,65 +86,47 @@
 		iframeError = null;
 
 		try {
-			// Get CDP SDK and wallet setup (similar to SlotsGame)
-			const cdpSdk = await getInitializedCdp();
-			if (!cdpSdk) {
-				throw new Error('CDP SDK not initialized');
+			console.log('🚀 Initializing GameBridge...');
+			
+			// Get Voi address from props, session, or stored keys
+			let voiAddress: string | null = algorandAddress || null;
+
+			// If no address from props, try to get it from session
+			if (!voiAddress) {
+				const session = $page.data.session;
+				voiAddress = session?.voiAddress || null;
+				console.log('Address from session:', voiAddress);
 			}
 
-			// Get current user and EVM address
-			const user = await cdpSdk.getCurrentUser();
-			if (!user) {
-				throw new Error('No user logged in');
+			// If still no address, try to get it from stored keys
+			if (!voiAddress) {
+				console.log('No address from props/session, checking stored keys...');
+				voiAddress = await getStoredVoiAddress();
+				console.log('Address from stored keys:', voiAddress);
 			}
 
-			// Get wallet address from user (similar to SlotsGame)
-			const userAccounts: Array<string | undefined> = [
-				...(Array.isArray((user as { evmAccounts?: string[] }).evmAccounts)
-					? (user as { evmAccounts: string[] }).evmAccounts
-					: []),
-				...(Array.isArray((user as { evmSmartAccounts?: string[] }).evmSmartAccounts)
-					? (user as { evmSmartAccounts: string[] }).evmSmartAccounts
-					: []),
-				(user as { walletAddress?: string }).walletAddress,
-			];
-
-			let baseWalletAddress: string | null = null;
-			for (const account of userAccounts) {
-				if (account) {
-					baseWalletAddress = account;
-					break;
-				}
+			if (!voiAddress) {
+				throw new Error('Voi address not available. Please refresh the page to establish your session.');
 			}
 
-			if (!baseWalletAddress) {
-				throw new Error('Unable to access your Base wallet');
-			}
+			// Create wallet signer using stored keys
+			const signer = new StoredKeySigner(voiAddress);
 
-			if (!baseWalletAddress.startsWith('0x')) {
-				baseWalletAddress = `0x${baseWalletAddress.replace(/^0x/, '')}`;
-			}
-
-			// Create wallet signer (cast cdpSdk to match expected type)
-			const signer = new CdpAlgorandSigner(
-				cdpSdk as any, // Type compatibility issue with CDP SDK types
-				baseWalletAddress,
-				algorandAddress
-			);
+			console.log('✅ Stored key signer created for GameBridge:', voiAddress);
 
 			// Create and initialize bridge
 			bridge = new GameBridge({
 				contractId,
-				walletAddress: algorandAddress,
+				walletAddress: voiAddress,
 				walletSigner: signer,
 			});
 
-			await bridge.initialize();
-
-			// Set iframe reference for postMessage
+			// Set iframe reference BEFORE initializing (so messages can be sent immediately)
 			if (iframeRef) {
 				bridge.setTargetIframe(iframeRef);
 			}
+
+			await bridge.initialize();
 
 			console.log('✅ GameBridge initialized for external game');
 		} catch (error) {
@@ -137,6 +140,10 @@
 	function handleIframeLoad() {
 		if (bridge && iframeRef) {
 			bridge.setTargetIframe(iframeRef);
+		} else if (!bridge && iframeRef) {
+			// Iframe loaded but bridge not initialized yet - try to initialize
+			console.log('🔄 Iframe loaded, attempting to initialize bridge...');
+			initializeBridge();
 		}
 	}
 

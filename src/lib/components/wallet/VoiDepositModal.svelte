@@ -149,6 +149,15 @@
 		// Debounce quote fetching (500ms delay)
 		const amount = parseFloat(value);
 		if (value && !isNaN(amount) && amount > 0) {
+			// Check balance before fetching quote
+			if (usdcBalance) {
+				const available = parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals));
+				if (amount > available) {
+					// Don't fetch quote if balance is insufficient
+					return;
+				}
+			}
+			
 			debounceTimer = setTimeout(() => {
 				getQuote();
 			}, 500);
@@ -158,6 +167,16 @@
 	async function getQuote() {
 		if (!usdcAmount || parseFloat(usdcAmount) <= 0 || !address) {
 			return;
+		}
+
+		// Check balance before fetching quote
+		if (usdcBalance) {
+			const amount = parseFloat(usdcAmount);
+			const available = parseFloat(formatUsdcBalance(usdcBalance.balance, usdcBalance.decimals));
+			if (!isNaN(amount) && amount > available) {
+				// Don't fetch quote if balance is insufficient
+				return;
+			}
 		}
 
 		isLoadingQuote = true;
@@ -177,7 +196,7 @@
 				outputToken: 0, // VOI (underlying ASA ID - API will resolve to wrapped ARC200)
 				amount: amountAtomic,
 				slippageTolerance: 0.01, // 1% default
-				poolId: '395553' // USDC/VOI pool
+				// poolId: '411756' // USDC/VOI pool
 			};
 
 			// Try direct call first, fallback to proxy if CORS fails
@@ -781,61 +800,63 @@
 							<p class="text-sm font-medium text-neutral-700 dark:text-neutral-300">What you'll get</p>
 						</div>
 						
-						<!-- Exchange Display -->
-						<div class="flex flex-col sm:flex-row items-center gap-3">
-							<!-- Input Card: USDC -->
-							<div class="w-full sm:flex-1 p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg">
-								<div class="space-y-1">
-									<p class="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">You're spending</p>
-									<p class="text-2xl font-bold text-neutral-900 dark:text-neutral-100 font-mono">
-										{usdcAmount}
-									</p>
-									<p class="text-sm font-medium text-neutral-600 dark:text-neutral-400">USDC</p>
-								</div>
-							</div>
-							
-							<!-- Arrow/Divider -->
-							<div class="flex-shrink-0 flex flex-col items-center justify-center transform rotate-90 sm:rotate-0">
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									width="24"
-									height="24"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									class="text-primary-500 dark:text-primary-400"
-								>
-									<path d="M5 12h14M12 5l7 7-7 7"></path>
-								</svg>
-							</div>
-							
-							<!-- Output Card: VOI -->
-							<div class="w-full sm:flex-1 p-4 bg-success-50 dark:bg-success-900/20 border-2 border-success-300 dark:border-success-700 rounded-lg">
-								<div class="space-y-2">
-									<p class="text-xs font-medium text-success-700 dark:text-success-300 uppercase tracking-wide">You'll receive</p>
-									<p class="text-3xl font-bold text-success-600 dark:text-success-400 font-mono">
-										{quoteAmount}
-									</p>
-									<p class="text-sm font-medium text-success-700 dark:text-success-300">VOI</p>
-									{#if minimumAmount}
-										<div class="pt-2 mt-2 border-t border-success-200 dark:border-success-800">
-											<p class="text-xs text-success-600 dark:text-success-400">
-												<span class="font-semibold">Minimum:</span> {minimumAmount} VOI
-											</p>
-											<p class="text-xs text-success-500 dark:text-success-500 mt-1">
-												(accounts for market changes)
-											</p>
-										</div>
-									{/if}
-								</div>
+					<!-- Exchange Display -->
+					<div class="flex flex-col sm:flex-row items-stretch gap-3">
+						<!-- Input Card: USDC -->
+						<div class="w-full sm:flex-1 p-4 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg flex flex-col">
+							<div class="space-y-1 flex-1 flex flex-col justify-center">
+								<p class="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">You're spending</p>
+								<p class="text-2xl font-bold text-neutral-900 dark:text-neutral-100 font-mono">
+									{usdcAmount}
+								</p>
+								<p class="text-sm font-medium text-neutral-600 dark:text-neutral-400">USDC</p>
 							</div>
 						</div>
 						
+						<!-- Arrow/Divider -->
+						<div class="flex-shrink-0 flex flex-col items-center justify-center transform rotate-90 sm:rotate-0">
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="24"
+								height="24"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								class="text-primary-500 dark:text-primary-400"
+							>
+								<path d="M5 12h14M12 5l7 7-7 7"></path>
+							</svg>
+						</div>
+						
+						<!-- Output Card: VOI -->
+						<div class="w-full sm:flex-1 p-4 bg-success-50 dark:bg-success-900/20 border-2 border-success-300 dark:border-success-700 rounded-lg flex flex-col">
+							<div class="space-y-2 flex-1 flex flex-col">
+								<p class="text-xs font-medium text-success-700 dark:text-success-300 uppercase tracking-wide">You'll receive</p>
+								<p class="text-3xl font-bold text-success-600 dark:text-success-400 font-mono">
+									{quoteAmount}
+								</p>
+								<p class="text-sm font-medium text-success-700 dark:text-success-300">VOI</p>
+								{#if minimumAmount}
+									<div class="pt-2 mt-2 border-t border-success-200 dark:border-success-800">
+										<p class="text-xs text-success-600 dark:text-success-400">
+											<span class="font-semibold">Minimum:</span> {minimumAmount} VOI
+										</p>
+										<p class="text-xs text-success-500 dark:text-success-500 mt-1">
+											(accounts for market changes)
+										</p>
+									</div>
+								{:else}
+									<div class="pt-2 mt-2"></div>
+								{/if}
+							</div>
+						</div>
+					</div>
+						
 						<!-- Additional Info -->
-						{#if priceImpact !== null && priceImpact > 0.01}
+						{#if priceImpact !== null && priceImpact > 0.04}
 							<div class="p-3 bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-700 rounded-lg">
 								<p class="text-xs text-warning-700 dark:text-warning-300">
 									<span class="font-semibold">Note:</span> Large trade may affect price by {(priceImpact * 100).toFixed(2)}%

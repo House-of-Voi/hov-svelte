@@ -4,6 +4,7 @@
 	import Input from '$lib/components/ui/Input.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { signOutCdpSession } from '$lib/auth/cdpClient';
+	import { clearKeys } from '$lib/auth/keyStorage';
 
 	type Props = {
 		isOpen: boolean;
@@ -172,12 +173,18 @@
 
 	async function handleSignOut() {
 		try {
+			// Clear stored keys from browser storage
+			clearKeys();
+
+			// Sign out from CDP (if still available)
 			await signOutCdpSession();
 
 			await fetch('/api/auth/logout', { method: 'POST' });
 			window.location.href = '/auth';
 		} catch (error) {
 			console.error('Logout error:', error);
+			// Still clear keys and redirect even if CDP signout fails
+			clearKeys();
 			await fetch('/api/auth/logout', { method: 'POST' });
 			window.location.href = '/auth';
 		}

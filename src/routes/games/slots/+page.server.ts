@@ -27,5 +27,6 @@ export const load: PageServerLoad = async ({ parent, url, locals }) => {
   return {
     contractId,
     algorandAddress: voiAddress, // Return as algorandAddress for backward compatibility
+    session, // Pass session through so component can access it
   };
 };

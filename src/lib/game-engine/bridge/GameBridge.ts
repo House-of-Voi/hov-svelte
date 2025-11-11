@@ -297,6 +297,17 @@ export class GameBridge {
       // Place spin
       const spinId = await this.engine.spin(betPerLine, paylines);
       
+      // Immediately send balance update reflecting the reserved balance
+      const state = this.engine.getState();
+      const availableBalance = Math.max(0, state.balance - state.reservedBalance);
+      this.sendToGame({
+        type: 'BALANCE_UPDATE',
+        payload: {
+          balance: state.balance,
+          availableBalance,
+        },
+      } as BalanceUpdateMessage);
+      
       // Outcome will be sent via onOutcome listener
     } catch (error) {
       console.error('Spin failed:', error);
@@ -404,6 +415,9 @@ export class GameBridge {
       payout: Number(line.payout), // Ensure number
     }));
 
+    // Get fresh state after spin is marked as COMPLETED (reserved balance should be updated)
+    const state = this.engine!.getState();
+    
     this.sendToGame({
       type: 'OUTCOME',
       payload: {
@@ -419,22 +433,38 @@ export class GameBridge {
       },
     } as OutcomeMessage);
 
-    // Refresh and send balance update after outcome (especially important after wins)
-    // The engine should trigger onBalanceUpdate, but we also refresh to ensure accuracy
+    // Immediately send balance update with correct reserved balance
+    // The spin is now COMPLETED, so reserved balance should exclude it
+    // We use the current state balance (may be slightly stale) but with correct reserved balance
+    const availableBalance = Math.max(0, state.balance - state.reservedBalance);
+    this.sendToGame({
+      type: 'BALANCE_UPDATE',
+      payload: {
+        balance: state.balance,
+        availableBalance,
+      },
+    } as BalanceUpdateMessage);
+
+    // Also refresh balance from blockchain in background (especially important after wins)
+    // This will trigger onBalanceUpdate which will send another update if balance changed
     try {
       const currentBalance = await this.engine!.getBalance();
-      const state = this.engine!.getState();
-      const availableBalance = Math.max(0, currentBalance - state.reservedBalance);
-      this.sendToGame({
-        type: 'BALANCE_UPDATE',
-        payload: {
-          balance: currentBalance,
-          availableBalance,
-        },
-      } as BalanceUpdateMessage);
+      const updatedState = this.engine!.getState();
+      const updatedAvailableBalance = Math.max(0, currentBalance - updatedState.reservedBalance);
+      
+      // Only send update if balance actually changed
+      if (currentBalance !== state.balance || updatedAvailableBalance !== availableBalance) {
+        this.sendToGame({
+          type: 'BALANCE_UPDATE',
+          payload: {
+            balance: currentBalance,
+            availableBalance: updatedAvailableBalance,
+          },
+        } as BalanceUpdateMessage);
+      }
     } catch (error) {
       console.error('Failed to refresh balance after outcome:', error);
-      // Balance update will come via onBalanceUpdate listener if it triggers
+      // Balance update already sent above with correct reserved balance
     }
   }
 
