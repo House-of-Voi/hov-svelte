@@ -20,6 +20,7 @@
   type Tab = 'stats' | 'history' | 'credits';
   let activeTab = $state<Tab>('stats');
   let loading = $state(false);
+  let loadingHistory = $state(false);
   let error = $state<string | null>(null);
 
   // Pagination state for game history
@@ -75,10 +76,19 @@
         ? `/api/referrals/${referredProfileId}?contractId=${contractId}&limit=${pageSize}&offset=${offset}`
         : `/api/referrals/${referredProfileId}?limit=${pageSize}&offset=${offset}`;
       const response = await fetch(url);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        error = errorData.error || `Failed to load referral details (${response.status})`;
+        loading = false;
+        return;
+      }
+      
       const result = await response.json();
 
-      if (!response.ok || !result.ok) {
+      if (!result.ok) {
         error = result.error || 'Failed to load referral details';
+        loading = false;
         return;
       }
 
@@ -95,7 +105,7 @@
   async function fetchGameHistory(page: number) {
     if (!referredProfileId) return;
     
-    loading = true;
+    loadingHistory = true;
     try {
       const offset = (page - 1) * pageSize;
       const url = contractId
@@ -111,7 +121,7 @@
     } catch (err) {
       console.error('Failed to load game history:', err);
     } finally {
-      loading = false;
+      loadingHistory = false;
     }
   }
 
@@ -172,6 +182,12 @@
       return formatLargeNumber(amount);
     }
     return amount.toFixed(6);
+  }
+
+  // Format amount as whole number (no decimals, no abbreviations)
+  function formatAmountWhole(amountString: string): string {
+    const amount = parseFloat(amountString) / 1e6;
+    return Math.round(amount).toLocaleString();
   }
 
   // Decode transaction ID if it's base64 encoded
@@ -367,7 +383,12 @@
           </div>
           
           <!-- Compact table rows -->
-          <div class="space-y-0.5 max-h-[400px] overflow-y-auto">
+          <div class="space-y-0.5 max-h-[400px] overflow-y-auto relative">
+            {#if loadingHistory}
+              <div class="absolute inset-0 bg-white/80 dark:bg-neutral-800/80 backdrop-blur-sm flex items-center justify-center z-10">
+                <div class="text-sm text-neutral-600 dark:text-neutral-400">Loading...</div>
+              </div>
+            {/if}
             {#each data.recentSpins as spin}
               {@const netResult = parseFloat(spin.net_result) / 1e6}
               {@const normalizedTxId = decodeTxId(spin.txid)}
@@ -376,15 +397,15 @@
                   {formatDate(spin.timestamp)}
                 </div>
                 <div class="col-span-2 text-right text-neutral-700 dark:text-neutral-300">
-                  {formatAmount(spin.amount)}
+                  {formatAmountWhole(spin.amount)}
                 </div>
                 <div class="col-span-2 text-right text-success-600 dark:text-success-400 font-medium">
-                  {formatAmount(spin.payout)}
+                  {formatAmountWhole(spin.payout)}
                 </div>
                 <div class="col-span-2 text-right font-medium {netResult >= 0
                   ? 'text-success-600 dark:text-success-400'
                   : 'text-error-600 dark:text-error-400'}">
-                  {netResult >= 0 ? '+' : ''}{formatAmount(spin.net_result)}
+                  {netResult >= 0 ? '+' : ''}{formatAmountWhole(spin.net_result)}
                 </div>
                 <div class="col-span-3 text-center">
                   <a
@@ -413,7 +434,7 @@
               <div class="flex items-center gap-2">
                 <button
                   onclick={() => handlePageChange(currentPage - 1)}
-                  disabled={currentPage === 1 || loading}
+                  disabled={currentPage === 1 || loadingHistory}
                   class="px-3 py-1.5 text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Previous
@@ -427,7 +448,7 @@
                     {#if pageNum >= 1 && pageNum <= totalPages}
                       <button
                         onclick={() => handlePageChange(pageNum)}
-                        disabled={loading}
+                        disabled={loadingHistory}
                         class="px-3 py-1.5 text-sm rounded-lg border transition-colors {currentPage === pageNum
                           ? 'border-primary-500 bg-primary-50 dark:bg-primary-950/30 text-primary-700 dark:text-primary-300'
                           : 'border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'} disabled:opacity-50 disabled:cursor-not-allowed"
@@ -439,7 +460,7 @@
                 </div>
                 <button
                   onclick={() => handlePageChange(currentPage + 1)}
-                  disabled={currentPage >= totalPages || loading}
+                  disabled={currentPage >= totalPages || loadingHistory}
                   class="px-3 py-1.5 text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Next

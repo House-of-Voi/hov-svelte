@@ -61,7 +61,19 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
   const voiAddresses = await getVoiAddressesForProfile(profileId);
 
   // Get aggregated stats
-  const stats = await getReferralVolumeStats(profileId, contractId);
+  let stats;
+  try {
+    stats = await getReferralVolumeStats(profileId, contractId);
+    // Ensure winRate exists (for backwards compatibility with cached data)
+    if (stats && typeof stats.winRate === 'undefined') {
+      stats.winRate = stats.totalSpins > 0 && stats.winningSpins !== undefined
+        ? (stats.winningSpins / stats.totalSpins) * 100
+        : 0;
+    }
+  } catch (err) {
+    console.error('Error fetching referral volume stats:', err);
+    stats = null;
+  }
 
   // Get spins from all addresses
   // Fetch more than needed to account for multiple addresses, then sort and paginate
@@ -96,16 +108,6 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
     console.error('Error fetching credit history:', creditError);
   }
 
-  // Calculate win rate if we have stats
-  let winRate = 0;
-  if (stats && stats.totalSpins > 0) {
-    const totalBet = BigInt(stats.totalBet);
-    const totalWon = BigInt(stats.totalWon);
-    if (totalBet > 0) {
-      winRate = (Number(totalWon) / Number(totalBet)) * 100;
-    }
-  }
-
   return json({
     ok: true,
     profile: {
@@ -116,13 +118,13 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
     },
     stats: stats
       ? {
-          totalSpins: stats.totalSpins,
-          totalBet: stats.totalBet,
-          totalWon: stats.totalWon,
-          netResult: stats.netResult,
-          lastPlayedAt: stats.lastPlayedAt,
-          creditsEarned: stats.creditsEarned,
-          winRate,
+          totalSpins: stats.totalSpins || 0,
+          totalBet: stats.totalBet || '0',
+          totalWon: stats.totalWon || '0',
+          netResult: stats.netResult || '0',
+          lastPlayedAt: stats.lastPlayedAt || null,
+          creditsEarned: stats.creditsEarned || 0,
+          winRate: stats.winRate || 0,
         }
       : null,
     recentSpins: paginatedSpins,
