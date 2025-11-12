@@ -6,7 +6,6 @@
 
   interface Props {
     totalVolume: string;
-    totalCreditsEarned: number;
     totalSpins: number;
     activeCount: number;
     totalReferrals: number;
@@ -14,7 +13,6 @@
 
   let {
     totalVolume,
-    totalCreditsEarned,
     totalSpins,
     activeCount,
     totalReferrals,
@@ -32,7 +30,7 @@
     </h2>
   </CardHeader>
   <CardContent>
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
       <!-- Total Volume -->
       <div class="text-center p-4 bg-primary-50 dark:bg-primary-950/30 border border-primary-200 dark:border-primary-800 rounded-lg">
         <p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Volume</p>
@@ -40,15 +38,6 @@
           {formattedVolume}
         </p>
         <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-1">VOI</p>
-      </div>
-
-      <!-- Credits Earned -->
-      <div class="text-center p-4 bg-success-50 dark:bg-success-950/30 border border-success-200 dark:border-success-800 rounded-lg">
-        <p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Credits Earned</p>
-        <p class="text-2xl font-semibold text-success-700 dark:text-success-300">
-          {formatLargeNumber(totalCreditsEarned)}
-        </p>
-        <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-1">Total</p>
       </div>
 
       <!-- Total Spins -->

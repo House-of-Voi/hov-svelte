@@ -12,12 +12,15 @@ export async function getPlayerStats(
   address: string,
   contractId?: number
 ): Promise<MimirPlayerStats> {
+  // Trim address only, preserve case
+  const trimmedAddress = address.trim();
+  
   if (contractId === undefined) {
-    return getPlayerStatsFromTable(address);
+    return getPlayerStatsFromTable(trimmedAddress);
   }
 
   const params: Record<string, unknown> = {
-    p_player_address: address,
+    p_player_address: trimmedAddress,
     p_app_id: contractId,
   };
 
@@ -33,10 +36,13 @@ export async function getPlayerStats(
 }
 
 async function getPlayerStatsFromTable(address: string): Promise<MimirPlayerStats> {
+  // Trim address only, preserve case
+  const trimmedAddress = address.trim();
+  
   const { data, error } = await mimirClient
     .from('hov_events')
     .select('amount, max_payline_index, payout, total_bet_amount, net_result, is_win, round, created_at')
-    .eq('who', address);
+    .eq('who', trimmedAddress);
 
   if (error) {
     throw new MimirRpcError('getPlayerStatsFromTable', error);
@@ -211,10 +217,13 @@ export async function getPlayerSpins(
   limit = 20,
   offset = 0
 ): Promise<MimirSpinEvent[]> {
+  // Trim address only, preserve case
+  const trimmedAddress = address.trim();
+  
   let query = mimirClient
     .from('hov_events')
     .select('round, intra, txid, app_id, who, amount, payout, net_result, total_bet_amount, max_payline_index, created_at')
-    .eq('who', address)
+    .eq('who', trimmedAddress)
     .order('round', { ascending: false })
     .order('intra', { ascending: false })
     .range(offset, offset + limit - 1);

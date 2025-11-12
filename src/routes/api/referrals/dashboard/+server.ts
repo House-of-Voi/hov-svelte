@@ -105,6 +105,10 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
       }
 
       // Fetch Mimir stats for this referred user
+      console.log('Fetching mimir stats for referral:', {
+        referredProfileId: referredProfile.id,
+        contractId,
+      });
       const mimirStats = await getReferralVolumeStats(
         referredProfile.id,
         contractId

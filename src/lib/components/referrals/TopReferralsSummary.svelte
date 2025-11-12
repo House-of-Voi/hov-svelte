@@ -7,9 +7,10 @@
   interface Props {
     referrals: ReferralWithStats[];
     totalReferrals: number;
+    onReferralClick?: (referral: ReferralWithStats) => void;
   }
 
-  let { referrals, totalReferrals }: Props = $props();
+  let { referrals, totalReferrals, onReferralClick }: Props = $props();
 
   // Format volume from micro units or direct value
   function formatVolume(referral: ReferralWithStats): string {
@@ -35,7 +36,20 @@
   {:else}
     <div class="space-y-3">
       {#each referrals as referral (referral.referredProfileId)}
-        <div class="flex items-center justify-between gap-4 p-3 border border-neutral-200 dark:border-neutral-700 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors">
+        <div
+          class="flex items-center justify-between gap-4 p-3 border border-neutral-200 dark:border-neutral-700 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors {onReferralClick
+            ? 'cursor-pointer'
+            : ''}"
+          onclick={() => onReferralClick?.(referral)}
+          role={onReferralClick ? 'button' : undefined}
+          tabindex={onReferralClick ? 0 : undefined}
+          onkeydown={(e) => {
+            if (onReferralClick && (e.key === 'Enter' || e.key === ' ')) {
+              e.preventDefault();
+              onReferralClick(referral);
+            }
+          }}
+        >
           <div class="flex items-center gap-3 flex-1 min-w-0">
             <Avatar
               src={referral.referredUserAvatar}

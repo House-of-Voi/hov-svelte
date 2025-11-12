@@ -14,6 +14,7 @@
 	import VoiAccountImportModal from '$lib/components/form/VoiAccountImportModal.svelte';
 	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
 	import TopReferralsSummary from '$lib/components/referrals/TopReferralsSummary.svelte';
+	import ReferralDetailModal from '$lib/components/referrals/ReferralDetailModal.svelte';
 	import type { PageData } from './$types';
 	import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
 	import { formatLargeNumber } from '$lib/referrals/credits';
@@ -45,6 +46,10 @@
 	// Referral dashboard data (loaded client-side)
 	let referralDashboardData = $state<ReferralDashboardData | null>(null);
 	let loadingReferrals = $state(true);
+
+	// Referral detail modal state
+	let isReferralDetailModalOpen = $state(false);
+	let selectedReferralProfileId = $state<string | null>(null);
 
 	// Get top 3 referrals sorted by volume
 	const topReferrals = $derived.by(() => {
@@ -82,6 +87,17 @@
 		}
 		return `${volume.toFixed(2)} VOI`;
 	});
+
+	// Handle referral click
+	function handleReferralClick(referral: ReferralWithStats) {
+		selectedReferralProfileId = referral.referredProfileId;
+		isReferralDetailModalOpen = true;
+	}
+
+	function handleCloseReferralModal() {
+		isReferralDetailModalOpen = false;
+		selectedReferralProfileId = null;
+	}
 
 	// Load referral dashboard data
 	async function fetchReferralStats() {
@@ -542,17 +558,11 @@
 				{:else if referralDashboardData}
 					<div class="space-y-6">
 						<!-- Summary Statistics -->
-						<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+						<div class="grid grid-cols-2 md:grid-cols-3 gap-4">
 							<div class="text-center p-4 bg-primary-50 dark:bg-primary-950/30 border border-primary-200 dark:border-primary-800 rounded-lg">
 								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Referrals</p>
 								<p class="text-2xl font-semibold text-primary-700 dark:text-primary-300">
 									{referralDashboardData.totalReferrals}
-								</p>
-							</div>
-							<div class="text-center p-4 bg-success-50 dark:bg-success-950/30 border border-success-200 dark:border-success-800 rounded-lg">
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Credits Earned</p>
-								<p class="text-2xl font-semibold text-success-700 dark:text-success-300">
-									{formatLargeNumber(referralDashboardData.aggregateStats.totalCreditsEarned)}
 								</p>
 							</div>
 							<div class="text-center p-4 bg-accent-50 dark:bg-accent-950/30 border border-accent-200 dark:border-accent-800 rounded-lg">
@@ -594,6 +604,7 @@
 								<TopReferralsSummary
 									referrals={topReferrals}
 									totalReferrals={referralDashboardData.totalReferrals}
+									onReferralClick={handleReferralClick}
 								/>
 							</div>
 						{/if}
@@ -672,6 +683,15 @@
 		}}
 		onConfirm={handleRemoveConfirm}
 	/>
+
+	<!-- Referral Detail Modal -->
+	{#if selectedReferralProfileId}
+		<ReferralDetailModal
+			isOpen={isReferralDetailModalOpen}
+			onClose={handleCloseReferralModal}
+			referredProfileId={selectedReferralProfileId}
+		/>
+	{/if}
 
 	<!-- Account Actions -->
 	<Card>

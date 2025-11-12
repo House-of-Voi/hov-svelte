@@ -1,6 +1,6 @@
 import { getPlayerStatsSafe, getPlayerSpins } from '$lib/mimir/queries';
 import type { MimirSpinEvent } from '$lib/types/database';
-import { getProfileAccounts } from '$lib/profile/data';
+import { createAdminClient } from '$lib/db/supabaseAdmin';
 import { appCache } from '$lib/cache/SimpleCache';
 import { CacheKeys } from '$lib/cache/keys';
 import { calculateCreditsFromWager, DEFAULT_REFERRAL_CREDIT_PERCENTAGE } from './credits';
@@ -18,15 +18,38 @@ export interface AggregatedReferralStats {
 }
 
 /**
- * Get VOI addresses for a profile
+ * Get VOI addresses for a profile from the accounts table
+ * Queries the accounts table directly to get addresses where chain = 'voi'
  */
 export async function getVoiAddressesForProfile(
   profileId: string
 ): Promise<string[]> {
-  const accounts = await getProfileAccounts(profileId);
-  return accounts
-    .filter((acc) => acc.chain === 'voi')
-    .map((acc) => acc.address.toLowerCase());
+  const supabase = createAdminClient();
+  
+  // Query accounts table directly for VOI addresses
+  const { data: accounts, error } = await supabase
+    .from('accounts')
+    .select('address')
+    .eq('profile_id', profileId)
+    .eq('chain', 'voi');
+  
+  if (error) {
+    console.error('Error fetching VOI addresses from accounts table:', error);
+    return [];
+  }
+  
+  // Extract addresses from the address column (trim only, preserve case)
+  const addresses = (accounts || [])
+    .map((acc) => acc.address.trim())
+    .filter((addr) => addr.length > 0);
+  
+  console.log('Getting VOI addresses from accounts table:', {
+    profileId,
+    accountsFound: accounts?.length || 0,
+    addresses,
+  });
+  
+  return addresses;
 }
 
 /**
@@ -146,10 +169,16 @@ export async function getReferralVolumeStats(
   referredProfileId: string,
   contractId?: number
 ): Promise<AggregatedReferralStats | null> {
+  console.log('Referral volume stats loading:', {
+    referredProfileId,
+    contractId,
+  });
+
   // Get all VOI addresses for the referred user
   const voiAddresses = await getVoiAddressesForProfile(referredProfileId);
 
   if (voiAddresses.length === 0) {
+    console.log('No VOI addresses found for profile:', referredProfileId);
     return {
       totalSpins: 0,
       totalBet: '0',
@@ -164,11 +193,31 @@ export async function getReferralVolumeStats(
   const cacheKey = `referral:stats:${referredProfileId}:${contractId || 'all'}`;
   const cached = appCache.get<AggregatedReferralStats>(cacheKey);
   if (cached) {
+    console.log('Referral volume stats from cache:', {
+      referredProfileId,
+      contractId,
+      cached,
+    });
     return cached;
   }
 
-  // Aggregate stats from all addresses
-  const stats = await aggregateReferralStats(voiAddresses, contractId);
+  // Aggregate stats from all addresses (trim only, preserve case)
+  const trimmedAddresses = voiAddresses.map(addr => addr.trim());
+  
+  console.log('Referral volume stats loading from Mimir:', {
+    referredProfileId,
+    contractId,
+    voiAddresses: trimmedAddresses,
+  });
+  
+  const stats = await aggregateReferralStats(trimmedAddresses, contractId);
+
+  console.log('Referral volume stats loaded from Mimir:', {
+    referredProfileId,
+    contractId,
+    voiAddresses: trimmedAddresses,
+    stats,
+  });
 
   // Cache for 10 minutes
   if (stats) {

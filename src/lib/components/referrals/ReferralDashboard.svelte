@@ -6,7 +6,8 @@
   import Button from '$lib/components/ui/Button.svelte';
   import ReferralStatsCard from './ReferralStatsCard.svelte';
   import ReferralRow from './ReferralRow.svelte';
-  import type { ReferralDashboardData } from '$lib/referrals/credits';
+  import ReferralDetailModal from './ReferralDetailModal.svelte';
+  import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
   import { notificationStore } from '$lib/stores/notificationStore.svelte';
 
   interface Props {
@@ -21,6 +22,8 @@
   let error = $state<string | null>(null);
   let isCreating = $state(false);
   let filter = $state<'all' | 'active' | 'queued'>('all');
+  let isDetailModalOpen = $state(false);
+  let selectedReferralProfileId = $state<string | null>(null);
 
   async function fetchDashboardData() {
     loading = true;
@@ -93,6 +96,16 @@
     if (filter === 'active') return referrals.filter((r) => r.isActive);
     return referrals.filter((r) => !r.isActive);
   });
+
+  function handleReferralClick(referral: ReferralWithStats) {
+    selectedReferralProfileId = referral.referredProfileId;
+    isDetailModalOpen = true;
+  }
+
+  function handleCloseModal() {
+    isDetailModalOpen = false;
+    selectedReferralProfileId = null;
+  }
 </script>
 
 <div class="space-y-6">
@@ -111,7 +124,6 @@
     <!-- Summary Stats -->
     <ReferralStatsCard
       totalVolume={dashboardData.aggregateStats.totalVolume}
-      totalCreditsEarned={dashboardData.aggregateStats.totalCreditsEarned}
       totalSpins={dashboardData.aggregateStats.totalSpins}
       activeCount={dashboardData.aggregateStats.activeCount}
       totalReferrals={dashboardData.totalReferrals}
@@ -212,12 +224,22 @@
         {:else}
           <div class="space-y-3">
             {#each filteredReferrals as referral (referral.referredProfileId)}
-              <ReferralRow {referral} />
+              <ReferralRow {referral} onClick={() => handleReferralClick(referral)} />
             {/each}
           </div>
         {/if}
       </CardContent>
     </Card>
+  {/if}
+
+  <!-- Referral Detail Modal -->
+  {#if selectedReferralProfileId}
+    <ReferralDetailModal
+      isOpen={isDetailModalOpen}
+      onClose={handleCloseModal}
+      referredProfileId={selectedReferralProfileId}
+      contractId={contractId}
+    />
   {/if}
 </div>
 
