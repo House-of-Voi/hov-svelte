@@ -39,6 +39,17 @@
     const volume = parseFloat(volumeString) / 1e6;
     return volume >= 1000 ? formatLargeNumber(volume) : volume.toFixed(2);
   }
+
+  // Format email/phone display
+  function formatEmailOrPhone(emailOrPhone: string | null): string {
+    if (!emailOrPhone) return '';
+    if (emailOrPhone.includes('@')) {
+      return `Email: ${emailOrPhone}`;
+    } else if (emailOrPhone.startsWith('+')) {
+      return `Phone: ${emailOrPhone}`;
+    }
+    return `Contact: ${emailOrPhone}`;
+  }
 </script>
 
 {#if onClick}
@@ -74,9 +85,12 @@
             </span>
           {/if}
         </div>
-        <p class="text-sm text-neutral-600 dark:text-neutral-400">
-          Joined {formatDate(referral.joinedAt)}
-        </p>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm text-neutral-600 dark:text-neutral-400">
+          <span>Joined {formatDate(referral.joinedAt)}</span>
+          {#if referral.referredUserEmailOrPhone}
+            <span>{formatEmailOrPhone(referral.referredUserEmailOrPhone)}</span>
+          {/if}
+        </div>
       </div>
     </div>
 
@@ -154,9 +168,12 @@
             </span>
           {/if}
         </div>
-        <p class="text-sm text-neutral-600 dark:text-neutral-400">
-          Joined {formatDate(referral.joinedAt)}
-        </p>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm text-neutral-600 dark:text-neutral-400">
+          <span>Joined {formatDate(referral.joinedAt)}</span>
+          {#if referral.referredUserEmailOrPhone}
+            <span>{formatEmailOrPhone(referral.referredUserEmailOrPhone)}</span>
+          {/if}
+        </div>
       </div>
     </div>
 

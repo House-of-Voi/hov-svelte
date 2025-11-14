@@ -164,7 +164,8 @@ export async function getReferralStats(
       *,
       referred_profile:profiles!referral_codes_referred_profile_id_fkey (
         display_name,
-        avatar_url
+        avatar_url,
+        primary_email
       )
     `)
     .eq('referrer_profile_id', profileId)
@@ -231,10 +232,13 @@ export async function getReferralStats(
         code: c.code,
         referredProfileId: c.referred_profile_id,
         referredUserName: referredProfile
-          ? (referredProfile as { display_name: string | null; avatar_url: string | null }).display_name
+          ? (referredProfile as { display_name: string | null; avatar_url: string | null; primary_email: string | null }).display_name
           : null,
         referredUserAvatar: referredProfile
-          ? (referredProfile as { display_name: string | null; avatar_url: string | null }).avatar_url
+          ? (referredProfile as { display_name: string | null; avatar_url: string | null; primary_email: string | null }).avatar_url
+          : null,
+        referredUserEmailOrPhone: referredProfile
+          ? (referredProfile as { display_name: string | null; avatar_url: string | null; primary_email: string | null }).primary_email
           : null,
         attributedAt: c.attributed_at,
         convertedAt: c.converted_at,

@@ -34,6 +34,7 @@
       display_name: string | null;
       avatar_url: string | null;
       created_at: string;
+      primary_email: string | null;
     };
     stats: {
       totalSpins: number;
@@ -169,6 +170,17 @@
     }
   }
 
+  // Format email/phone display
+  function formatEmailOrPhone(emailOrPhone: string | null): string {
+    if (!emailOrPhone) return '';
+    if (emailOrPhone.includes('@')) {
+      return `Email: ${emailOrPhone}`;
+    } else if (emailOrPhone.startsWith('+')) {
+      return `Phone: ${emailOrPhone}`;
+    }
+    return `Contact: ${emailOrPhone}`;
+  }
+
   // Format volume from micro units
   function formatVolume(volumeString: string): string {
     const volume = parseFloat(volumeString) / 1e6;
@@ -261,6 +273,11 @@
         <p class="text-sm text-neutral-600 dark:text-neutral-400">
           Joined {formatDate(data.profile.created_at)}
         </p>
+        {#if data.profile.primary_email}
+          <p class="text-sm text-neutral-600 dark:text-neutral-400">
+            {formatEmailOrPhone(data.profile.primary_email)}
+          </p>
+        {/if}
       </div>
     </div>
 

@@ -31,6 +31,7 @@ export interface ReferralDetails {
  */
 export interface ReferralWithStats extends ReferralDetails {
   referredUserAvatar: string | null;
+  referredUserEmailOrPhone: string | null;
   mimirStats: {
     totalSpins: number;
     totalBet: string;

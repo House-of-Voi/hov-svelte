@@ -21,6 +21,7 @@
 		referredProfileId: string | null;
 		referredUserName: string | null;
 		referredUserAvatar: string | null;
+		referredUserEmailOrPhone: string | null;
 		attributedAt: string | null;
 		convertedAt: string | null;
 		deactivatedAt: string | null;
@@ -128,6 +129,17 @@
 	});
 
 	const slotsRemaining = stats ? stats.maxReferrals - stats.activeReferrals : 0;
+
+	// Format email/phone display
+	function formatEmailOrPhone(emailOrPhone: string | null): string {
+		if (!emailOrPhone) return '';
+		if (emailOrPhone.includes('@')) {
+			return `Email: ${emailOrPhone}`;
+		} else if (emailOrPhone.startsWith('+')) {
+			return `Phone: ${emailOrPhone}`;
+		}
+		return `Contact: ${emailOrPhone}`;
+	}
 </script>
 
 <Modal {isOpen} {onClose} title="Manage Referral Codes" size="full">
@@ -200,24 +212,31 @@
 						{#each stats.codes.filter((code) => code.referredProfileId) as code}
 							<Card>
 								<CardContent className="p-4">
-									<div class="flex items-center justify-between">
-										<div class="flex items-center gap-3">
+									<div class="flex items-center justify-between gap-4">
+										<div class="flex items-center gap-3 flex-1 min-w-0">
 											<Avatar
 												src={code.referredUserAvatar}
 												displayName={code.referredUserName}
 												alt={code.referredUserName || 'User'}
 												size="md"
 											/>
-											<div>
-												<p class="font-semibold text-neutral-950 dark:text-white">
-													{code.referredUserName || 'Anonymous User'}
-												</p>
-												<p class="text-xs text-neutral-700 dark:text-neutral-300">
-													Joined {new Date(code.convertedAt!).toLocaleDateString()}
-												</p>
+											<div class="flex-1 min-w-0">
+												<div class="flex items-center gap-2 mb-1">
+													<p class="font-semibold text-neutral-950 dark:text-white truncate">
+														{code.referredUserName || 'Anonymous User'}
+													</p>
+												</div>
+												<div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-700 dark:text-neutral-300">
+													<span>Joined {new Date(code.convertedAt!).toLocaleDateString()}</span>
+													{#if code.referredUserEmailOrPhone}
+														<span class="text-neutral-600 dark:text-neutral-400">
+															{formatEmailOrPhone(code.referredUserEmailOrPhone)}
+														</span>
+													{/if}
+												</div>
 											</div>
 										</div>
-										<div class="text-right">
+										<div class="text-right flex-shrink-0">
 											<span
 												class="px-2 py-1 bg-success-100 dark:bg-success-900/30 text-success-700 dark:text-success-300 text-xs rounded-full border border-success-300 dark:border-success-700 uppercase font-semibold"
 											>

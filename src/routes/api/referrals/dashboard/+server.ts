@@ -52,7 +52,8 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
         id,
         display_name,
         avatar_url,
-        created_at
+        created_at,
+        primary_email
       )
     `)
     .eq('referrer_profile_id', session.sub)
@@ -93,6 +94,7 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
         display_name: string | null;
         avatar_url: string | null;
         created_at: string;
+        primary_email: string;
       } | null;
 
       const referralCode = referral.referral_codes as {
@@ -139,6 +141,7 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
         referredUsername: referredProfile.display_name || 'Unknown',
         referredProfileId: referredProfile.id,
         referredUserAvatar: referredProfile.avatar_url,
+        referredUserEmailOrPhone: referredProfile.primary_email,
         joinedAt: referredProfile.created_at,
         totalWagered,
         gamesPlayed,

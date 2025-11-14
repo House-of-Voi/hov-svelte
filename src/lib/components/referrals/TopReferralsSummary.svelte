@@ -26,6 +26,17 @@
     }
     return `${volume.toFixed(2)} VOI`;
   }
+
+  // Format email/phone display
+  function formatEmailOrPhone(emailOrPhone: string | null): string {
+    if (!emailOrPhone) return '';
+    if (emailOrPhone.includes('@')) {
+      return `Email: ${emailOrPhone}`;
+    } else if (emailOrPhone.startsWith('+')) {
+      return `Phone: ${emailOrPhone}`;
+    }
+    return `Contact: ${emailOrPhone}`;
+  }
 </script>
 
 <div class="space-y-4">
@@ -75,9 +86,16 @@
                   </span>
                 {/if}
               </div>
-              <p class="text-sm font-semibold text-primary-600 dark:text-primary-400">
-                {formatVolume(referral)}
-              </p>
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-0.5">
+                <p class="text-sm font-semibold text-primary-600 dark:text-primary-400">
+                  {formatVolume(referral)}
+                </p>
+                {#if referral.referredUserEmailOrPhone}
+                  <p class="text-xs text-neutral-600 dark:text-neutral-400">
+                    {formatEmailOrPhone(referral.referredUserEmailOrPhone)}
+                  </p>
+                {/if}
+              </div>
             </div>
           </div>
         </div>

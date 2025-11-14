@@ -46,7 +46,7 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
   // Get referred profile information
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
-    .select('id, display_name, avatar_url, created_at')
+    .select('id, display_name, avatar_url, created_at, primary_email')
     .eq('id', profileId)
     .single();
 
@@ -115,6 +115,7 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
       display_name: profile.display_name,
       avatar_url: profile.avatar_url,
       created_at: profile.created_at,
+      primary_email: profile.primary_email,
     },
     stats: stats
       ? {
