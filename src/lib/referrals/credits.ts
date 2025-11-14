@@ -1,6 +1,6 @@
 // Referral credits calculation utilities
 
-export const DEFAULT_REFERRAL_CREDIT_PERCENTAGE = 0.5; // 0.5% of wagered amount
+export const DEFAULT_REFERRAL_CREDIT_PERCENTAGE = 2.0; // 2% of wagered amount
 
 export interface ReferralVolumeStats {
   totalWagered: number;
@@ -23,6 +23,7 @@ export interface ReferralDetails {
   totalWagered: number;
   gamesPlayed: number;
   creditsEarnedForReferrer: number;
+  totalCreditsEarned: number;
   lastPlayedAt: string | null;
 }
 
@@ -75,6 +76,7 @@ export function calculateCreditsFromWager(
 ): number {
   return (wagerAmount * percentage) / 100;
 }
+
 
 /**
  * Calculate aggregate volume statistics for all referrals

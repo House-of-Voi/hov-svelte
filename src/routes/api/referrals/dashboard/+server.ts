@@ -4,6 +4,7 @@ import { getServerSessionFromCookies } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 import { getReferralVolumeStats } from '$lib/referrals/stats';
 import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
+import { DEFAULT_REFERRAL_CREDIT_PERCENTAGE } from '$lib/referrals/credits';
 
 /**
  * GET /api/referrals/dashboard
@@ -136,6 +137,11 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
 
       const gamesPlayed = mimirStats?.totalSpins || 0;
 
+      // Calculate total credits earned (2% of volume)
+      const totalCreditsEarned = mimirStats
+        ? (parseFloat(mimirStats.totalBet) / 1e6) * (DEFAULT_REFERRAL_CREDIT_PERCENTAGE / 100)
+        : totalWagered * (DEFAULT_REFERRAL_CREDIT_PERCENTAGE / 100);
+
       return {
         referralCode: referralCode?.code || 'N/A',
         referredUsername: referredProfile.display_name || 'Unknown',
@@ -146,6 +152,7 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
         totalWagered,
         gamesPlayed,
         creditsEarnedForReferrer,
+        totalCreditsEarned,
         lastPlayedAt: mimirStats?.lastPlayedAt || null,
         mimirStats: mimirStats
           ? {
@@ -174,19 +181,20 @@ export const GET: RequestHandler = async ({ cookies, url }) => {
   const totalReferralsCount = validReferrals.length;
 
   // Calculate aggregate stats
+  const totalVolumeBigInt = validReferrals
+    .reduce((sum, r) => {
+      if (r.mimirStats) {
+        return sum + BigInt(r.mimirStats.totalBet);
+      }
+      return sum + BigInt(Math.floor(r.totalWagered * 1e6));
+    }, BigInt(0));
+  
+  // Calculate total credits earned as 2% of total volume
+  const totalCreditsEarned = (Number(totalVolumeBigInt) / 1e6) * (DEFAULT_REFERRAL_CREDIT_PERCENTAGE / 100);
+
   const aggregateStats = {
-    totalVolume: validReferrals
-      .reduce((sum, r) => {
-        if (r.mimirStats) {
-          return sum + BigInt(r.mimirStats.totalBet);
-        }
-        return sum + BigInt(Math.floor(r.totalWagered * 1e6));
-      }, BigInt(0))
-      .toString(),
-    totalCreditsEarned: validReferrals.reduce(
-      (sum, r) => sum + (r.mimirStats?.creditsEarned || r.creditsEarnedForReferrer),
-      0
-    ),
+    totalVolume: totalVolumeBigInt.toString(),
+    totalCreditsEarned: totalCreditsEarned,
     totalSpins: validReferrals.reduce(
       (sum, r) => sum + (r.mimirStats?.totalSpins || r.gamesPlayed),
       0

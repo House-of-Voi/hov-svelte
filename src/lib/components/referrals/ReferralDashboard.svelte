@@ -127,6 +127,7 @@
       totalSpins={dashboardData.aggregateStats.totalSpins}
       activeCount={dashboardData.aggregateStats.activeCount}
       totalReferrals={dashboardData.totalReferrals}
+      totalCreditsEarned={dashboardData.aggregateStats.totalCreditsEarned}
     />
 
     <!-- Referral Codes Summary -->

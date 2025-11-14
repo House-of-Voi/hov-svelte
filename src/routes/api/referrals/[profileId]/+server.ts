@@ -5,6 +5,7 @@ import { createAdminClient } from '$lib/db/supabaseAdmin';
 import { getReferralVolumeStats, getVoiAddressesForProfile } from '$lib/referrals/stats';
 import { getPlayerSpins } from '$lib/mimir/queries';
 import type { MimirSpinEvent } from '$lib/types/database';
+import { DEFAULT_REFERRAL_CREDIT_PERCENTAGE } from '$lib/referrals/credits';
 
 /**
  * GET /api/referrals/[profileId]
@@ -108,6 +109,11 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
     console.error('Error fetching credit history:', creditError);
   }
 
+  // Calculate total credits earned (2% of volume)
+  const totalCreditsEarned = stats
+    ? (parseFloat(stats.totalBet) / 1e6) * (DEFAULT_REFERRAL_CREDIT_PERCENTAGE / 100)
+    : 0;
+
   return json({
     ok: true,
     profile: {
@@ -125,6 +131,7 @@ export const GET: RequestHandler = async ({ params, cookies, url }) => {
           netResult: stats.netResult || '0',
           lastPlayedAt: stats.lastPlayedAt || null,
           creditsEarned: stats.creditsEarned || 0,
+          totalCreditsEarned: totalCreditsEarned,
           winRate: stats.winRate || 0,
         }
       : null,

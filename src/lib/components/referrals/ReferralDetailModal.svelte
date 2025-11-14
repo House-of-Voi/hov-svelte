@@ -43,6 +43,7 @@
       netResult: string;
       lastPlayedAt: string | null;
       creditsEarned: number;
+      totalCreditsEarned: number;
       winRate: number;
     } | null;
     recentSpins: Array<{
@@ -319,7 +320,7 @@
       {#if data.stats}
         <div class="space-y-6">
           <!-- Key Statistics -->
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
             <div class="p-4 bg-primary-50 dark:bg-primary-950/30 border border-primary-200 dark:border-primary-800 rounded-lg">
               <p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Spins</p>
               <p class="text-2xl font-semibold text-primary-700 dark:text-primary-300">
@@ -342,6 +343,12 @@
               <p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Win Rate</p>
               <p class="text-2xl font-semibold text-info-700 dark:text-info-300">
                 {data.stats.winRate.toFixed(2)}%
+              </p>
+            </div>
+            <div class="p-4 bg-warning-50 dark:bg-warning-950/30 border border-warning-200 dark:border-warning-800 rounded-lg">
+              <p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Credits Earned</p>
+              <p class="text-2xl font-semibold text-warning-700 dark:text-warning-300">
+                {formatLargeNumber(data.stats.totalCreditsEarned || 0)}
               </p>
             </div>
           </div>

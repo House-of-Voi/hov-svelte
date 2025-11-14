@@ -104,6 +104,12 @@
           </p>
         </div>
         <div class="text-right">
+          <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Credits</p>
+          <p class="font-semibold text-neutral-950 dark:text-white">
+            {formatLargeNumber(referral.totalCreditsEarned || 0)}
+          </p>
+        </div>
+        <div class="text-right">
           <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Spins</p>
           <p class="font-semibold text-neutral-950 dark:text-white">
             {formatLargeNumber(referral.mimirStats.totalSpins)}
@@ -120,6 +126,12 @@
           <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Volume</p>
           <p class="font-semibold text-neutral-950 dark:text-white">
             {referral.totalWagered > 0 ? `${formatLargeNumber(referral.totalWagered)} VOI` : 'N/A'}
+          </p>
+        </div>
+        <div class="text-right">
+          <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Credits</p>
+          <p class="font-semibold text-neutral-950 dark:text-white">
+            {formatLargeNumber(referral.totalCreditsEarned || 0)}
           </p>
         </div>
         <div class="text-right">
@@ -187,6 +199,12 @@
           </p>
         </div>
         <div class="text-right">
+          <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Credits</p>
+          <p class="font-semibold text-neutral-950 dark:text-white">
+            {formatLargeNumber(referral.totalCreditsEarned || 0)}
+          </p>
+        </div>
+        <div class="text-right">
           <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Spins</p>
           <p class="font-semibold text-neutral-950 dark:text-white">
             {formatLargeNumber(referral.mimirStats.totalSpins)}
@@ -203,6 +221,12 @@
           <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Volume</p>
           <p class="font-semibold text-neutral-950 dark:text-white">
             {referral.totalWagered > 0 ? `${formatLargeNumber(referral.totalWagered)} VOI` : 'N/A'}
+          </p>
+        </div>
+        <div class="text-right">
+          <p class="text-xs text-neutral-600 dark:text-neutral-400 mb-0.5">Credits</p>
+          <p class="font-semibold text-neutral-950 dark:text-white">
+            {formatLargeNumber(referral.totalCreditsEarned || 0)}
           </p>
         </div>
         <div class="text-right">
