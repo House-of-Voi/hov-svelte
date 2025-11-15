@@ -1,0 +1,1006 @@
+<script lang="ts">
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import { CoinsIcon } from '$lib/components/icons';
+
+	// W2W Game components
+	import ReelGrid from './ReelGrid.svelte';
+	import W2WBettingControls from './W2WBettingControls.svelte';
+	import W2WWinDisplay from './W2WWinDisplay.svelte';
+	import W2WModeSelector from './W2WModeSelector.svelte';
+	import W2WSpinQueue from './W2WSpinQueue.svelte';
+	import W2WSpinDetailModal from './W2WSpinDetailModal.svelte';
+	import W2WBonusSpinOverlay from './W2WBonusSpinOverlay.svelte';
+
+	// PostMessage types
+	import type {
+		GameRequest,
+		GameResponse,
+		OutcomeMessage,
+		BalanceUpdateMessage,
+		ErrorMessage,
+		ConfigMessage,
+		CreditBalanceMessage,
+	} from '$lib/game-engine/bridge/types';
+	// Use MESSAGE_NAMESPACE constant directly to avoid import issues
+	const MESSAGE_NAMESPACE = 'com.houseofvoi';
+
+	import { onMount, onDestroy } from 'svelte';
+
+	// W2W default symbols (0-9, A-F)
+	const W2W_SYMBOLS: string[] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'];
+	
+	// Generate initial grid with W2W symbols
+	function generateInitialGrid(): string[][] {
+		return Array(5).fill(null).map(() =>
+			Array(3).fill(null).map((_, i) => W2W_SYMBOLS[i % W2W_SYMBOLS.length])
+		);
+	}
+
+	// Game state (managed via postMessage)
+	let grid = $state<string[][]>(generateInitialGrid()) as any;
+	let balance = $state(0);
+	let availableBalance = $state(0);
+	let credits = $state(0);
+	let bonusSpins = $state(0);
+	let jackpotAmount = $state(50000);
+	let isSpinning = $state(false);
+	let waitingForOutcome = $state(false);
+	let betAmount = $state(40);
+	let mode = $state(2); // 0=bonus, 1=credit (free-play), 2=VOI, 4=ARC200 (default to VOI, will be updated when credits load)
+	let lastError = $state<string | null>(null);
+	let showingWinDisplay = $state(false);
+	let winAmount = $state(0);
+	let winLevel = $state<'none' | 'small' | 'medium' | 'large' | 'jackpot'>('none');
+	let waysWins = $state<any[]>([]);
+	let bonusSpinsAwarded = $state(0);
+	let jackpotHit = $state(false);
+	let jackpotWinAmount = $state(0);
+	let isRefreshingBalance = $state(false);
+	let slotConfig = $state<any>(null);
+	let modeEnabled = $state(7); // Default: all modes enabled
+	let pendingSpinId: string | null = $state(null);
+	let isAutoBonusMode = $state(false); // Track if we're in auto bonus spin mode
+	let isAutoSpinning = $state(false); // Prevent multiple simultaneous auto-spins
+	
+	// Queue tracking
+	interface QueuedSpin {
+		clientSpinId: string; // Our client-generated ID
+		engineSpinId?: string; // Engine's spinId (from SPIN_SUBMITTED)
+		betAmount: number;
+		mode: number;
+		timestamp: number;
+		completedAt?: number; // Timestamp when spin completed/failed
+		status: 'pending' | 'submitted' | 'completed' | 'failed';
+		fadingOut?: boolean; // Flag to trigger fade-out animation
+		outcome?: {
+			totalPayout: number;
+			waysWins?: any[];
+			grid?: string[][];
+			bonusSpinsAwarded?: number;
+			jackpotHit?: boolean;
+			jackpotAmount?: number;
+			winLevel?: 'none' | 'small' | 'medium' | 'large' | 'jackpot';
+		};
+		error?: string;
+	}
+	let spinQueue = $state<QueuedSpin[]>([]);
+	let pendingSpins = $derived(spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length);
+
+	// Spin detail modal state
+	let selectedSpin = $state<QueuedSpin | null>(null);
+
+	// Auto-removal timeouts tracking
+	const removalTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+	const fadeOutTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+	// Message handler
+	let messageHandler: ((event: MessageEvent) => void) | null = null;
+
+	onMount(() => {
+		// Set up postMessage listener
+		messageHandler = (event: MessageEvent) => {
+			// In production, validate origin
+			// if (event.origin !== 'https://houseofvoi.com') return;
+
+			const message = event.data;
+
+			// Filter messages by namespace (silently ignore non-matching messages)
+			if (!message || typeof message !== 'object' || !('namespace' in message)) {
+				console.debug('W2WGame: Ignoring message without namespace field');
+				return;
+			}
+
+			if (message.namespace !== MESSAGE_NAMESPACE) {
+				console.debug(
+					`W2WGame: Ignoring message with non-matching namespace: "${message.namespace}"`
+				);
+				return;
+			}
+
+			switch (message.type) {
+				case 'OUTCOME':
+					handleOutcome(message);
+					break;
+				case 'BALANCE_UPDATE':
+					handleBalanceUpdate(message);
+					break;
+				case 'BALANCE_RESPONSE':
+					handleBalanceResponse(message);
+					break;
+				case 'CREDIT_BALANCE':
+					handleCreditBalance(message);
+					break;
+				case 'CONFIG':
+					handleConfig(message);
+					break;
+				case 'ERROR':
+					handleError(message);
+					break;
+				case 'SPIN_SUBMITTED':
+					handleSpinSubmitted(message);
+					break;
+			}
+		};
+
+		window.addEventListener('message', messageHandler);
+
+		// Initialize connection - request balance, credits, and config
+		sendMessage({ type: 'INIT' });
+		sendMessage({ type: 'GET_BALANCE' });
+		sendMessage({ type: 'GET_CREDIT_BALANCE' });
+		sendMessage({ type: 'GET_CONFIG' });
+	});
+
+	onDestroy(() => {
+		if (messageHandler) {
+			window.removeEventListener('message', messageHandler);
+			messageHandler = null;
+		}
+	});
+
+	/**
+	 * Send message to parent (bridge)
+	 */
+	function sendMessage(message: GameRequest): void {
+		if (window.parent) {
+			const messageWithNamespace = {
+				...message,
+				namespace: MESSAGE_NAMESPACE,
+			};
+			window.parent.postMessage(messageWithNamespace, '*'); // Use specific origin in production
+		}
+	}
+
+	/**
+	 * Handle outcome message (W2W format)
+	 */
+	function handleOutcome(message: OutcomeMessage): void {
+		const payload = message.payload;
+
+		console.log('🎰 W2W Outcome received:', payload);
+
+		// Update grid
+		grid = payload.grid;
+
+		// Update W2W-specific fields (check if it's W2W format)
+		if ('waysWins' in payload) {
+			waysWins = payload.waysWins || [];
+			bonusSpinsAwarded = payload.bonusSpinsAwarded || 0;
+			jackpotHit = payload.jackpotHit || false;
+			jackpotWinAmount = payload.jackpotAmount || 0;
+		} else {
+			// 5reel format - set defaults
+			waysWins = [];
+			bonusSpinsAwarded = 0;
+			jackpotHit = false;
+			jackpotWinAmount = 0;
+		}
+
+		// Mark spin as completed in queue and store outcome data
+		// Match by engineSpinId (from SPIN_SUBMITTED) or clientSpinId (fallback)
+		if (payload.spinId) {
+			spinQueue = spinQueue.map(s =>
+				(s.engineSpinId === payload.spinId || s.clientSpinId === payload.spinId)
+					? {
+						...s,
+						status: 'completed' as const,
+						completedAt: Date.now(),
+						outcome: {
+							totalPayout: payload.winnings,
+							waysWins: waysWins,
+							grid: payload.grid,
+							bonusSpinsAwarded: bonusSpinsAwarded,
+							jackpotHit: jackpotHit,
+							jackpotAmount: jackpotWinAmount,
+							winLevel: payload.winLevel
+						}
+					}
+					: s
+			);
+		}
+
+		// Only clear spinning state if no other spins are pending
+		const remainingPending = spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length;
+		if (remainingPending === 0) {
+			waitingForOutcome = false;
+			isSpinning = false;
+			pendingSpinId = null;
+			
+			// After all spins complete, check if we should auto-submit bonus spins
+			// This handles the case where the queue becomes empty
+			if (!showingWinDisplay && bonusSpins > 0 && isAutoBonusMode) {
+				setTimeout(() => {
+					checkAndAutoSubmitBonusSpin();
+				}, 500);
+			}
+		}
+
+		// Update bonus spins if awarded
+		if (bonusSpinsAwarded > 0) {
+			bonusSpins += bonusSpinsAwarded;
+		}
+
+		// Update win display
+		if (payload.winnings > 0 || bonusSpinsAwarded > 0 || jackpotHit) {
+			winAmount = payload.winnings;
+			winLevel = payload.winLevel;
+			showingWinDisplay = true;
+		} else {
+			showingWinDisplay = false;
+			// If no win display, check for auto-submit immediately after a short delay
+			// This handles the case where the spin completes but there's no win to display
+			setTimeout(() => {
+				if (!showingWinDisplay && !isSpinning && !waitingForOutcome) {
+					checkAndAutoSubmitBonusSpin();
+				}
+			}, 500);
+		}
+
+		// Query user data from contract to get actual bonus spin count
+		// This ensures we have the latest count after the claim transaction
+		sendMessage({ type: 'GET_CREDIT_BALANCE' });
+	}
+
+	/**
+	 * Handle balance update
+	 */
+	function handleBalanceUpdate(message: BalanceUpdateMessage): void {
+		const payload = message.payload;
+		balance = Number(payload.balance) || 0;
+		availableBalance = Number(payload.availableBalance) || 0;
+	}
+
+	/**
+	 * Handle balance response
+	 */
+	function handleBalanceResponse(message: any): void {
+		const payload = message.payload;
+		balance = Number(payload.balance) || 0;
+		availableBalance = Number(payload.availableBalance) || 0;
+		isRefreshingBalance = false;
+	}
+
+	/**
+	 * Handle credit balance (W2W specific)
+	 */
+	function handleCreditBalance(message: CreditBalanceMessage): void {
+		const payload = message.payload;
+		const newCredits = Number(payload.credits) || 0;
+		const newBonusSpins = Number(payload.bonusSpins) || 0;
+		
+		// Set default mode based on credits:
+		// - If user has credits, default to Credit mode (1)
+		// - If user has no credits, default to VOI mode (2)
+		// Only set default if mode is not already set to a valid enabled mode
+		if (mode === 0 || (mode !== 1 && mode !== 2 && mode !== 4)) {
+			if (newCredits > 0 && (modeEnabled & 1)) {
+				// User has credits, default to Credit mode
+				mode = 1;
+			} else if (modeEnabled & 2) {
+				// User has no credits, default to VOI mode
+				mode = 2;
+			} else if (modeEnabled & 4) {
+				// Fallback to ARC200 mode if VOI not available
+				mode = 4;
+			}
+		} else if (mode === 1 && newCredits === 0 && credits > 0) {
+			// User just ran out of credits, switch to VOI mode
+			if (modeEnabled & 2) {
+				mode = 2;
+			} else if (modeEnabled & 4) {
+				mode = 4;
+			}
+		}
+		
+		credits = newCredits;
+		const previousBonusSpins = bonusSpins;
+		bonusSpins = newBonusSpins;
+
+		// Exit auto bonus mode if bonus spins ran out
+		if (bonusSpins === 0 && isAutoBonusMode) {
+			isAutoBonusMode = false;
+			isAutoSpinning = false;
+		}
+
+		// If we just received bonus spins and we're not currently spinning,
+		// and we're in auto mode or should enter it, trigger auto-submit
+		// Only trigger if bonus spins increased (new bonus spins detected)
+		if (newBonusSpins > previousBonusSpins && !isSpinning && !waitingForOutcome && !isAutoSpinning) {
+			// If no win display is showing, trigger immediately
+			if (!showingWinDisplay) {
+				checkAndAutoSubmitBonusSpin();
+			}
+			// Otherwise, it will trigger when win display closes
+		}
+	}
+
+	/**
+	 * Handle config message
+	 */
+	function handleConfig(message: ConfigMessage): void {
+		const payload = message.payload;
+		slotConfig = {
+			minBet: payload.minBet,
+			maxBet: payload.maxBet,
+			rtpTarget: payload.rtpTarget,
+			houseEdge: payload.houseEdge,
+		};
+		// Update jackpot if available in config (W2W format)
+		if ('jackpotAmount' in payload) {
+			jackpotAmount = Number(payload.jackpotAmount) || 50000;
+		}
+		// Update modeEnabled if available in config (W2W format)
+		if ('modeEnabled' in payload) {
+			modeEnabled = Number(payload.modeEnabled) ?? 7;
+		}
+	}
+
+	/**
+	 * Handle error message
+	 */
+	function handleError(message: ErrorMessage): void {
+		const payload = message.payload;
+		lastError = payload.message;
+
+		// If error has a requestId, mark that spin as failed and store error message
+		// requestId could be either clientSpinId or engineSpinId
+		if (payload.requestId) {
+			spinQueue = spinQueue.map(s =>
+				(s.clientSpinId === payload.requestId || s.engineSpinId === payload.requestId)
+					? { ...s, status: 'failed' as const, completedAt: Date.now(), error: payload.message }
+					: s
+			);
+		}
+
+		// Only clear spinning state if no other spins are pending
+		const remainingPending = spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length;
+		if (remainingPending === 0) {
+			isSpinning = false;
+			waitingForOutcome = false;
+			pendingSpinId = null;
+		}
+		isRefreshingBalance = false;
+
+		// Exit auto bonus mode on error to prevent stuck state
+		if (isAutoBonusMode) {
+			isAutoBonusMode = false;
+			isAutoSpinning = false;
+		}
+
+		console.error('❌ Game error:', payload);
+	}
+
+	/**
+	 * Handle spin submitted
+	 */
+	function handleSpinSubmitted(message: any): void {
+		const payload = message.payload;
+		pendingSpinId = payload.spinId;
+		
+		// Mark spin as submitted in queue and store engine's spinId
+		// The engine's spinId will be used to match outcomes
+		// We match by finding the first pending spin (since they're processed in order)
+		if (payload.spinId) {
+			// Find the first pending spin that doesn't have an engineSpinId yet
+			const pendingIndex = spinQueue.findIndex(s => s.status === 'pending' && !s.engineSpinId);
+			if (pendingIndex !== -1) {
+				spinQueue = spinQueue.map((s, idx) => 
+					idx === pendingIndex 
+						? { ...s, status: 'submitted' as const, engineSpinId: payload.spinId } 
+						: s
+				);
+			} else {
+				// Fallback: try to match by clientSpinId if we can't find by order
+				spinQueue = spinQueue.map(s => 
+					s.clientSpinId === payload.spinId || s.engineSpinId === payload.spinId
+						? { ...s, status: 'submitted' as const, engineSpinId: payload.spinId } 
+						: s
+				);
+			}
+		}
+		
+		console.log('📤 Spin submitted:', payload.spinId);
+	}
+
+	/**
+	 * Handle spin button click
+	 * Allows rapid queueing with balance-based limiting
+	 */
+	function handleSpin(): void {
+		lastError = null;
+
+		// If user manually clicks spin during auto bonus mode, exit auto mode
+		// This allows user to take control
+		if (isAutoBonusMode && !isAutoSpinning) {
+			isAutoBonusMode = false;
+		}
+
+		// Auto-detect bonus spins: if user has bonus spins, automatically use bonus mode (0)
+		// Otherwise use the selected mode
+		const actualMode = bonusSpins > 0 ? 0 : mode;
+		
+		// Convert betAmount from VOI to microAlgos for balance calculations
+		const betAmountMicroAlgos = actualMode === 0 ? 0 : betAmount * 1_000_000;
+		
+		// Transaction cost per spin
+		const spinCost = 50_500; // Transaction fee
+		const totalCostPerSpin = betAmountMicroAlgos + spinCost;
+
+		// Calculate total cost for all pending spins plus this new one
+		const totalPendingCost = spinQueue
+			.filter(s => s.status !== 'completed' && s.status !== 'failed')
+			.reduce((sum, spin) => {
+				const spinBetAmount = spin.mode === 0 ? 0 : spin.betAmount * 1_000_000;
+				return sum + spinBetAmount + spinCost;
+			}, 0);
+
+		const totalCostWithNewSpin = totalPendingCost + totalCostPerSpin;
+
+		// Check balance for VOI/ARC200 modes (credit/bonus modes checked by bridge)
+		if (actualMode === 2 || actualMode === 4) {
+			// availableBalance is already in microAlgos from balance updates
+			const availableBalanceMicroAlgos = availableBalance;
+			
+			// Check if we have enough balance for all queued spins plus this new one
+			if (availableBalanceMicroAlgos < totalCostPerSpin) {
+				lastError = `Insufficient balance. Need ${(totalCostPerSpin / 1_000_000).toFixed(2)} VOI for this spin.`;
+				return;
+			}
+
+			// Check if adding this spin would exceed available balance
+			if (availableBalanceMicroAlgos < totalCostWithNewSpin) {
+				lastError = `Insufficient balance to queue another spin. ${pendingSpins} spin${pendingSpins !== 1 ? 's' : ''} already queued.`;
+				return;
+			}
+		}
+
+		// Generate unique client spin ID
+		const clientSpinId = `spin-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+		// Add to queue
+		spinQueue = [...spinQueue, {
+			clientSpinId,
+			engineSpinId: undefined, // Will be set when SPIN_SUBMITTED arrives
+			betAmount,
+			mode: actualMode,
+			timestamp: Date.now(),
+			status: 'pending'
+		}];
+
+		// Start animation if this is the first spin
+		if (pendingSpins === 1) {
+			isSpinning = true;
+			waitingForOutcome = true;
+		}
+
+		// Optimistically decrement bonus spins if using bonus mode
+		if (actualMode === 0 && bonusSpins > 0) {
+			bonusSpins = Math.max(0, bonusSpins - 1);
+			console.log('🎰 Decremented bonus spin (optimistic)', { bonusSpins });
+		}
+
+		// Send W2W spin request
+		sendMessage({
+			type: 'SPIN_REQUEST',
+			payload: {
+				betAmount,
+				mode: actualMode, // Pass the actual mode: 0=bonus, 1=credit, 2=VOI, 4=ARC200
+				reserved: actualMode === 0 ? 1 : 0, // 1 for bonus spin, 0 for regular (kept for backward compatibility)
+				spinId: clientSpinId, // Send client spinId for reference (engine will generate its own)
+			},
+		});
+	}
+
+	/**
+	 * Handle bet amount change
+	 */
+	function handleBetChange(newBetAmount: number): void {
+		// Exit auto bonus mode if user manually changes bet amount
+		if (isAutoBonusMode) {
+			isAutoBonusMode = false;
+			isAutoSpinning = false;
+		}
+		betAmount = newBetAmount;
+	}
+
+	/**
+	 * Handle mode change
+	 */
+	function handleModeChange(newMode: number): void {
+		// Exit auto bonus mode if user manually changes mode away from bonus
+		if (newMode !== 0 && isAutoBonusMode) {
+			isAutoBonusMode = false;
+			isAutoSpinning = false;
+		}
+		mode = newMode;
+		// Refresh credit balance when switching modes
+		if (newMode === 0 || newMode === 1) {
+			sendMessage({ type: 'GET_CREDIT_BALANCE' });
+		}
+	}
+
+	/**
+	 * Handle win display close
+	 */
+	function handleWinDisplayClose(): void {
+		showingWinDisplay = false;
+		waysWins = [];
+		bonusSpinsAwarded = 0;
+		jackpotHit = false;
+		
+		// After win display closes, check if we should auto-submit bonus spins
+		checkAndAutoSubmitBonusSpin();
+	}
+
+	/**
+	 * Check if we should auto-submit a bonus spin and do it
+	 */
+	function checkAndAutoSubmitBonusSpin(): void {
+		// Don't auto-submit if:
+		// - Already auto-spinning
+		// - Currently spinning or waiting for outcome
+		// - No bonus spins available
+		// - User manually changed mode (not in auto bonus mode and mode is not 0)
+		if (isAutoSpinning || isSpinning || waitingForOutcome || bonusSpins === 0) {
+			return;
+		}
+
+		// If we have bonus spins and we're either in auto mode or should enter it
+		if (bonusSpins > 0) {
+			// Enter auto bonus mode if not already in it
+			if (!isAutoBonusMode) {
+				isAutoBonusMode = true;
+			}
+
+			// Prevent multiple simultaneous auto-spins
+			isAutoSpinning = true;
+
+			// Small delay to ensure UI is ready
+			setTimeout(() => {
+				try {
+					handleSpin();
+					// Reset auto-spinning flag after a short delay to allow spin to be queued
+					setTimeout(() => {
+						isAutoSpinning = false;
+					}, 500);
+				} catch (error) {
+					console.error('Auto bonus spin failed:', error);
+					isAutoSpinning = false;
+					isAutoBonusMode = false; // Exit auto mode on error
+				}
+			}, 300);
+		}
+	}
+
+	/**
+	 * Exit bonus spin mode manually
+	 */
+	function exitBonusSpinMode(): void {
+		isAutoBonusMode = false;
+		isAutoSpinning = false;
+		// Switch back to the previous mode (or default to VOI)
+		if (mode === 0) {
+			if (modeEnabled & 2) {
+				mode = 2; // VOI mode
+			} else if (modeEnabled & 4) {
+				mode = 4; // ARC200 mode
+			} else if (modeEnabled & 1 && credits > 0) {
+				mode = 1; // Credit mode
+			}
+		}
+	}
+
+	/**
+	 * Handle balance refresh
+	 */
+	function handleRefreshBalance(): void {
+		if (isRefreshingBalance) return;
+
+		isRefreshingBalance = true;
+		sendMessage({ type: 'GET_BALANCE' });
+		sendMessage({ type: 'GET_CREDIT_BALANCE' });
+	}
+
+	/**
+	 * Handle spin click from queue
+	 */
+	function handleSpinClick(spin: QueuedSpin): void {
+		selectedSpin = spin;
+	}
+
+	/**
+	 * Close spin detail modal
+	 */
+	function closeSpinDetail(): void {
+		selectedSpin = null;
+	}
+
+	/**
+	 * Auto-remove completed/failed spins after 10 seconds with fade-out animation
+	 */
+	$effect(() => {
+		const completedOrFailedSpins = spinQueue.filter(
+			s => (s.status === 'completed' || s.status === 'failed') && s.completedAt && !s.fadingOut
+		);
+
+		completedOrFailedSpins.forEach((spin) => {
+			// Skip if we already have a timeout set for this spin
+			if (removalTimeouts.has(spin.clientSpinId) || fadeOutTimeouts.has(spin.clientSpinId)) {
+				return;
+			}
+
+			const timeElapsed = Date.now() - (spin.completedAt || 0);
+			const timeRemaining = Math.max(0, 10000 - timeElapsed);
+
+			if (timeRemaining > 0) {
+				// Set up timeout and track it
+				const timeoutId = setTimeout(() => {
+					try {
+						// Check if spin still exists and isn't already fading
+						const currentSpin = spinQueue.find(s => s.clientSpinId === spin.clientSpinId);
+						if (!currentSpin || currentSpin.fadingOut) {
+							removalTimeouts.delete(spin.clientSpinId);
+							return;
+						}
+
+						// Mark spin as fading out
+						spinQueue = spinQueue.map(s =>
+							s.clientSpinId === spin.clientSpinId
+								? { ...s, fadingOut: true }
+								: s
+						);
+						removalTimeouts.delete(spin.clientSpinId);
+
+						// After fade animation completes (1 second), remove from queue
+						const fadeTimeoutId = setTimeout(() => {
+							try {
+								spinQueue = spinQueue.filter(s => s.clientSpinId !== spin.clientSpinId);
+								fadeOutTimeouts.delete(spin.clientSpinId);
+							} catch (error) {
+								console.error('Error removing spin from queue:', error);
+								fadeOutTimeouts.delete(spin.clientSpinId);
+							}
+						}, 1000);
+
+						fadeOutTimeouts.set(spin.clientSpinId, fadeTimeoutId);
+					} catch (error) {
+						console.error('Error starting fade-out:', error);
+						removalTimeouts.delete(spin.clientSpinId);
+					}
+				}, timeRemaining);
+
+				removalTimeouts.set(spin.clientSpinId, timeoutId);
+			} else {
+				// Already past 10 seconds, start fade-out immediately
+				// Check if already fading to avoid duplicate updates
+				if (!spin.fadingOut) {
+					spinQueue = spinQueue.map(s =>
+						s.clientSpinId === spin.clientSpinId
+							? { ...s, fadingOut: true }
+							: s
+					);
+				}
+
+				// After fade animation completes (1 second), remove from queue
+				// Only set timeout if not already set
+				if (!fadeOutTimeouts.has(spin.clientSpinId)) {
+					const fadeTimeoutId = setTimeout(() => {
+						try {
+							spinQueue = spinQueue.filter(s => s.clientSpinId !== spin.clientSpinId);
+							fadeOutTimeouts.delete(spin.clientSpinId);
+						} catch (error) {
+							console.error('Error removing spin from queue:', error);
+							fadeOutTimeouts.delete(spin.clientSpinId);
+						}
+					}, 1000);
+
+					fadeOutTimeouts.set(spin.clientSpinId, fadeTimeoutId);
+				}
+			}
+		});
+
+		// Cleanup: remove timeout IDs for spins that are no longer in the queue or are fading out
+		const currentSpinIds = new Set(spinQueue.map(s => s.clientSpinId));
+		const fadingOutIds = new Set(spinQueue.filter(s => s.fadingOut).map(s => s.clientSpinId));
+		
+		for (const [spinId, timeoutId] of removalTimeouts.entries()) {
+			if (!currentSpinIds.has(spinId) || fadingOutIds.has(spinId)) {
+				clearTimeout(timeoutId);
+				removalTimeouts.delete(spinId);
+			}
+		}
+		for (const [spinId, timeoutId] of fadeOutTimeouts.entries()) {
+			if (!currentSpinIds.has(spinId)) {
+				clearTimeout(timeoutId);
+				fadeOutTimeouts.delete(spinId);
+			}
+		}
+	});
+
+	/**
+	 * Format number with commas
+	 */
+	function formatNumber(num: number): string {
+		return num.toLocaleString();
+	}
+</script>
+
+<div class="w2w-slot-machine">
+	<div class="slot-machine-container">
+		<!-- Main Game Area -->
+		<div class="game-main">
+			<!-- Jackpot Display -->
+			<div class="jackpot-display mb-6">
+				<div class="jackpot-label">PROGRESSIVE JACKPOT</div>
+				<div class="jackpot-amount">{formatNumber(jackpotAmount)}</div>
+			</div>
+
+			<!-- Reel Grid -->
+			<Card
+				glow
+				class="reel-card mb-6"
+			>
+				<CardContent class="p-6">
+					<ReelGrid
+						{grid}
+						isSpinning={isSpinning}
+						waitingForOutcome={waitingForOutcome}
+						waysWins={waysWins}
+						gameType="w2w"
+						onSpinComplete={() => console.log('Spin animation complete')}
+					/>
+				</CardContent>
+			</Card>
+
+			<!-- Betting Controls -->
+			<Card class="betting-card">
+				<CardContent class="p-6">
+					<W2WBettingControls
+						betAmount={betAmount}
+						{mode}
+						disabled={false}
+						isSpinning={pendingSpins > 0}
+						onBetChange={handleBetChange}
+						onSpin={handleSpin}
+					/>
+				</CardContent>
+			</Card>
+		</div>
+
+		<!-- Sidebar -->
+		<div class="game-sidebar">
+			<!-- Mode Selector -->
+			<div class="compact-mode-selector">
+				<W2WModeSelector
+					{mode}
+					{modeEnabled}
+					{credits}
+					{bonusSpins}
+					disabled={pendingSpins > 0}
+					onModeChange={handleModeChange}
+				/>
+			</div>
+
+			<!-- Balance Card -->
+			<Card glow>
+				<CardHeader>
+					<div class="flex items-center justify-between">
+						<h3 class="text-lg font-bold text-warning-500 dark:text-warning-400 uppercase flex items-center gap-2">
+							<CoinsIcon size={20} />
+							Balance
+						</h3>
+						<button
+							onclick={handleRefreshBalance}
+							disabled={isRefreshingBalance}
+							class="text-xs text-warning-500 dark:text-warning-400 hover:text-warning-600 dark:hover:text-warning-300 disabled:text-neutral-600 dark:disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
+							title="Refresh balance"
+						>
+							{isRefreshingBalance ? 'Refreshing...' : 'Refresh'}
+						</button>
+					</div>
+				</CardHeader>
+				<CardContent>
+					<div class="space-y-3">
+						<!-- Always show VOI Balance first -->
+						<div class="flex justify-between">
+							<span class="text-tertiary">VOI Balance:</span>
+							<span class="text-primary-400 font-bold">
+								{(balance / 1_000_000).toFixed(2)}
+							</span>
+						</div>
+						<!-- Always show Bonus Spins below VOI Balance -->
+						<div class="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
+							<span>Bonus Spins:</span>
+							<span class="text-warning-400 font-medium">
+								{formatNumber(bonusSpins)}
+							</span>
+						</div>
+						<div class="text-xs text-neutral-500 dark:text-neutral-400 italic">
+							Bonus spins will be used automatically
+						</div>
+						{#if mode === 1 && credits > 0}
+							<!-- Credit Mode: Show Credits -->
+							<div class="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
+								<span>Credits:</span>
+								<span class="text-primary-400 font-medium">
+									{formatNumber(credits)}
+								</span>
+							</div>
+						{/if}
+					</div>
+				</CardContent>
+			</Card>
+
+			<!-- Game Info -->
+			{#if slotConfig}
+				<Card class="mt-6">
+					<CardHeader>
+						<h3 class="text-lg font-bold text-warning-500 dark:text-warning-400 uppercase">
+							Game Info
+						</h3>
+					</CardHeader>
+					<CardContent class="space-y-2 text-sm">
+						<div class="flex justify-between py-2 border-b border-warning-200 dark:border-warning-900/20">
+							<span class="text-tertiary">RTP:</span>
+							<span class="text-secondary font-semibold">{slotConfig.rtpTarget}%</span>
+						</div>
+						<div class="flex justify-between py-2 border-b border-warning-200 dark:border-warning-900/20">
+							<span class="text-tertiary">House Edge:</span>
+							<span class="text-secondary font-semibold">{slotConfig.houseEdge}%</span>
+						</div>
+						<div class="flex justify-between py-2">
+							<span class="text-tertiary">Bet Amount:</span>
+							<span class="text-secondary font-semibold">{betAmount} {mode === 1 ? 'credits' : mode === 2 ? 'VOI' : 'ARC200'}</span>
+						</div>
+					</CardContent>
+				</Card>
+			{/if}
+
+			<!-- Spin Queue -->
+			<div class="mt-6">
+				<W2WSpinQueue {spinQueue} onSpinClick={handleSpinClick} />
+			</div>
+		</div>
+	</div>
+
+	<!-- Error Display -->
+	{#if lastError}
+		<div class="error-overlay">
+			<div class="error-card">
+				<p class="text-error-500 font-medium">{lastError}</p>
+				<button
+					onclick={() => (lastError = null)}
+					class="mt-2 text-sm text-error-400 hover:text-error-300 underline"
+				>
+					Dismiss
+				</button>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Win Display Modal -->
+	{#if showingWinDisplay}
+		<W2WWinDisplay
+			waysWins={waysWins}
+			totalPayout={winAmount}
+			bonusSpinsAwarded={bonusSpinsAwarded}
+			jackpotHit={jackpotHit}
+			jackpotAmount={jackpotWinAmount}
+			winLevel={winLevel}
+			onClose={handleWinDisplayClose}
+		/>
+	{/if}
+
+	<!-- Spin Detail Modal -->
+	<W2WSpinDetailModal spin={selectedSpin} onClose={closeSpinDetail} />
+
+	<!-- Bonus Spin Overlay -->
+	<W2WBonusSpinOverlay
+		bonusSpins={bonusSpins}
+		isAutoMode={isAutoBonusMode}
+		onExit={exitBonusSpinMode}
+	/>
+</div>
+
+<style>
+	.w2w-slot-machine {
+		@apply min-h-screen bg-gradient-to-br from-neutral-50 via-white to-neutral-50;
+		@apply dark:from-neutral-900 dark:via-neutral-950 dark:to-neutral-900;
+		@apply p-4 md:p-6;
+	}
+
+	.slot-machine-container {
+		@apply max-w-7xl mx-auto grid lg:grid-cols-3 gap-6;
+	}
+
+	.game-main {
+		@apply lg:col-span-2;
+	}
+
+	.jackpot-display {
+		@apply bg-gradient-to-r from-warning-500/20 via-warning-400/20 to-warning-500/20;
+		@apply border-2 border-warning-500/50 rounded-xl p-6 text-center;
+		@apply shadow-lg shadow-warning-500/20;
+		@apply animate-pulse;
+	}
+
+	.jackpot-label {
+		@apply text-xs font-bold text-warning-400 uppercase tracking-wider mb-2;
+	}
+
+	.jackpot-amount {
+		@apply text-4xl md:text-5xl font-black text-warning-300;
+		text-shadow: 0 0 20px rgba(251, 191, 36, 0.5);
+	}
+
+	.reel-card {
+		@apply bg-gradient-to-br from-neutral-50 via-neutral-100 to-neutral-50;
+		@apply dark:from-neutral-900 dark:via-neutral-950 dark:to-neutral-900;
+		@apply border-neutral-200 dark:border-neutral-700;
+	}
+
+	.mode-selector-card {
+		@apply bg-white/80 dark:bg-neutral-800/80;
+		@apply border-neutral-200 dark:border-neutral-700;
+	}
+
+	.betting-card {
+		@apply bg-white/80 dark:bg-neutral-800/80;
+		@apply border-neutral-200 dark:border-neutral-700;
+	}
+
+	.game-sidebar {
+		@apply space-y-4;
+	}
+
+	.compact-mode-selector {
+		@apply mb-2;
+	}
+
+	.error-overlay {
+		@apply fixed inset-0 z-50 flex items-center justify-center;
+		@apply bg-black/80 backdrop-blur-sm;
+	}
+
+	.error-card {
+		@apply bg-surface-900 rounded-2xl p-6 border-2 border-error-500;
+		@apply max-w-md w-full mx-4;
+	}
+
+	@keyframes pulse {
+		0%, 100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.8;
+		}
+	}
+
+	.animate-pulse {
+		animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+	}
+</style>
+

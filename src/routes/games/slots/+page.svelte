@@ -1,6 +1,8 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
   import GameContainer from '$lib/components/game/GameContainer.svelte';
+  import { gameConfigService } from '$lib/services/gameConfigService';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
@@ -18,13 +20,30 @@
   const finalMode = $derived(
     useEmbeddedTest || mode === 'embedded' ? 'embedded' : 'external'
   );
+  // Don't provide default gameUrl - let GameContainer detect from game_type
   const finalGameUrl = $derived(
-    finalMode === 'external' ? (gameUrl || '/games/slots/iframe') : undefined
+    finalMode === 'external' ? gameUrl : undefined
   );
+
+  // Fetch game config for page title
+  let gameConfig = $state<{ display_name: string } | null>(null);
+
+  onMount(async () => {
+    if (contractId) {
+      try {
+        const config = await gameConfigService.getConfigByContractId(contractId);
+        if (config) {
+          gameConfig = { display_name: config.display_name };
+        }
+      } catch (err) {
+        console.error('Failed to fetch game config for title:', err);
+      }
+    }
+  });
 </script>
 
 <svelte:head>
-  <title>5-Reel Slots - House of Voi</title>
+  <title>{gameConfig?.display_name || '5-Reel Slots'} - House of Voi</title>
 </svelte:head>
 
 <GameContainer

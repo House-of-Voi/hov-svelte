@@ -7,14 +7,14 @@ import {
   PUBLIC_SWAP_API_URL,
   PUBLIC_MIMIR_SUPABASE_URL,
   PUBLIC_MIMIR_SUPABASE_ANON_KEY,
+  PUBLIC_VOI_NODE_URL,
+  PUBLIC_VOI_INDEXER_URL,
 } from '$env/static/public';
 import {
   NODE_ENV,
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
   CDP_API_KEY_PRIVATE_KEY,
-  VOI_NODE_URL,
-  VOI_INDEXER_URL
 } from '$env/static/private';
 
 const ServerEnv = z.object({
@@ -29,8 +29,8 @@ const ServerEnv = z.object({
   PUBLIC_CDP_API_KEY_NAME: z.string().min(1),
   CDP_API_KEY_PRIVATE_KEY: z.string().min(10),
   // Voi Network Configuration
-  VOI_NODE_URL: z.string().url().optional(),
-  VOI_INDEXER_URL: z.string().url().optional(),
+  PUBLIC_VOI_NODE_URL: z.string().url().optional(),
+  PUBLIC_VOI_INDEXER_URL: z.string().url().optional(),
 });
 
 // Public environment variables (client-side accessible)
@@ -49,8 +49,8 @@ export const env = ServerEnv.parse({
   PUBLIC_CDP_PROJECT_ID,
   PUBLIC_CDP_API_KEY_NAME,
   CDP_API_KEY_PRIVATE_KEY,
-  VOI_NODE_URL,
-  VOI_INDEXER_URL,
+  PUBLIC_VOI_NODE_URL,
+  PUBLIC_VOI_INDEXER_URL,
 });
 
 export const DEMO_MODE = false;

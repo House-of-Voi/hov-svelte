@@ -7,7 +7,7 @@
 	interface Props {
 		/** Whether to show the win display */
 		show: boolean;
-		/** Win amount in microVOI */
+		/** Win amount in VOI */
 		winAmount: number;
 		/** Total bet in microVOI */
 		totalBet: number;
@@ -19,8 +19,9 @@
 
 	let { show, winAmount, totalBet, winLevel = 'small', onClose }: Props = $props();
 
-	// Calculate multiplier
-	let multiplier = $derived(totalBet > 0 ? (winAmount / totalBet).toFixed(2) : '0');
+	// Calculate multiplier (convert totalBet from microVOI to VOI)
+	let totalBetVOI = $derived(totalBet / 1_000_000);
+	let multiplier = $derived(totalBetVOI > 0 ? (winAmount / totalBetVOI).toFixed(2) : '0');
 
 	// Get win level styling
 	let winLevelConfig = $derived.by(() => {
@@ -72,10 +73,9 @@
 	<div
 		class="win-display-overlay"
 		transition:fly={{ y: -50, duration: 400, easing: cubicOut }}
-		onclick={onClose}
-		role="button"
-		tabindex="0"
-		onkeydown={(e) => e.key === 'Enter' && onClose?.()}
+		role="dialog"
+		aria-live="polite"
+		aria-label="Win celebration"
 	>
 		<div
 			class="win-display-content"
@@ -90,17 +90,13 @@
 			</h2>
 
 			<div class="win-amount">
-				<span class="win-amount-value">{formatVoi(winAmount)}</span>
+				<span class="win-amount-value">{formatVoi(winAmount * 1_000_000)}</span>
 			</div>
 
 			<div class="win-multiplier">
 				<span class="multiplier-label">Multiplier:</span>
 				<span class="multiplier-value">{multiplier}x</span>
 			</div>
-
-			<button class="close-btn" onclick={onClose}>
-				Continue
-			</button>
 		</div>
 	</div>
 {/if}
@@ -118,7 +114,6 @@
 		background: rgba(0, 0, 0, 0.8);
 		backdrop-filter: blur(8px);
 		z-index: 1000;
-		cursor: pointer;
 	}
 
 	.win-display-content {
@@ -197,31 +192,6 @@
 		font-weight: 800;
 		color: var(--win-color);
 		text-shadow: 0 0 10px var(--win-glow);
-	}
-
-	.close-btn {
-		margin-top: 1rem;
-		padding: 1rem 3rem;
-		background: linear-gradient(135deg, var(--win-color), var(--win-glow));
-		border: none;
-		border-radius: 0.75rem;
-		color: #ffffff;
-		font-size: 1.125rem;
-		font-weight: 700;
-		cursor: pointer;
-		transition: all 0.2s;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-	}
-
-	.close-btn:hover {
-		transform: translateY(-2px);
-		box-shadow:
-			0 6px 16px rgba(0, 0, 0, 0.4),
-			0 0 20px var(--win-glow);
-	}
-
-	.close-btn:active {
-		transform: translateY(0);
 	}
 
 	@keyframes winPulse {

@@ -28,14 +28,33 @@ export interface WinningLine {
 }
 
 /**
+ * Ways-to-win result for W2W games
+ */
+export interface WaysWin {
+  /** Symbol that matched */
+  symbol: SymbolId;
+  /** Number of ways (combinations) */
+  ways: number;
+  /** Match length (3, 4, or 5 consecutive reels) */
+  matchLength: number;
+  /** Payout for this win in credits or microVOI */
+  payout: number;
+  /** Wild multiplier applied */
+  wildMultiplier: number;
+}
+
+/**
  * Complete outcome of a spin from the blockchain
+ * Supports both 5reel (paylines) and w2w (ways-to-win) formats
  */
 export interface SpinOutcome {
-  /** The 3x5 grid of symbols (5 reels, 3 symbols each) */
+  /** The grid of symbols (5reel: 3x5, w2w: 3x5) */
   grid: SymbolId[][];
-  /** All winning paylines */
-  winningLines: WinningLine[];
-  /** Total payout across all paylines in microVOI */
+  /** All winning paylines (5reel only) */
+  winningLines?: WinningLine[];
+  /** Ways-to-win results (w2w only) */
+  waysWins?: WaysWin[];
+  /** Total payout across all wins in microVOI or credits */
   totalPayout: number;
   /** Block number where outcome was determined */
   blockNumber: number;
@@ -45,20 +64,31 @@ export interface SpinOutcome {
   betKey: string;
   /** Whether this outcome has been verified */
   verified?: boolean;
+  /** Bonus spins awarded (w2w only) */
+  bonusSpinsAwarded?: number;
+  /** Jackpot hit (w2w only) */
+  jackpotHit?: boolean;
+  /** Jackpot amount (w2w only) */
+  jackpotAmount?: number;
 }
 
 /**
  * Complete result of a spin including context
+ * Supports both 5reel and w2w formats
  */
 export interface SpinResult {
   /** Spin identifier */
   id: string;
   /** Outcome from blockchain */
   outcome: SpinOutcome;
-  /** Bet amount per line */
-  betPerLine: number;
-  /** Number of paylines */
-  paylines: number;
+  /** Bet amount per line (5reel only) */
+  betPerLine?: number;
+  /** Number of paylines (5reel only) */
+  paylines?: number;
+  /** Bet amount (w2w only) */
+  betAmount?: number;
+  /** Mode (w2w only: 0=bonus, 1=credit, 2=network, 4=token) */
+  mode?: number;
   /** Total bet amount */
   totalBet: number;
   /** Total winnings */
@@ -92,9 +122,9 @@ export interface TransactionResult {
 }
 
 /**
- * Bet submission parameters
+ * Bet submission parameters for 5reel games
  */
-export interface SpinParams {
+export interface SpinParams5Reel {
   /** Bet amount per line in microVOI */
   betPerLine: number;
   /** Number of paylines (1-20) */
@@ -102,6 +132,27 @@ export interface SpinParams {
   /** Wallet address placing the bet */
   walletAddress: string;
 }
+
+/**
+ * Bet submission parameters for W2W games
+ */
+export interface SpinParamsW2W {
+  /** Bet amount in credits or microVOI (depending on mode) */
+  betAmount: number;
+  /** Spin index (unique per user) */
+  index: number;
+  /** Mode: 0 = bonus, 1 = credit, 2 = network, 4 = token */
+  mode: number;
+  /** Reserved parameter (unused, typically 0) */
+  reserved?: number;
+  /** Wallet address placing the bet */
+  walletAddress: string;
+}
+
+/**
+ * Bet submission parameters (union type for both game types)
+ */
+export type SpinParams = SpinParams5Reel | SpinParamsW2W;
 
 /**
  * Bet key returned from spin transaction
@@ -115,6 +166,8 @@ export interface BetKey {
   submitBlock: number;
   /** Block where outcome can be claimed */
   claimBlock: number;
+  /** Bet key as hex string (for compatibility) */
+  betKey?: string;
 }
 
 /**

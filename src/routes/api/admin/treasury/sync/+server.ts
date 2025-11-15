@@ -24,11 +24,11 @@ export const POST: RequestHandler = async ({ cookies }) => {
     await requirePermission(cookies, PERMISSIONS.MANAGE_TREASURY, profileId ?? undefined);
 
     // Check if Voi configuration is available
-    if (!env.VOI_NODE_URL) {
+    if (!env.PUBLIC_VOI_NODE_URL) {
       return json<ApiResponse>(
         {
           success: false,
-          error: 'Voi network not configured. Set VOI_NODE_URL in environment.'
+          error: 'Voi network not configured. Set PUBLIC_VOI_NODE_URL in environment.'
         },
         { status: 503 }
       );

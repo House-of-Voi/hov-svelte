@@ -27,6 +27,9 @@ export interface SlotMachineConfig {
   version: number;
   created_at: string;
   updated_at: string;
+  ybt_app_id?: number;
+  ybt_asset_id?: number;
+  game_type?: '5reel' | 'w2w';
 }
 
 export interface StatsSnapshotDaily {

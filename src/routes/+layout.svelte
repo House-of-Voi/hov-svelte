@@ -5,9 +5,12 @@
   import { invalidateAll } from '$app/navigation';
   import '../app.css';
   import favicon from '$lib/assets/favicon.svg';
+  // Initialize Buffer polyfill for browser
+  import '$lib/shims/buffer';
   import UserNav from '$lib/components/UserNav.svelte';
   import AdminNavLink from '$lib/components/navigation/AdminNavLink.svelte';
   import NotificationContainer from '$lib/components/ui/NotificationContainer.svelte';
+  import NavigationProgress from '$lib/components/ui/NavigationProgress.svelte';
   import type { SessionInfo } from '$lib/auth/session';
   import type { ProfileData } from '$lib/profile/data';
   import { validateStoredKeys, handleSessionRecovery } from '$lib/auth/sessionRecovery';
@@ -20,8 +23,11 @@
 
   let { children, data }: { children: () => unknown; data: LayoutData } = $props();
 
-  // Check if we're on the iframe route
-  const isIframeRoute = $derived($page.route.id === '/games/slots/iframe');
+  // Check if we're on an iframe route (slots or w2w)
+  const isIframeRoute = $derived(
+    $page.route.id === '/games/slots/iframe' || 
+    $page.route.id === '/games/w2w/iframe'
+  );
 
   let isAdminUser = $state(data.isAdminUser);
   let recoveryAttempted = $state(false);
@@ -102,6 +108,7 @@
 </svelte:head>
 
 <div class="min-h-screen bg-white dark:bg-neutral-950">
+  <NavigationProgress />
   <div class="flex min-h-screen flex-col">
     {#if !isIframeRoute}
     <header class="sticky top-0 z-50 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-xl border-b border-neutral-200 dark:border-neutral-800">
@@ -129,6 +136,11 @@
               <a href="/games" class={navLinkClasses}>Games</a>
             {:else}
               <span aria-disabled="true" class={disabledNavClass}>Games</span>
+            {/if}
+            {#if isAdminUser}
+              <a href="/house" class={navLinkClasses}>House</a>
+            {:else}
+              <span aria-disabled="true" class={disabledNavClass}>House</span>
             {/if}
             {#if isAdminUser}
               <a href="/stats" class={navLinkClasses}>Stats</a>

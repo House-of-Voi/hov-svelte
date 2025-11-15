@@ -33,17 +33,24 @@ export enum SpinStatus {
 
 /**
  * A spin that has been queued for processing
+ * Supports both 5reel (betPerLine/paylines) and W2W (betAmount/mode/index) formats
  */
 export interface QueuedSpin {
   /** Unique identifier for this spin */
   id: string;
   /** Current status */
   status: SpinStatus;
-  /** Bet amount per line in microVOI */
-  betPerLine: number;
-  /** Number of paylines selected */
-  paylines: number;
-  /** Total bet amount (betPerLine * paylines) */
+  /** Bet amount per line in microVOI (5reel only) */
+  betPerLine?: number;
+  /** Number of paylines selected (5reel only) */
+  paylines?: number;
+  /** Bet amount in credits or microVOI (W2W only) */
+  betAmount?: number;
+  /** Spin index (W2W only) */
+  index?: number;
+  /** Mode: 0=bonus, 1=credit, 2=network, 4=token (W2W only) */
+  mode?: number;
+  /** Total bet amount (betPerLine * paylines for 5reel, betAmount for W2W) */
   totalBet: number;
   /** Timestamp when spin was created */
   timestamp: number;
@@ -67,6 +74,8 @@ export interface QueuedSpin {
   retryCount?: number;
   /** Last retry timestamp */
   lastRetry?: number;
+  /** Game type: '5reel' or 'w2w' */
+  gameType?: '5reel' | 'w2w';
 }
 
 /**
@@ -87,11 +96,15 @@ export interface GameState {
   balance: number;
   /** Balance reserved for pending spins */
   reservedBalance: number;
-  /** Current bet configuration */
+  /** Current bet configuration (supports both 5reel and W2W) */
   currentBet: {
-    betPerLine: number;
-    paylines: number;
+    betPerLine?: number;
+    paylines?: number;
+    betAmount?: number;
+    mode?: number;
+    index?: number;
     totalBet: number;
+    gameType?: '5reel' | 'w2w';
   };
   /** Whether auto-spin mode is active */
   isAutoSpinning: boolean;

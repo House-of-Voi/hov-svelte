@@ -58,10 +58,10 @@ export async function getContractBalances(
     throw new Error('Invalid app ID for getContractBalances');
   }
 
-  const nodeUrl = config.nodeUrl || env.VOI_NODE_URL;
+  const nodeUrl = config.nodeUrl || env.PUBLIC_VOI_NODE_URL;
 
   if (!nodeUrl) {
-    throw new Error('VOI_NODE_URL not configured');
+    throw new Error('PUBLIC_VOI_NODE_URL not configured');
   }
 
   // Create Algod client (Voi uses same SDK as Algorand)

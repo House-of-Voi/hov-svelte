@@ -1,5 +1,4 @@
 import algosdk from 'algosdk';
-import { env } from '$lib/utils/env';
 
 /**
  * Swap contract client for ulujs swap contract (ID 395553)

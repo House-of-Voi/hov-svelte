@@ -1,7 +1,7 @@
 /**
- * Voi Slot Machine Adapter
+ * Voi 5Reel Adapter
  *
- * Production blockchain adapter for Voi network.
+ * Production blockchain adapter for Voi network - 5reel (traditional payline) implementation.
  * Handles real blockchain transactions and contract interactions using AlgoKit Utils v9 + algosdk v3.
  */
 
@@ -54,9 +54,9 @@ const DEFAULT_VOI_CONFIG = {
 };
 
 /**
- * Voi blockchain adapter
+ * Voi 5Reel blockchain adapter
  */
-export class VoiSlotMachineAdapter implements BlockchainAdapter {
+export class VoiFiveReelAdapter implements BlockchainAdapter {
 	private config: VoiAdapterConfig;
 	private algodClient: algosdk.Algodv2 | null = null;
 	private indexer: algosdk.Indexer | null = null;
@@ -76,12 +76,12 @@ export class VoiSlotMachineAdapter implements BlockchainAdapter {
 	}
 
 	async initialize(): Promise<void> {
-		const log = logger.scope('VoiSlotMachineAdapter');
+		const log = logger.scope('VoiFiveReelAdapter');
 		if (this.initialized) {
 			log.info('already initialized, skipping');
 			return;
 		}
-		
+
 		log.info('initializing...');
 
 		const network = (this.config.network || 'mainnet') as 'mainnet' | 'testnet';

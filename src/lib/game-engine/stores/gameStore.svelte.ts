@@ -201,13 +201,27 @@ export function createGameStore() {
     },
 
     /**
-     * Set current bet configuration
+     * Set current bet configuration (5reel format)
      */
     setBet(betPerLine: number, paylines: number) {
       state.currentBet = {
         betPerLine,
         paylines,
         totalBet: betPerLine * paylines,
+        gameType: '5reel',
+      };
+    },
+
+    /**
+     * Set current bet configuration (W2W format)
+     */
+    setBetW2W(betAmount: number, mode: number, index: number) {
+      state.currentBet = {
+        betAmount,
+        mode,
+        index,
+        totalBet: betAmount,
+        gameType: 'w2w',
       };
     },
 

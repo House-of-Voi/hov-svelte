@@ -11,6 +11,7 @@ import type { ApiResponse } from '$lib/types/admin';
 export const GET: RequestHandler = async ({ url }) => {
   try {
     const chain = url.searchParams.get('chain') as 'base' | 'voi' | 'solana' | null;
+    const contractId = url.searchParams.get('contract_id');
 
     const supabase = createAdminClient();
 
@@ -26,13 +27,55 @@ export const GET: RequestHandler = async ({ url }) => {
       query = query.eq('chain', chain);
     }
 
+    // Filter by contract_id if specified (for single config lookup)
+    if (contractId) {
+      query = query.eq('contract_id', contractId).single();
+    }
+
     const { data: configs, error } = await query;
 
     if (error) {
+      // If single config requested and not found, return null
+      if (contractId && error.code === 'PGRST116') {
+        return json<ApiResponse<null>>(
+          { success: true, data: null },
+          { status: 200 }
+        );
+      }
       console.error('Error fetching slot machine configs:', error);
       return json<ApiResponse>(
         { success: false, error: 'Failed to fetch games' },
         { status: 500 }
+      );
+    }
+
+    // If single config requested, return it directly with all fields
+    if (contractId) {
+      const config = configs as any;
+      // Log to debug missing game_type
+      console.log('API: Returning single config:', {
+        contract_id: config?.contract_id,
+        id: config?.id,
+        game_type: config?.game_type,
+        has_game_type: 'game_type' in (config || {}),
+        allFields: config ? Object.keys(config) : 'config is null/undefined'
+      });
+      
+      if (!config || !config.game_type) {
+        console.error('API: Config missing game_type or config is null:', {
+          contract_id: config?.contract_id,
+          id: config?.id,
+          config: config
+        });
+        return json<ApiResponse>(
+          { success: false, error: `Game configuration for contract ${contractId} is missing game_type field` },
+          { status: 500 }
+        );
+      }
+      
+      return json<ApiResponse<typeof config>>(
+        { success: true, data: config },
+        { status: 200 }
       );
     }
 

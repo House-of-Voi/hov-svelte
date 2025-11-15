@@ -36,7 +36,7 @@ const WINDOW_LENGTH = 3;
  * Get algod client for server-side use
  */
 function getAlgodClient(): algosdk.Algodv2 {
-	const nodeUrl = env.VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev';
+	const nodeUrl = env.PUBLIC_VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev';
 	return new algosdk.Algodv2('', nodeUrl, '');
 }
 
@@ -44,7 +44,7 @@ function getAlgodClient(): algosdk.Algodv2 {
  * Get indexer client for server-side use
  */
 function getIndexerClient(): algosdk.Indexer {
-	const indexerUrl = env.VOI_INDEXER_URL || 'https://mainnet-idx.voi.nodely.dev';
+	const indexerUrl = env.PUBLIC_VOI_INDEXER_URL || 'https://mainnet-idx.voi.nodely.dev';
 	return new algosdk.Indexer('', indexerUrl, '');
 }
 

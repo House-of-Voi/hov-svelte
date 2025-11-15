@@ -2,11 +2,13 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import SlotsGame from './SlotsGame.svelte';
+	import W2WSlotsGame from './W2WSlotsGame.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { SlotMachineIcon } from '$lib/components/icons';
 	import { GameBridge } from '$lib/game-engine/bridge/GameBridge';
 	import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
 	import { getStoredVoiAddress } from '$lib/auth/keyStorage';
+	import { gameConfigService } from '$lib/services/gameConfigService';
 	import { page } from '$app/stores';
 
 	interface Props {
@@ -27,19 +29,89 @@
 	let iframeRef: HTMLIFrameElement | null = $state(null);
 	let iframeError = $state<string | null>(null);
 	let isInitializing = $state(false);
+	let gameConfig = $state<{ display_name: string; description: string | null; game_type?: '5reel' | 'w2w' } | null>(null);
+	let gameConfigLoading = $state(true);
+
+	// Determine game URL: use provided gameUrl, or auto-detect from game_type
+	const resolvedGameUrl = $derived.by(() => {
+		// If gameUrl is explicitly provided, use it (don't wait for gameConfig)
+		if (gameUrl) {
+			console.log('🎯 Using provided gameUrl:', gameUrl);
+			return gameUrl;
+		}
+		
+		// If gameConfig is still loading and no explicit gameUrl, wait
+		if (gameConfigLoading && mode === 'external') {
+			return '';
+		}
+		
+		// Otherwise, determine from game_type when in external mode
+		if (mode === 'external' && gameConfig?.game_type) {
+			let detectedUrl = '';
+			if (gameConfig.game_type === 'w2w') {
+				detectedUrl = '/games/w2w/iframe';
+			} else if (gameConfig.game_type === '5reel') {
+				detectedUrl = '/games/slots/iframe';
+			}
+			
+			if (detectedUrl) {
+				console.log('🎯 Auto-detected game URL from game_type:', {
+					gameType: gameConfig.game_type,
+					detectedUrl,
+					contractId: contractId?.toString()
+				});
+				return detectedUrl;
+			}
+		}
+		
+		// Fallback: if we have a contractId but no gameConfig yet, wait
+		if (contractId && gameConfigLoading) {
+			return '';
+		}
+		
+		return '';
+	});
 
 	// Compute iframe URL (only on client)
 	let iframeUrl = $derived.by(() => {
-		if (!gameUrl) return '';
+		if (!resolvedGameUrl) return '';
 		// If relative URL, make it absolute (only on client)
-		if (gameUrl.startsWith('/')) {
+		if (resolvedGameUrl.startsWith('/')) {
 			if (typeof window !== 'undefined') {
-				return window.location.origin + gameUrl;
+				return window.location.origin + resolvedGameUrl;
 			}
 			// During SSR, return relative URL (will be resolved by browser)
-			return gameUrl;
+			return resolvedGameUrl;
 		}
-		return gameUrl;
+		return resolvedGameUrl;
+	});
+
+	// Fetch game config for display and game type detection
+	$effect(() => {
+		if (contractId && (mode === 'external' || mode === 'embedded')) {
+			gameConfigLoading = true;
+			gameConfigService.getConfigByContractId(contractId).then(config => {
+				if (config) {
+					gameConfig = {
+						display_name: config.display_name,
+						description: config.description,
+						game_type: config.game_type
+					};
+					console.log('🎮 Game Config Loaded:', {
+						contractId: contractId.toString(),
+						gameType: config.game_type,
+						displayName: config.display_name,
+						mode
+					});
+				}
+				gameConfigLoading = false;
+			}).catch(err => {
+				console.error('Failed to fetch game config:', err);
+				gameConfigLoading = false;
+			});
+		} else {
+			gameConfigLoading = false;
+		}
 	});
 
 	// Initialize bridge for external mode
@@ -138,6 +210,13 @@
 	}
 
 	function handleIframeLoad() {
+		console.log('📦 Iframe loaded:', {
+			url: iframeUrl,
+			resolvedUrl: resolvedGameUrl,
+			gameType: gameConfig?.game_type,
+			hasBridge: !!bridge
+		});
+		
 		if (bridge && iframeRef) {
 			bridge.setTargetIframe(iframeRef);
 		} else if (!bridge && iframeRef) {
@@ -168,22 +247,41 @@
 
 {#if mode === 'embedded'}
 	<!-- Embedded mode: Use existing Svelte UI -->
-	<SlotsGame {contractId} {algorandAddress} />
+	{#if gameConfig?.game_type === 'w2w'}
+		<W2WSlotsGame {contractId} {algorandAddress} />
+	{:else}
+		<SlotsGame {contractId} {algorandAddress} />
+	{/if}
 {:else if mode === 'external'}
 	<!-- External mode: Load third-party game in iframe -->
 	<div class="space-y-8 max-w-6xl mx-auto p-4">
 		<!-- Header -->
 		<div class="flex items-center justify-between">
 			<div>
-				<h1
-					class="text-4xl font-black text-warning-500 dark:text-warning-400 neon-text uppercase flex items-center gap-3"
-				>
-					<SlotMachineIcon size={48} />
-					5-Reel Slots
-				</h1>
+				<div class="flex items-center gap-3">
+					<h1
+						class="text-4xl font-black text-warning-500 dark:text-warning-400 neon-text uppercase flex items-center gap-3"
+					>
+						<SlotMachineIcon size={48} />
+						{gameConfig?.display_name || '5-Reel Slots'}
+					</h1>
+					{#if gameConfig?.game_type}
+						<span 
+							class="px-3 py-1 text-xs font-bold uppercase rounded-full {gameConfig.game_type === 'w2w' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/50' : 'bg-purple-500/20 text-purple-400 border border-purple-500/50'}"
+							title="Game Type: {gameConfig.game_type === 'w2w' ? 'Ways to Win' : '5-Reel Slots'}"
+						>
+							{gameConfig.game_type === 'w2w' ? 'W2W' : '5REEL'}
+						</span>
+					{/if}
+				</div>
 				<p class="text-tertiary mt-2">
-					Match 3+ symbols on a payline to win. Provably fair blockchain gaming on Voi.
+					{gameConfig?.description || 'Match 3+ symbols on a payline to win. Provably fair blockchain gaming on Voi.'}
 				</p>
+				{#if gameConfigLoading}
+					<p class="text-xs text-tertiary/60 mt-1">
+						Detecting game type...
+					</p>
+				{/if}
 			</div>
 			<a href="/games">
 				<Button variant="ghost" size="sm"> ← Back to Lobby </Button>
@@ -192,7 +290,12 @@
 
 		<!-- Game content -->
 		<div class="game-content">
-			{#if isInitializing}
+			{#if gameConfigLoading && !gameUrl}
+				<div class="loading-state">
+					<div class="spinner"></div>
+					<p>Loading game configuration...</p>
+				</div>
+			{:else if isInitializing}
 				<div class="loading-state">
 					<div class="spinner"></div>
 					<p>Initializing game bridge...</p>
@@ -207,11 +310,11 @@
 						Retry
 					</button>
 				</div>
-			{:else if !validateGameUrl(gameUrl)}
+			{:else if !validateGameUrl(resolvedGameUrl)}
 				<div class="error-state">
 					<p class="error-message">Invalid game URL. Please provide a valid HTTP/HTTPS URL.</p>
 				</div>
-			{:else if gameUrl}
+			{:else if resolvedGameUrl}
 			<iframe
 				bind:this={iframeRef}
 				src={iframeUrl}

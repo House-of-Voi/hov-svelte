@@ -2,6 +2,7 @@ import algosdk from 'algosdk';
 import { getWalletService } from './wallet-service';
 import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
 import type { SessionInfo } from '$lib/auth/session';
+import { signTransactions as avmSignTransactions } from 'avm-wallet-svelte';
 
 /**
  * Sign a transaction using the appropriate wallet (CDP or native Voi wallet)
@@ -70,15 +71,43 @@ export async function signTransactions(
 	// This ensures CDP derivation matches the transaction sender
 	const signerAddress = actualAddress || address;
 
-	// Check if user has a CDP wallet (has cdpUserId) - use stored keys
+	// Check if the address is a CDP address (stored keys) or external wallet
+	// We need to check if the address matches the CDP address from session/storage
+	// If it's a CDP address and we have stored keys, use StoredKeySigner
+	// Otherwise, use the external wallet
+	let isCdpAddress = false;
 	if (session?.cdpUserId) {
-		// Use stored keys for signing (no CDP interaction needed)
+		// Check if the address matches the stored CDP address
+		// We need to get the stored keys to check the address
+		try {
+			const { getKeys } = await import('$lib/auth/keyStorage');
+			const storedKeys = await getKeys();
+			if (storedKeys && storedKeys.voiAddress === signerAddress) {
+				isCdpAddress = true;
+			}
+		} catch (error) {
+			// If we can't check, assume it's not CDP
+			console.warn('Could not check if address is CDP:', error);
+		}
+	}
+
+	if (isCdpAddress && session?.cdpUserId) {
+		// Use stored keys for signing (CDP address with stored keys)
 		const signer = new StoredKeySigner(signerAddress);
 		return await signer.signTransactions(txns);
 	} else {
-		// Use native Voi wallet
-		const walletService = getWalletService();
-		const signedTxns = await walletService.signTransactions(txns);
-		return signedTxns.map((s) => s.blob);
+		// Use avm-wallet-svelte for external wallet signing
+		try {
+			const signedTxns = await avmSignTransactions([txns]);
+			return signedTxns.map((s) => s instanceof Uint8Array ? s : s.blob || new Uint8Array(s));
+		} catch (error) {
+			// Fallback to VoiWalletService if avm-wallet-svelte fails
+			const walletService = getWalletService();
+			if (!walletService.isConnected()) {
+				throw new Error('External wallet not connected. Please connect your wallet first.');
+			}
+			const signedTxns = await walletService.signTransactions(txns);
+			return signedTxns.map((s) => s.blob);
+		}
 	}
 }

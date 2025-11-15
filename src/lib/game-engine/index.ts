@@ -9,8 +9,13 @@ export { SlotMachineEngine } from './SlotMachineEngine';
 export type { BlockchainAdapter } from './SlotMachineEngine';
 
 // Adapters
-export { MockSlotMachineAdapter, VoiSlotMachineAdapter } from './adapters';
-export type { MockAdapterConfig, VoiAdapterConfig } from './adapters';
+export {
+  MockSlotMachineAdapter,
+  VoiFiveReelAdapter,
+  VoiW2WAdapter,
+  VoiSlotMachineAdapter,
+} from './adapters';
+export type { MockAdapterConfig, VoiAdapterConfig, VoiW2WAdapterConfig } from './adapters';
 
 // Types
 export type {

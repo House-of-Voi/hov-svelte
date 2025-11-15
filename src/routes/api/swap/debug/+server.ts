@@ -13,7 +13,7 @@ const SWAP_CONTRACT_ID = 395553;
  */
 export const GET: RequestHandler = async ({ url }) => {
 	try {
-		const nodeUrl = env.VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev';
+		const nodeUrl = env.PUBLIC_VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev';
 		const algodClient = new algosdk.Algodv2('', nodeUrl, '');
 
 		const debugInfo: Record<string, unknown> = {

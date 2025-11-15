@@ -1,8 +1,8 @@
 import algosdk from 'algosdk';
+import { PUBLIC_VOI_NODE_URL } from '$env/static/public';
 
 const FOUNTAIN_API_URL = 'https://fountain.voirewards.com/api/faucet';
-const VOI_NODE_URL = 'https://mainnet-api.voi.nodely.dev';
-const algodClient = new algosdk.Algodv2('', VOI_NODE_URL, '');
+const algodClient = new algosdk.Algodv2('', PUBLIC_VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev', '');
 
 export interface FountainResponse {
 	success: boolean;
@@ -151,7 +151,7 @@ export async function hasSufficientVoi(
 	try {
 		const accountInfo = await algodClient.accountInformation(address).do();
 		const balance = BigInt(accountInfo.amount ?? 0);
-		const minBalance = BigInt(accountInfo['min-balance'] ?? 0);
+		const minBalance = BigInt(accountInfo.minBalance ?? 0);
 		const availableBalance = balance - minBalance;
 
 		return availableBalance >= BigInt(minRequired);

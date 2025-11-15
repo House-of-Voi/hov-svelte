@@ -8,7 +8,7 @@
  */
 
 import algosdk from 'algosdk';
-import type { WalletSigner } from '$lib/game-engine/adapters/VoiSlotMachineAdapter';
+import type { WalletSigner } from '$lib/wallet/algokitTransactionSigner';
 import { getKeys } from '$lib/auth/keyStorage';
 
 /**

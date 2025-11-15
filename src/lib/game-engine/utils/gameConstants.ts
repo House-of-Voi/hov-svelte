@@ -65,6 +65,45 @@ export const SYMBOL_DISPLAY: Record<SymbolId, SymbolDisplay> = {
 };
 
 /**
+ * W2W symbol display mappings (16 symbols: 0-9, A-F)
+ */
+export const W2W_SYMBOL_DISPLAY: Record<string, SymbolDisplay> = {
+	'0': { id: '0' as SymbolId, name: 'Buffalo', emoji: '🐃', color: '#8B4513', glowColor: '#A0522D', rarity: 'rare' },
+	'1': { id: '1' as SymbolId, name: 'Eagle', emoji: '🦅', color: '#4169E1', glowColor: '#6495ED', rarity: 'rare' },
+	'2': { id: '2' as SymbolId, name: 'Cougar', emoji: '🐆', color: '#FF6347', glowColor: '#FF7F50', rarity: 'uncommon' },
+	'3': { id: '3' as SymbolId, name: 'Elk', emoji: '🦌', color: '#CD853F', glowColor: '#DEB887', rarity: 'uncommon' },
+	'4': { id: '4' as SymbolId, name: 'Wolf', emoji: '🐺', color: '#708090', glowColor: '#778899', rarity: 'uncommon' },
+	'5': { id: '5' as SymbolId, name: 'A', emoji: '🅰️', color: '#FFD700', glowColor: '#FFE55C', rarity: 'common' },
+	'6': { id: '6' as SymbolId, name: 'K', emoji: '👑', color: '#FFD700', glowColor: '#FFE55C', rarity: 'common' },
+	'7': { id: '7' as SymbolId, name: 'Q', emoji: '👸', color: '#FFD700', glowColor: '#FFE55C', rarity: 'common' },
+	'8': { id: '8' as SymbolId, name: 'J', emoji: '🃏', color: '#C0C0C0', glowColor: '#E0E0E0', rarity: 'common' },
+	'9': { id: '9' as SymbolId, name: '10', emoji: '🔟', color: '#C0C0C0', glowColor: '#E0E0E0', rarity: 'common' },
+	'A': { id: 'A' as SymbolId, name: '9', emoji: '9️⃣', color: '#C0C0C0', glowColor: '#E0E0E0', rarity: 'common' },
+	'B': { id: 'B' as SymbolId, name: 'Wild', emoji: '🌟', color: '#FFD700', glowColor: '#FFE55C', rarity: 'rare' },
+	'C': { id: 'C' as SymbolId, name: 'Wild 2x', emoji: '✨', color: '#FF6B00', glowColor: '#FF8C00', rarity: 'rare' },
+	'D': { id: 'D' as SymbolId, name: 'Wild 3x', emoji: '💫', color: '#FF1493', glowColor: '#FF69B4', rarity: 'legendary' },
+	'E': { id: 'E' as SymbolId, name: 'HOV', emoji: '🎰', color: '#FFD700', glowColor: '#FFE55C', rarity: 'legendary' },
+	'F': { id: 'F' as SymbolId, name: 'Bonus', emoji: '🎁', color: '#00FF00', glowColor: '#32CD32', rarity: 'rare' }
+};
+
+/**
+ * Get symbol display (supports both 5reel and W2W)
+ */
+export function getSymbolDisplay(symbol: SymbolId, gameType: '5reel' | 'w2w' = '5reel'): SymbolDisplay {
+	if (gameType === 'w2w') {
+		return W2W_SYMBOL_DISPLAY[symbol] || {
+			id: symbol,
+			name: symbol,
+			emoji: '❓',
+			color: '#666666',
+			glowColor: '#888888',
+			rarity: 'common'
+		};
+	}
+	return SYMBOL_DISPLAY[symbol] || SYMBOL_DISPLAY['_'];
+}
+
+/**
  * Default paytable (matches contract multipliers from paylineEvaluator)
  */
 export const DEFAULT_PAYTABLE: SymbolPayouts[] = [
@@ -266,13 +305,6 @@ export function isValidPaylineCount(paylines: number): boolean {
  */
 export function calculateTotalBet(betPerLine: number, paylines: number): number {
 	return betPerLine * paylines;
-}
-
-/**
- * Get symbol display info
- */
-export function getSymbolDisplay(symbolId: SymbolId): SymbolDisplay {
-	return SYMBOL_DISPLAY[symbolId] || SYMBOL_DISPLAY['_'];
 }
 
 /**

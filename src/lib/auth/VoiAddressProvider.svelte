@@ -61,7 +61,7 @@
 					
 					// Build and sign proof transaction
 					const challengeToken = `voi-session-${Date.now()}-${Math.random().toString(36)}`;
-					const proofTxn = buildProofOfOwnershipTransaction(storedKeys.voiAddress, challengeToken);
+					const proofTxn = await buildProofOfOwnershipTransaction(storedKeys.voiAddress, challengeToken);
 					const signedTxn = algosdk.signTransaction(proofTxn, voiPrivateKey);
 					const signedTxnBase64 = algosdk.bytesToBase64(signedTxn.blob);
 					
@@ -150,7 +150,7 @@
 			// Build and sign proof transaction
 			const challengeToken = `voi-session-${Date.now()}-${Math.random().toString(36)}`;
 			const voiAddressStr = typeof derivedAccount.addr === 'string' ? derivedAccount.addr : derivedAccount.addr.toString();
-			const proofTxn = buildProofOfOwnershipTransaction(voiAddressStr, challengeToken);
+			const proofTxn = await buildProofOfOwnershipTransaction(voiAddressStr, challengeToken);
 			const signedTxn = algosdk.signTransaction(proofTxn, derivedAccount.sk);
 			const signedTxnBase64 = algosdk.bytesToBase64(signedTxn.blob);
 

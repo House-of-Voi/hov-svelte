@@ -6,7 +6,7 @@
  */
 
 import algosdk from 'algosdk';
-import type { WalletSigner } from '$lib/game-engine/adapters/VoiSlotMachineAdapter';
+import type { WalletSigner } from '$lib/wallet/algokitTransactionSigner';
 import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
 
 // CDP Core module type (from @coinbase/cdp-core)

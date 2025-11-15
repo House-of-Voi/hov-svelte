@@ -1,12 +1,15 @@
 /**
  * Game Bridge
- * 
+ *
  * Manages postMessage communication between third-party games and the SlotMachineEngine.
  * Handles all blockchain operations internally - games never have wallet access.
  */
 
 import { SlotMachineEngine } from '../SlotMachineEngine';
-import { VoiSlotMachineAdapter, type WalletSigner } from '../adapters/VoiSlotMachineAdapter';
+import type { BlockchainAdapter } from '../SlotMachineEngine';
+import { AdapterFactory } from '../adapters/AdapterFactory';
+import { gameConfigService } from '$lib/services/gameConfigService';
+import type { WalletSigner } from '$lib/wallet/algokitTransactionSigner';
 import type { SpinResult, GameError } from '../types';
 import type {
   GameRequest,
@@ -18,14 +21,19 @@ import type {
   ConfigMessage,
   BalanceResponse,
   SpinSubmittedMessage,
+  CreditBalanceMessage,
 } from './types';
-import { isGameRequest, isSpinRequest } from './types';
+import { isGameRequest, isSpinRequest, MESSAGE_NAMESPACE } from './types';
 
 export interface GameBridgeConfig {
   contractId: bigint;
   walletAddress: string;
   walletSigner: WalletSigner;
   targetOrigin?: string; // Optional origin validation for postMessage
+  algodUrl?: string; // Optional Algod URL override
+  algodToken?: string; // Optional Algod token override
+  indexerUrl?: string; // Optional Indexer URL override
+  network?: 'mainnet' | 'testnet' | 'betanet'; // Network selection
 }
 
 /**
@@ -34,15 +42,22 @@ export interface GameBridgeConfig {
 export class GameBridge {
   private config: GameBridgeConfig;
   private engine: SlotMachineEngine | null = null;
-  private adapter: VoiSlotMachineAdapter | null = null;
+  private adapter: BlockchainAdapter | null = null;
+  private adapterFactory: AdapterFactory;
   private initialized: boolean = false;
   private messageHandler: ((event: MessageEvent) => void) | null = null;
   private spinRequestCount: number = 0;
   private lastSpinTime: number = 0;
-  private readonly RATE_LIMIT_MS = 1000; // Minimum 1 second between spins
+  private currentMode: number = 2; // Track current mode: 1=credit, 2=VOI/network, 4=ARC200/token (default to VOI)
 
   constructor(config: GameBridgeConfig) {
     this.config = config;
+    this.adapterFactory = new AdapterFactory({
+      algodUrl: config.algodUrl,
+      algodToken: config.algodToken,
+      indexerUrl: config.indexerUrl,
+      network: config.network || 'mainnet',
+    });
   }
 
   /**
@@ -54,34 +69,68 @@ export class GameBridge {
     }
 
     try {
-      // Create Voi adapter with wallet signer
-      this.adapter = new VoiSlotMachineAdapter({
-        contractId: this.config.contractId,
-        network: 'mainnet',
-        walletSigner: this.config.walletSigner,
-      });
+      console.log('GameBridge: Starting initialization for contract:', this.config.contractId.toString());
+      
+      // Query game configuration from database
+      console.log('GameBridge: Fetching game config from database...');
+      const gameConfig = await gameConfigService.getConfigByContractId(this.config.contractId);
+
+      if (!gameConfig) {
+        const errorMsg = `No active game configuration found for contract ${this.config.contractId}`;
+        console.error('GameBridge:', errorMsg);
+        throw new Error(errorMsg);
+      }
+
+      if (!gameConfig.is_active) {
+        const errorMsg = `Game configuration for contract ${this.config.contractId} is not active`;
+        console.error('GameBridge:', errorMsg);
+        throw new Error(errorMsg);
+      }
+
+      console.log('GameBridge: Initializing with game type:', gameConfig.game_type);
+
+      // Create adapter using factory (automatically selects 5reel or w2w adapter)
+      console.log('GameBridge: Creating adapter...');
+      this.adapter = this.adapterFactory.createAdapter(gameConfig, this.config.walletSigner);
+      console.log('GameBridge: Adapter created successfully');
 
       // Create engine
+      console.log('GameBridge: Creating engine...');
       this.engine = new SlotMachineEngine(
         { walletAddress: this.config.walletAddress },
         this.adapter
       );
+      console.log('GameBridge: Engine created successfully');
 
       // Set up event listeners
+      console.log('GameBridge: Setting up event listeners...');
       this.setupEngineListeners();
 
       // Initialize engine
+      console.log('GameBridge: Initializing engine...');
       await this.engine.initialize();
+      console.log('GameBridge: Engine initialized successfully');
 
       // Set up postMessage listener
+      console.log('GameBridge: Setting up postMessage listener...');
       this.setupMessageListener();
 
       this.initialized = true;
+      console.log('GameBridge: Bridge initialized successfully');
 
       // Send initial balance and config
+      console.log('GameBridge: Sending initial state...');
       await this.sendInitialState();
+      console.log('GameBridge: Initial state sent');
     } catch (error) {
-      console.error('Failed to initialize GameBridge:', error);
+      console.error('GameBridge: Failed to initialize:', error);
+      if (error instanceof Error) {
+        console.error('GameBridge: Error details:', {
+          message: error.message,
+          stack: error.stack,
+          name: error.name
+        });
+      }
       this.sendError({
         code: 'INIT_FAILED',
         message: error instanceof Error ? error.message : 'Initialization failed',
@@ -170,6 +219,19 @@ export class GameBridge {
 
       const message = event.data;
 
+      // Filter messages by namespace (silently ignore non-matching messages)
+      if (!message || typeof message !== 'object' || !('namespace' in message)) {
+        console.debug('GameBridge: Ignoring message without namespace field');
+        return;
+      }
+
+      if (message.namespace !== MESSAGE_NAMESPACE) {
+        console.debug(
+          `GameBridge: Ignoring message with non-matching namespace: "${message.namespace}" (expected "${MESSAGE_NAMESPACE}")`
+        );
+        return;
+      }
+
       // Validate message structure
       if (!isGameRequest(message)) {
         console.warn('Invalid message format:', message);
@@ -190,6 +252,9 @@ export class GameBridge {
           break;
         case 'GET_BALANCE':
           await this.handleGetBalance();
+          break;
+        case 'GET_CREDIT_BALANCE':
+          await this.handleGetCreditBalance();
           break;
         case 'GET_CONFIG':
           await this.handleGetConfig();
@@ -243,18 +308,11 @@ export class GameBridge {
       return;
     }
 
-    // Rate limiting
-    const now = Date.now();
-    if (now - this.lastSpinTime < this.RATE_LIMIT_MS) {
-      this.sendError({
-        code: 'RATE_LIMIT',
-        message: 'Please wait before spinning again',
-        recoverable: true,
-      });
-      return;
-    }
+    // Detect format (5reel or w2w)
+    const is5ReelFormat = 'paylines' in message.payload && 'betPerLine' in message.payload;
+    const isW2WFormat = 'betAmount' in message.payload && 'reserved' in message.payload;
 
-    // Validate request
+    // Validate request based on format
     const validation = this.validateSpinRequest(message);
     if (!validation.valid) {
       this.sendError({
@@ -265,37 +323,82 @@ export class GameBridge {
       return;
     }
 
-    const { paylines, betPerLine } = message.payload;
-
-    // Check balance
-    const state = this.engine.getState();
-    const totalBet = betPerLine * paylines;
-    const availableBalance = Math.max(0, state.balance - state.reservedBalance);
-    if (availableBalance < totalBet) {
-      this.sendError({
-        code: 'INSUFFICIENT_BALANCE',
-        message: 'Insufficient balance for this bet',
-        recoverable: true,
-      });
-      return;
-    }
-
-    // Check if already spinning
-    if (state.isSpinning) {
-      this.sendError({
-        code: 'ALREADY_SPINNING',
-        message: 'A spin is already in progress',
-        recoverable: true,
-      });
-      return;
-    }
+    // Note: Rate limiting and ALREADY_SPINNING checks removed to allow rapid queueing
+    // The engine's queue system will handle sequential processing
 
     try {
+      const now = Date.now();
       this.lastSpinTime = now;
       this.spinRequestCount++;
 
-      // Place spin
-      const spinId = await this.engine.spin(betPerLine, paylines);
+      let spinId: string;
+      let totalBet: number;
+
+      // Handle W2W format
+      if (isW2WFormat) {
+        const { betAmount: betAmountVOI, mode: requestedMode, reserved } = message.payload as { betAmount: number; mode?: number; reserved: number };
+        // Generate spin index (should be unique per user, but for now use timestamp)
+        const index = Date.now() % 1000000;
+        // Determine mode: use explicit mode if provided, otherwise derive from reserved
+        // reserved: 1 = bonus (mode 0), 0 = regular spin (default to VOI mode 2 if mode not specified)
+        let mode: number;
+        if (requestedMode !== undefined) {
+          // Use explicit mode from request
+          mode = requestedMode;
+        } else {
+          // Backward compatibility: derive from reserved
+          // reserved: 1 = bonus (mode 0), 0 = default to VOI (mode 2)
+          mode = reserved === 1 ? 0 : 2; // Default to VOI mode instead of credit
+        }
+        
+        // Track current mode (only for non-bonus modes)
+        if (mode !== 0) {
+          this.currentMode = mode;
+        }
+
+        // Convert betAmount from VOI to microAlgos (multiply by 10^6)
+        // UI works with human-readable units (40 VOI), contract expects microAlgos (40,000,000)
+        const betAmountMicroAlgos = mode === 0 ? 0 : betAmountVOI * 1_000_000;
+
+        // Validate bet amount (in VOI units for user-friendly validation)
+        if (mode !== 0 && betAmountVOI !== 40 && betAmountVOI !== 60) {
+          this.sendError({
+            code: 'INVALID_BET',
+            message: 'Bet amount must be 40 or 60 for W2W games',
+            recoverable: true,
+          });
+          return;
+        }
+
+        totalBet = betAmountMicroAlgos;
+        spinId = await (this.engine as any).spinW2W(betAmountMicroAlgos, index, mode);
+      }
+      // Handle 5reel format
+      else if (is5ReelFormat) {
+        const { paylines, betPerLine } = message.payload as { paylines: number; betPerLine: number };
+        totalBet = betPerLine * paylines;
+
+        // Check balance
+        const state = this.engine.getState();
+        const availableBalance = Math.max(0, state.balance - state.reservedBalance);
+        if (availableBalance < totalBet) {
+          this.sendError({
+            code: 'INSUFFICIENT_BALANCE',
+            message: 'Insufficient balance for this bet',
+            recoverable: true,
+          });
+          return;
+        }
+
+        spinId = await this.engine.spin(betPerLine, paylines);
+      } else {
+        this.sendError({
+          code: 'INVALID_REQUEST',
+          message: 'Invalid spin request format',
+          recoverable: true,
+        });
+        return;
+      }
       
       // Immediately send balance update reflecting the reserved balance
       const state = this.engine.getState();
@@ -362,6 +465,62 @@ export class GameBridge {
   }
 
   /**
+   * Handle GET_CREDIT_BALANCE request (W2W only)
+   */
+  private async handleGetCreditBalance(): Promise<void> {
+    if (!this.engine || !this.initialized) {
+      this.sendError({
+        code: 'NOT_INITIALIZED',
+        message: 'Game bridge not initialized',
+        recoverable: false,
+      });
+      return;
+    }
+
+    try {
+      const adapter = (this.engine as any).adapter;
+      if (adapter && typeof adapter.getUserData === 'function') {
+        const walletAddress = (this.engine as any).walletAddress;
+        if (!walletAddress) {
+          this.sendError({
+            code: 'NO_WALLET',
+            message: 'Wallet address not available',
+            recoverable: false,
+          });
+          return;
+        }
+
+        const userData = await adapter.getUserData(walletAddress);
+        this.sendToGame({
+          type: 'CREDIT_BALANCE',
+          payload: {
+            credits: userData.credits || 0,
+            bonusSpins: userData.bonusSpins || 0,
+            spinCount: 0, // TODO: Get from userData if available
+          },
+        } as CreditBalanceMessage);
+      } else {
+        // Not a W2W adapter - return zeros
+        this.sendToGame({
+          type: 'CREDIT_BALANCE',
+          payload: {
+            credits: 0,
+            bonusSpins: 0,
+            spinCount: 0,
+          },
+        } as CreditBalanceMessage);
+      }
+    } catch (error) {
+      console.error('Failed to get credit balance:', error);
+      this.sendError({
+        code: 'CREDIT_BALANCE_ERROR',
+        message: error instanceof Error ? error.message : 'Failed to get credit balance',
+        recoverable: true,
+      });
+    }
+  }
+
+  /**
    * Handle GET_CONFIG request
    */
   private async handleGetConfig(): Promise<void> {
@@ -375,63 +534,180 @@ export class GameBridge {
     }
 
     const config = this.engine.getConfig();
-    this.sendToGame({
-      type: 'CONFIG',
-      payload: {
-        contractId: config.contractId.toString(),
-        minBet: config.minBet,
-        maxBet: config.maxBet,
-        maxPaylines: config.maxPaylines,
-        rtpTarget: config.rtpTarget,
-        houseEdge: config.houseEdge,
-      },
-    } as ConfigMessage);
+    const adapter = (this.engine as any).adapter;
+    
+    // Check if this is a W2W adapter
+    const isW2W = adapter && typeof adapter.getMachineState === 'function';
+    
+    if (isW2W) {
+      // W2W format - try to get jackpot and modeEnabled from machine state
+      let jackpotAmount = 0; // Default
+      let modeEnabled = 7; // Default: all modes enabled
+      try {
+        const machineState = await adapter.getMachineState();
+        
+        // Get modeEnabled from machine state
+        if (machineState && machineState.mode_enabled !== undefined) {
+          modeEnabled = Number(machineState.mode_enabled);
+        }
+        
+        // Select the correct jackpot based on current mode
+        // Mode 1 = credit -> jackpot_credit
+        // Mode 2 = VOI/network -> jackpot_network
+        // Mode 4 = ARC200/token -> jackpot_token
+        // Try to get mode from engine state as fallback
+        let mode = this.currentMode;
+        const state = this.engine.getState();
+        if (state.currentBet?.mode !== undefined && state.currentBet.mode !== 0) {
+          mode = state.currentBet.mode;
+        }
+        
+        // Select jackpot based on mode
+        if (machineState) {
+          if (mode === 1 && machineState.jackpot_credit) {
+            // Credit mode - use jackpot_credit
+            jackpotAmount = Number(machineState.jackpot_credit) / 1_000_000; // Convert from microVOI
+          } else if (mode === 2 && machineState.jackpot_network) {
+            // VOI/network mode - use jackpot_network
+            jackpotAmount = Number(machineState.jackpot_network) / 1_000_000; // Convert from microVOI
+          } else if (mode === 4 && machineState.jackpot_token) {
+            // ARC200/token mode - use jackpot_token
+            // jackpot_token is BigUInt, convert from byte array
+            const tokenJackpotBytes = machineState.jackpot_token;
+            if (tokenJackpotBytes && tokenJackpotBytes.length > 0) {
+              // Convert BigUInt byte array to number
+              let tokenJackpot = 0n;
+              for (let i = 0; i < tokenJackpotBytes.length; i++) {
+                tokenJackpot = (tokenJackpot << 8n) | BigInt(tokenJackpotBytes[i]);
+              }
+              jackpotAmount = Number(tokenJackpot) / 1_000_000; // Convert from microVOI
+            }
+          } else {
+            // Fallback: use jackpot_credit if available, otherwise jackpot_network
+            if (machineState.jackpot_credit) {
+              jackpotAmount = Number(machineState.jackpot_credit) / 1_000_000;
+            } else if (machineState.jackpot_network) {
+              jackpotAmount = Number(machineState.jackpot_network) / 1_000_000;
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to get machine state for jackpot:', error);
+      }
+
+      this.sendToGame({
+        type: 'CONFIG',
+        payload: {
+          contractId: config.contractId.toString(),
+          minBet: config.minBet,
+          maxBet: config.maxBet,
+          rtpTarget: config.rtpTarget,
+          houseEdge: config.houseEdge,
+          jackpotAmount,
+          bonusSpinMultiplier: 1.5, // Default bonus multiplier
+          modeEnabled,
+        },
+      } as ConfigMessage);
+    } else {
+      // 5reel format
+      this.sendToGame({
+        type: 'CONFIG',
+        payload: {
+          contractId: config.contractId.toString(),
+          minBet: config.minBet,
+          maxBet: config.maxBet,
+          maxPaylines: config.maxPaylines,
+          rtpTarget: config.rtpTarget,
+          houseEdge: config.houseEdge,
+        },
+      } as ConfigMessage);
+    }
   }
 
   /**
-   * Send initial state (balance and config) to game
+   * Send initial state (balance, credits, and config) to game
    */
   private async sendInitialState(): Promise<void> {
     if (!this.engine) return;
 
-    // Send balance and config in parallel
-    await Promise.all([
+    // Send balance, credit balance (if W2W), and config in parallel
+    const promises = [
       this.handleGetBalance(),
       this.handleGetConfig()
-    ]);
+    ];
+
+    // Check if this is a W2W adapter and send credit balance
+    const adapter = (this.engine as any).adapter;
+    if (adapter && typeof adapter.getUserData === 'function') {
+      promises.push(this.handleGetCreditBalance());
+    }
+
+    await Promise.all(promises);
   }
 
   /**
-   * Send outcome to game
+   * Send outcome to game (supports both 5reel and w2w formats)
    */
   private async sendOutcome(result: SpinResult): Promise<void> {
     // Ensure all data is serializable for postMessage
     // Deep clone arrays and objects to avoid DataCloneError
     const serializableGrid = result.outcome.grid.map((reel) => [...reel]);
-    const serializableWinningLines = result.outcome.winningLines.map((line) => ({
-      paylineIndex: line.paylineIndex,
-      symbol: String(line.symbol), // Ensure string
-      matchCount: Number(line.matchCount), // Ensure number
-      payout: Number(line.payout), // Ensure number
-    }));
 
     // Get fresh state after spin is marked as COMPLETED (reserved balance should be updated)
     const state = this.engine!.getState();
     
-    this.sendToGame({
-      type: 'OUTCOME',
-      payload: {
-        spinId: String(result.id),
-        grid: serializableGrid,
-        winnings: Number(result.winnings),
-        isWin: Boolean(result.isWin),
-        winningLines: serializableWinningLines,
-        winLevel: String(result.winLevel),
-        betPerLine: Number(result.betPerLine),
-        paylines: Number(result.paylines),
-        totalBet: Number(result.totalBet),
-      },
-    } as OutcomeMessage);
+    // Determine format based on result
+    const isW2W = result.mode !== undefined || result.betAmount !== undefined;
+    
+    if (isW2W) {
+      // W2W format
+      const serializableWaysWins = (result.outcome.waysWins || []).map((win) => ({
+        symbol: String(win.symbol),
+        ways: Number(win.ways),
+        matchLength: Number(win.matchLength),
+        payout: Number(win.payout),
+      }));
+
+      this.sendToGame({
+        type: 'OUTCOME',
+        payload: {
+          spinId: String(result.id),
+          grid: serializableGrid,
+          winnings: Number(result.winnings) / 1_000_000, // Convert microVOI to VOI
+          isWin: Boolean(result.isWin),
+          waysWins: serializableWaysWins,
+          betAmount: Number(result.betAmount || 0),
+          bonusSpinsAwarded: Number(result.outcome.bonusSpinsAwarded || 0),
+          jackpotHit: Boolean(result.outcome.jackpotHit),
+          jackpotAmount: result.outcome.jackpotAmount ? Number(result.outcome.jackpotAmount) / 1_000_000 : undefined, // Convert microVOI to VOI
+          winLevel: String(result.winLevel),
+          totalBet: Number(result.totalBet),
+        },
+      } as OutcomeMessage);
+    } else {
+      // 5reel format
+      const serializableWinningLines = (result.outcome.winningLines || []).map((line) => ({
+        paylineIndex: line.paylineIndex,
+        symbol: String(line.symbol), // Ensure string
+        matchCount: Number(line.matchCount), // Ensure number
+        payout: Number(line.payout), // Ensure number
+      }));
+
+      this.sendToGame({
+        type: 'OUTCOME',
+        payload: {
+          spinId: String(result.id),
+          grid: serializableGrid,
+          winnings: Number(result.winnings) / 1_000_000, // Convert microVOI to VOI
+          isWin: Boolean(result.isWin),
+          winningLines: serializableWinningLines,
+          winLevel: String(result.winLevel),
+          betPerLine: Number(result.betPerLine || 0),
+          paylines: Number(result.paylines || 0),
+          totalBet: Number(result.totalBet),
+        },
+      } as OutcomeMessage);
+    }
 
     // Immediately send balance update with correct reserved balance
     // The spin is now COMPLETED, so reserved balance should exclude it
@@ -487,10 +763,16 @@ export class GameBridge {
    * Send message to game (via postMessage to iframe)
    */
   private sendToGame(message: GameResponse): void {
+    // Add namespace to all outgoing messages
+    const messageWithNamespace = {
+      ...message,
+      namespace: MESSAGE_NAMESPACE,
+    };
+
     if (this.targetIframe && this.targetIframe.contentWindow) {
       // Send via postMessage to iframe
       try {
-        this.targetIframe.contentWindow.postMessage(message, '*'); // Use targetOrigin in production
+        this.targetIframe.contentWindow.postMessage(messageWithNamespace, '*'); // Use targetOrigin in production
       } catch (error) {
         console.error('Failed to send message to iframe:', error);
       }
@@ -498,37 +780,58 @@ export class GameBridge {
       // Fallback: dispatch custom event if iframe not available
       window.dispatchEvent(
         new CustomEvent('gameBridgeMessage', {
-          detail: message,
+          detail: messageWithNamespace,
         })
       );
     }
   }
 
   /**
-   * Validate spin request
+   * Validate spin request (supports both 5reel and w2w formats)
    */
   private validateSpinRequest(message: SpinRequest): { valid: boolean; error?: string } {
-    const { paylines, betPerLine } = message.payload;
-
     if (!this.engine) {
       return { valid: false, error: 'Engine not initialized' };
     }
 
     const config = this.engine.getConfig();
 
-    // Validate paylines
-    if (paylines < 1 || paylines > config.maxPaylines) {
-      return {
-        valid: false,
-        error: `Paylines must be between 1 and ${config.maxPaylines}`,
-      };
-    }
+    // Check format
+    const is5ReelFormat = 'paylines' in message.payload && 'betPerLine' in message.payload;
+    const isW2WFormat = 'betAmount' in message.payload && 'reserved' in message.payload;
 
-    // Validate bet amount
-    if (betPerLine < config.minBet || betPerLine > config.maxBet) {
+    if (is5ReelFormat) {
+      const { paylines, betPerLine } = message.payload as { paylines: number; betPerLine: number };
+
+      // Validate paylines
+      if (paylines < 1 || paylines > config.maxPaylines) {
+        return {
+          valid: false,
+          error: `Paylines must be between 1 and ${config.maxPaylines}`,
+        };
+      }
+
+      // Validate bet amount
+      if (betPerLine < config.minBet || betPerLine > config.maxBet) {
+        return {
+          valid: false,
+          error: `Bet per line must be between ${config.minBet / 1_000_000} and ${config.maxBet / 1_000_000} VOI`,
+        };
+      }
+    } else if (isW2WFormat) {
+      const { betAmount } = message.payload as { betAmount: number; reserved: number };
+
+      // Validate bet amount (must be 40 or 60)
+      if (betAmount !== 40 && betAmount !== 60) {
+        return {
+          valid: false,
+          error: 'Bet amount must be 40 or 60 for W2W games',
+        };
+      }
+    } else {
       return {
         valid: false,
-        error: `Bet per line must be between ${config.minBet / 1_000_000} and ${config.maxBet / 1_000_000} VOI`,
+        error: 'Invalid spin request format - must be either 5reel (paylines, betPerLine) or w2w (betAmount, reserved)',
       };
     }
 

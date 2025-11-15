@@ -13,8 +13,9 @@
 
 	// Game engine
 	import { SlotMachineEngine } from '$lib/game-engine/SlotMachineEngine';
-	import { VoiSlotMachineAdapter } from '$lib/game-engine/adapters/VoiSlotMachineAdapter';
+	import { VoiSlotMachineAdapter } from '$lib/game-engine/adapters';
 	import { gameStore } from '$lib/game-engine/stores/gameStore.svelte';
+	import { gameConfigService } from '$lib/services/gameConfigService';
 	import { detectWinningPaylines, calculateTotalWinnings } from '$lib/game-engine/utils/winDetection';
 	import { formatVoi, GAME_DEFAULTS } from '$lib/game-engine/utils/gameConstants';
 	import { getWinLevel } from '$lib/game-engine/types/results';
@@ -53,6 +54,7 @@
 	// Local state
 	let engine: SlotMachineEngine | null = $state(null);
 	let slotConfig = $state<any>(null);
+	let gameConfig = $state<{ display_name: string; description: string | null } | null>(null);
 	let reels = $state<any>(null);
 	let winAmount = $state(0);
 	let winLevel = $state<any>('small');
@@ -137,7 +139,8 @@
 
 					// Show win celebration if there are winnings
 					if (result.winnings > 0) {
-						winAmount = result.winnings;
+						// Convert winnings from microVOI to VOI for display
+						winAmount = result.winnings / 1_000_000;
 						winLevel = result.winLevel;
 						winningLines = result.outcome.winningLines;
 						gameStore.setWinCelebration(true);
@@ -180,6 +183,17 @@
 			slotConfig = await adapter.getContractConfig();
 			reels = slotConfig.reelConfig.reels;
 			console.log('✅ Slot config loaded');
+
+			// Fetch game config for display name and description
+			if (contractId) {
+				const dbConfig = await gameConfigService.getConfigByContractId(contractId);
+				if (dbConfig) {
+					gameConfig = {
+						display_name: dbConfig.display_name,
+						description: dbConfig.description
+					};
+				}
+			}
 
 			// Fetch initial balance explicitly
 			console.log('💰 Fetching initial balance...');
@@ -360,17 +374,17 @@
 <div class="space-y-8 max-w-6xl mx-auto">
 	<!-- Header -->
 	<div class="flex items-center justify-between">
-		<div>
-			<h1
-				class="text-4xl font-black text-warning-500 dark:text-warning-400 neon-text uppercase flex items-center gap-3"
-			>
-				<SlotMachineIcon size={48} />
-				5-Reel Slots
-			</h1>
-			<p class="text-tertiary mt-2">
-				Match 3+ symbols on a payline to win. Provably fair blockchain gaming on Voi.
-			</p>
-		</div>
+			<div>
+				<h1
+					class="text-4xl font-black text-warning-500 dark:text-warning-400 neon-text uppercase flex items-center gap-3"
+				>
+					<SlotMachineIcon size={48} />
+					{gameConfig?.display_name || slotConfig?.displayName || '5-Reel Slots'}
+				</h1>
+				<p class="text-tertiary mt-2">
+					{gameConfig?.description || 'Match 3+ symbols on a payline to win. Provably fair blockchain gaming on Voi.'}
+				</p>
+			</div>
 		<a href="/games">
 			<Button variant="ghost" size="sm"> ← Back to Lobby </Button>
 		</a>

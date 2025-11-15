@@ -74,6 +74,20 @@ export default {
           900: '#7f1d1d',
           950: '#450a0a',
         },
+        // Surface colors for dark UI elements
+        surface: {
+          50: '#f8f9fa',
+          100: '#e9ecef',
+          200: '#dee2e6',
+          300: '#ced4da',
+          400: '#adb5bd',
+          500: '#868e96',
+          600: '#495057',
+          700: '#343a40',
+          800: '#212529',
+          900: '#1a1d20',
+          950: '#0d0f11',
+        },
       },
       fontFamily: {
         sans: ['Inter var', 'Inter', 'system-ui', 'sans-serif'],

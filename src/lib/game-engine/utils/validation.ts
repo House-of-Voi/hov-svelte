@@ -135,11 +135,14 @@ export function validateBalance(
 
 /**
  * Calculate reserved balance from pending spins
+ * Includes bet amount + transaction fees for each pending spin
  *
  * @param spins - Array of queued spins
- * @returns Total reserved balance in microVOI
+ * @returns Total reserved balance in microVOI (including transaction fees)
  */
 export function calculateReservedBalance(spins: QueuedSpin[]): number {
+  const SPIN_COST = 50_500; // Transaction fee per spin
+  
   return spins
     .filter(
       (spin) =>
@@ -147,7 +150,10 @@ export function calculateReservedBalance(spins: QueuedSpin[]): number {
         spin.status !== SpinStatus.FAILED &&
         spin.status !== SpinStatus.EXPIRED
     )
-    .reduce((total, spin) => total + spin.totalBet, 0);
+    .reduce((total, spin) => {
+      // Include bet amount + transaction fee
+      return total + spin.totalBet + SPIN_COST;
+    }, 0);
 }
 
 /**

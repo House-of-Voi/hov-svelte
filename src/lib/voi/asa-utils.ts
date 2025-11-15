@@ -1,7 +1,7 @@
 import algosdk from 'algosdk';
+import { PUBLIC_VOI_NODE_URL } from '$env/static/public';
 
-const VOI_NODE_URL = 'https://mainnet-api.voi.nodely.dev';
-const algodClient = new algosdk.Algodv2('', VOI_NODE_URL, '');
+const algodClient = new algosdk.Algodv2('', PUBLIC_VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev', '');
 
 /**
  * Get the algod client instance
@@ -46,8 +46,8 @@ export async function getMinimumBalanceForOptIn(
 ): Promise<{ currentBalance: number; minBalanceForOptIn: number; hasEnough: boolean }> {
 	try {
 		const accountInfo = await algodClient.accountInformation(address).do();
-		const currentBalance = accountInfo.amount as number; // in microVOI
-		const minBalance = accountInfo['min-balance'] as number; // in microVOI
+		const currentBalance = Number(accountInfo.amount); // in microVOI
+		const minBalance = Number(accountInfo.minBalance); // in microVOI
 		const availableBalance = currentBalance - minBalance;
 
 		// ASA opt-in requires 0.1 VOI (100,000 microVOI) increase in min balance

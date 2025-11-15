@@ -178,10 +178,10 @@
         <Card
           hover={true}
           elevated={true}
-          class="animate-in fade-in duration-500 slide-in-from-bottom-4"
+          class="h-full animate-in fade-in duration-500 slide-in-from-bottom-4"
           style="animation-delay: {index * 100}ms"
         >
-          <CardContent class="p-8 space-y-6">
+          <CardContent class="p-8 h-full flex flex-col">
             <!-- Game Icon & Title -->
             <div class="space-y-4">
               <div class="flex justify-center">
@@ -206,6 +206,9 @@
                 </div>
               </div>
             </div>
+
+            <!-- Spacer to push game info down -->
+            <div class="flex-1 min-h-2"></div>
 
             <!-- Game Info -->
             <div class="space-y-2 text-sm border-y border-neutral-200 dark:border-neutral-700 py-4">
@@ -236,19 +239,21 @@
             </div>
 
             <!-- Play Button -->
-            {#if canPlay}
-              <a href="/games/slots?contract={game.contract_id}" class="block">
-                <Button variant="primary" size="md" class="w-full">
-                  Play Now
-                </Button>
-              </a>
-            {:else}
-              <a href="/auth" class="block">
-                <Button variant="primary" size="md" class="w-full">
-                  Sign In to Play
-                </Button>
-              </a>
-            {/if}
+            <div class="mt-6">
+              {#if canPlay}
+                <a href="/games/slots?contract={game.contract_id}" class="block">
+                  <Button variant="primary" size="md" class="w-full">
+                    Play Now
+                  </Button>
+                </a>
+              {:else}
+                <a href="/auth" class="block">
+                  <Button variant="primary" size="md" class="w-full">
+                    Sign In to Play
+                  </Button>
+                </a>
+              {/if}
+            </div>
           </CardContent>
         </Card>
       {/each}

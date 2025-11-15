@@ -7,5 +7,15 @@
 export { MockSlotMachineAdapter } from './MockSlotMachineAdapter';
 export type { MockAdapterConfig } from './MockSlotMachineAdapter';
 
-export { VoiSlotMachineAdapter } from './VoiSlotMachineAdapter';
-export type { VoiAdapterConfig } from './VoiSlotMachineAdapter';
+export { VoiFiveReelAdapter } from './VoiFiveReelAdapter';
+export type { VoiAdapterConfig } from './VoiFiveReelAdapter';
+
+export { VoiW2WAdapter } from './VoiW2WAdapter';
+export type { VoiW2WAdapterConfig } from './VoiW2WAdapter';
+
+// Legacy export for backward compatibility
+export { VoiFiveReelAdapter as VoiSlotMachineAdapter } from './VoiFiveReelAdapter';
+
+// Adapter Factory
+export { AdapterFactory, getAdapterFactory, resetAdapterFactory } from './AdapterFactory';
+export type { AdapterFactoryConfig } from './AdapterFactory';

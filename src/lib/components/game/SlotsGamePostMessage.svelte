@@ -22,6 +22,7 @@
 		BalanceResponse,
 		SpinSubmittedMessage,
 	} from '$lib/game-engine/bridge/types';
+	import { MESSAGE_NAMESPACE } from '$lib/game-engine/bridge/types';
 
 	import { onMount, onDestroy } from 'svelte';
 	import { formatVoi } from '$lib/game-engine/utils/gameConstants';
@@ -65,7 +66,20 @@
 			// In production, validate origin
 			// if (event.origin !== 'https://houseofvoi.com') return;
 
-			const message = event.data as GameResponse;
+			const message = event.data;
+
+			// Filter messages by namespace (silently ignore non-matching messages)
+			if (!message || typeof message !== 'object' || !('namespace' in message)) {
+				console.debug('SlotsGame: Ignoring message without namespace field');
+				return;
+			}
+
+			if (message.namespace !== MESSAGE_NAMESPACE) {
+				console.debug(
+					`SlotsGame: Ignoring message with non-matching namespace: "${message.namespace}"`
+				);
+				return;
+			}
 
 			switch (message.type) {
 				case 'OUTCOME':
@@ -109,7 +123,11 @@
 	 */
 	function sendMessage(message: GameRequest): void {
 		if (window.parent) {
-			window.parent.postMessage(message, '*'); // Use specific origin in production
+			const messageWithNamespace = {
+				...message,
+				namespace: MESSAGE_NAMESPACE,
+			};
+			window.parent.postMessage(messageWithNamespace, '*'); // Use specific origin in production
 		}
 	}
 

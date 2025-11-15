@@ -121,7 +121,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		}
 
 		// Initialize Algod client
-		const nodeUrl = env.VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev';
+		const nodeUrl = env.PUBLIC_VOI_NODE_URL || 'https://mainnet-api.voi.nodely.dev';
 		const algodClient = new algosdk.Algodv2('', nodeUrl, '');
 
 		// Initialize SwapClient
