@@ -1,6 +1,8 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { supabaseAdmin } from '$lib/db/supabaseAdmin';
+import { createAdminClient } from '$lib/db/supabaseAdmin';
+
+const supabaseAdmin = createAdminClient();
 
 /**
  * GET /api/house/contracts
