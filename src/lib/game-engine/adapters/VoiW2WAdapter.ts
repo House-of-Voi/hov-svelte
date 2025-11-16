@@ -7,12 +7,14 @@
 
 import algosdk from 'algosdk';
 import * as algokit from '@algorandfoundation/algokit-utils';
+import type { TransactionWithSigner } from '@algorandfoundation/algokit-utils/types/transaction';
 import { CONTRACT } from 'ulujs';
 import { createAlgoKitTransactionSigner, type WalletSigner } from '$lib/wallet/algokitTransactionSigner';
 import type { BlockchainAdapter } from '../SlotMachineEngine';
 import type { BetKey, SpinOutcome, SlotMachineConfig, SymbolId } from '../types';
 import { logger } from '$lib/utils/logger';
 import { SlotMachineClient, APP_SPEC } from '$lib/clients/SlotMachineClientW2W';
+import { calculateW2WPayouts, isJackpotTriggered, isBonusTriggered, countScatterSymbols } from '../utils/w2wPayoutCalculator';
 
 /**
  * W2W adapter configuration
@@ -32,28 +34,6 @@ export interface VoiW2WAdapterConfig {
   walletSigner?: WalletSigner;
 }
 
-/**
- * W2W Symbol Constants
- */
-const W2W_SYMBOLS = {
-  BUFFALO: '0',
-  EAGLE: '1',
-  COUGAR: '2',
-  ELK: '3',
-  WOLF: '4',
-  A: '5',
-  K: '6',
-  Q: '7',
-  J: '8',
-  TEN: '9',
-  NINE: 'A',
-  WILD: 'B',
-  WILD2X: 'C',
-  WILD3X: 'D',
-  HOV: 'E',
-  BONUS: 'F',
-} as const;
-
 
 /**
  * Game Constants
@@ -66,6 +46,30 @@ const JACKPOT_TRIGGER_COUNT = 3;
 const BONUS_TRIGGER_COUNT = 2;
 const BONUS_SPINS_AWARDED = 8;
 const BONUS_MULTIPLIER = 1.5;
+
+const ARC200_APPROVE_METHOD = new algosdk.ABIMethod({
+  name: 'arc200_approve',
+  args: [
+    { type: 'address', name: 'spender' },
+    { type: 'uint256', name: 'amount' },
+  ],
+  returns: { type: 'bool' },
+});
+
+function decodeBinaryStateNumber(state?: { asByteArray(): Uint8Array }): number {
+  if (!state) {
+    return 0;
+  }
+  const bytes = state.asByteArray();
+  if (!bytes || bytes.length === 0) {
+    return 0;
+  }
+  let value = 0n;
+  for (const byte of bytes) {
+    value = (value << 8n) | BigInt(byte);
+  }
+  return Number(value);
+}
 
 /**
  * Default network configuration for Voi
@@ -183,16 +187,20 @@ export class VoiW2WAdapter implements BlockchainAdapter {
 
       // Get machine state to validate bet amounts for network/token modes
       const machineState = await this.getMachineState();
+      const contractAddress = algosdk.getApplicationAddress(Number(this.config.contractId));
+      const suggestedParams = await this.algodClient.getTransactionParams().do();
+      const signerAdapter = createAlgoKitTransactionSigner(this.config.walletSigner);
       
       // Validate and adjust bet amount based on mode
       let actualBetAmount = betAmount;
       let paymentAmount = 0; // No payment transaction by default
+      let arc200ApproveTxnWithSigner: TransactionWithSigner | null = null;
 
       if (mode === 0 || mode === 1) {
         // Bonus mode: bet_amount must be 0
         // No payment transaction - only fee (50_500) on spin transaction
         actualBetAmount = 0;
-        paymentAmount = 50_500; // No payment transaction, only fee
+        paymentAmount = 50_500;
       } else if (mode === 2) {
         // VOI mode: bet_amount must be network_base_bet_cost (40) or network_base_bet_cost + network_kicker_extra (60)
         // Note: network_base_bet_cost is already in microAlgos from contract
@@ -209,40 +217,64 @@ export class VoiW2WAdapter implements BlockchainAdapter {
         paymentAmount = betAmount; // Only bet amount, fee is separate on spin transaction
       } else if (mode === 4) {
         // ARC200 mode: bet_amount must be token_base_bet_cost or token_base_bet_cost + token_kicker_extra
-        // Note: Token mode requires token transfers, which is more complex
-        // For now, we'll handle the bet amount validation
-        const tokenBaseBetCost = Number(machineState.token_base_bet_cost || 40 * 10**6);
-        const tokenKickerExtra = Number(machineState.token_kicker_extra || 20 * 10**6);
+        const tokenBaseBetCost = Number(
+          machineState.token_base_bet_cost ||
+            machineState.tokenBaseBetCost ||
+            40 * 10 ** 6
+        );
+        const tokenKickerExtra = Number(
+          machineState.token_kicker_extra ||
+            machineState.tokenKickerExtra ||
+            20 * 10 ** 6
+        );
         const baseBet = tokenBaseBetCost;
         const kickerBet = tokenBaseBetCost + tokenKickerExtra;
+        const tokenAppId = Number(
+          machineState.token_app_id || machineState.tokenAppId || 0
+        );
+
+        if (!tokenAppId) {
+          throw new Error('ARC200 mode requires token_app_id in machine state');
+        }
         
         if (betAmount !== baseBet && betAmount !== kickerBet) {
           throw new Error(`ARC200 mode requires bet amount of ${baseBet} or ${kickerBet} (got ${betAmount})`);
         }
         actualBetAmount = betAmount;
-        // ARC200 mode requires token transfer, not VOI payment
-        // This would need additional ARC200 token transfer logic
-        throw new Error('ARC200 mode not yet implemented - requires ARC200 token transfer');
+
+        // Build ARC200 approve transaction (approve contract to spend bet amount)
+        const approveTxn = this.createArc200ApproveTransaction(
+          walletAddress as string,
+          tokenAppId,
+          contractAddress,
+          actualBetAmount,
+          suggestedParams
+        );
+        arc200ApproveTxnWithSigner = await algokit.getTransactionWithSigner(
+          approveTxn,
+          { addr: walletAddress as unknown as algosdk.Address, signer: signerAdapter }
+        );
+
+        // ARC200 spins still pay VOI fees via a small payment transaction
+        paymentAmount = spinCost;
       } else {
         throw new Error(`Invalid mode: ${mode}. Must be 0 (bonus), 1 (credit/free-play), 2 (VOI), or 4 (ARC200)`);
       }
-
-      const contractAddress = algosdk.getApplicationAddress(Number(this.config.contractId));
-      const suggestedParams = await this.algodClient.getTransactionParams().do();
-
-      // Create AlgoKit signer adapter for transactions
-      const signerAdapter = createAlgoKitTransactionSigner(this.config.walletSigner);
 
       // Use SlotMachineClient composer to handle payment + spin
       const composer = this.slotMachineClient.compose();
 
       // Get the required transaction fee from the contract (spin_cost = 50_500)
-      const requiredFee = await this.getSpinCost();
+      const requiredFee = spinCost;
       log.info('required transaction fee', { requiredFee });
+
+      if (arc200ApproveTxnWithSigner) {
+        composer.addTransaction(arc200ApproveTxnWithSigner);
+      }
 
       // Add payment transaction if needed (only for VOI mode)
       // Bonus mode (0) and Credit mode (1) do NOT include a payment transaction - only fee on spin
-      // ARC200 mode would need ARC200 token transfer instead
+      // ARC200 mode includes a small VOI payment for the network fee (50_500)
       if (paymentAmount > 0) {
         // Create payment transaction with minimal fee (1000 microAlgos)
         // The fee for the payment transaction should be minimal, not the spin cost
@@ -293,6 +325,39 @@ export class VoiW2WAdapter implements BlockchainAdapter {
       console.log('submitSpinW2W result', result);
       const txId = result.txIds[result.txIds.length - 1]; // Last tx is the spin call
 
+      // Extract spin_count from global state delta
+      let spinIndex: number | undefined;
+      try {
+        const lastTxIndex = result.txIds.length - 1;
+        const confirmation = (result as any).confirmations?.[lastTxIndex];
+        const globalStateDelta = confirmation?.globalStateDelta;
+        
+        if (globalStateDelta && Array.isArray(globalStateDelta)) {
+          // Base64 encode "spin_count" to match against keys
+          const spinCountKey = Buffer.from('spin_count').toString('base64');
+          
+          // Find the entry with matching key
+          const spinCountEntry = globalStateDelta.find((entry: any) => entry.key === spinCountKey);
+          
+          if (spinCountEntry && spinCountEntry.value && typeof spinCountEntry.value.uint === 'bigint') {
+            spinIndex = Number(spinCountEntry.value.uint) - 1;
+            log.info('extracted spin_count from global state delta', { spinIndex });
+          } else {
+            log.warn('spin_count not found in global state delta', { 
+              globalStateDeltaKeys: globalStateDelta.map((e: any) => e.key),
+              expectedKey: spinCountKey
+            });
+          }
+        } else {
+          log.warn('globalStateDelta not found or not an array', { 
+            hasConfirmation: !!confirmation,
+            globalStateDelta 
+          });
+        }
+      } catch (extractError) {
+        log.warn('failed to extract spin_count from global state delta', extractError);
+      }
+
       // Wait for confirmation
       await algosdk.waitForConfirmation(this.algodClient, txId, 4);
 
@@ -322,14 +387,15 @@ export class VoiW2WAdapter implements BlockchainAdapter {
       const claimBlock = confirmedRound ? Number(confirmedRound) + 2 : Number(currentRound) + 2;
       console.log('claimBlock', claimBlock);
 
-      log.info('spin submitted', { txId, betKeyHex, claimBlock, mode, actualBetAmount });
+      log.info('spin submitted', { txId, betKeyHex, claimBlock, mode, actualBetAmount, spinIndex });
 
       return {
         key: betKeyHex,
         betKey: betKeyHex,
         txId,
         submitBlock: Number(currentRound),
-        claimBlock
+        claimBlock,
+        spinIndex
       };
     } catch (error) {
       log.error('spin submission failed', error);
@@ -342,9 +408,9 @@ export class VoiW2WAdapter implements BlockchainAdapter {
     throw new Error('W2W adapter does not support 5reel format. Use claimSpinW2W instead.');
   }
 
-  async claimSpinW2W(betKey: string, claimBlock: number, index?: number): Promise<SpinOutcome> {
+  async claimSpinW2W(betKey: string, claimBlock: number, spinIndex?: number): Promise<SpinOutcome> {
     const log = logger.scope('VoiW2WAdapter:claimSpinW2W');
-    log.info('claiming W2W spin', { betKey, claimBlock, index });
+    log.info('claiming W2W spin', { betKey, claimBlock, spinIndex });
 
     if (!this.slotMachineClient || !this.algodClient || !this.config.walletSigner) {
       throw new Error('Adapter not initialized or wallet signer missing');
@@ -359,11 +425,11 @@ export class VoiW2WAdapter implements BlockchainAdapter {
 
       const walletAddress = this.config.walletSigner.address;
 
-      await this.algodClient.statusAfterBlock(claimBlock).do();
-      const status = await this.algodClient.status().do();
+      const status = await this.algodClient.statusAfterBlock(claimBlock).do();
+      // const status = await this.algodClient.status().do();
       const currentRound = Number(status.lastRound);
       console.log('currentRound', currentRound);
-      console.log('claimBlock', claimBlock);
+      console.log('claimBlock', status);
 
       // Use SlotMachineClient to call claim
       const signerAdapter = createAlgoKitTransactionSigner(this.config.walletSigner);
@@ -393,15 +459,20 @@ export class VoiW2WAdapter implements BlockchainAdapter {
       // Get block seed for this claim block (as hex string for reference)
       const blockSeedHex = await this.getBlockSeed(claimBlock);
 
-      // Get grid from contract using getCdfGridFromSeedAndSpin if index is provided
+      // Get grid from contract using getCdfGridFromSeedAndSpin if spinIndex is provided
       let symbolGrid: SymbolId[][] = [];
-      if (index !== undefined) {
+      if (spinIndex !== undefined) {
         try {
           // Get block seed as bytes (32 bytes) for the contract call
           // The confirmation block is where the claim transaction was confirmed
           // For now, we'll use the claimBlock itself
           const confirmationBlock = claimBlock;
           const blockSeedBytes = await this.getBlockSeedBytes(confirmationBlock);
+
+          console.log('cdf grid from seed and spin', {
+            seed: blockSeedBytes,
+            spinIndex: BigInt(spinIndex),
+          });
           
           if (blockSeedBytes.length !== 32) {
             log.warn('Block seed is not 32 bytes, cannot get grid', { length: blockSeedBytes.length });
@@ -411,7 +482,7 @@ export class VoiW2WAdapter implements BlockchainAdapter {
             composer.getCdfGridFromSeedAndSpin(
               {
                 seed: blockSeedBytes,
-                spinIndex: BigInt(index),
+                spinIndex: BigInt(spinIndex),
               },
               {
                 sender: {
@@ -504,18 +575,46 @@ export class VoiW2WAdapter implements BlockchainAdapter {
           log.warn('Failed to get grid from contract, continuing without grid', { error: gridError });
         }
       } else {
-        log.warn('Index not provided, cannot retrieve grid from contract');
+        log.warn('SpinIndex not provided, cannot retrieve grid from contract');
       }
 
 
+      // Calculate ways wins from the grid
+      let waysWins = [];
+      let bonusSpinsAwarded = 0;
+      let jackpotHit = false;
+      let jackpotAmountValue = 0;
+
+      if (symbolGrid.length > 0) {
+        // Calculate ways wins using our client-side calculator
+        waysWins = calculateW2WPayouts(symbolGrid);
+
+        // Check for bonus trigger
+        if (isBonusTriggered(symbolGrid)) {
+          bonusSpinsAwarded = 8;
+        }
+
+        // Check for jackpot trigger
+        if (isJackpotTriggered(symbolGrid)) {
+          jackpotHit = true;
+          // Jackpot amount is included in the payout, so we can estimate it
+          // by subtracting line wins from total payout
+          const linePayoutTotal = waysWins.reduce((sum, win) => sum + win.payout, 0);
+          jackpotAmountValue = payoutAmount - linePayoutTotal;
+        }
+      }
+
       const outcome: SpinOutcome = {
         grid: symbolGrid,
-        waysWins: [],
+        waysWins,
         totalPayout: payoutAmount,
         blockNumber: claimBlock,
         blockSeed: blockSeedHex,
         betKey,
         verified: true,
+        bonusSpinsAwarded,
+        jackpotHit,
+        jackpotAmount: jackpotAmountValue
       };
 
       return outcome;
@@ -723,12 +822,47 @@ export class VoiW2WAdapter implements BlockchainAdapter {
         credit_bet_cost: globalState.creditBetCost?.asNumber() || 0,
         network_base_bet_cost: globalState.networkBaseBetCost?.asNumber() || 0,
         network_kicker_extra: globalState.networkKickerExtra?.asNumber() || 0,
+        token_app_id: globalState.tokenAppId?.asNumber() || 0,
+        token_base_bet_cost: decodeBinaryStateNumber(globalState.tokenBaseBetCost),
+        token_kicker_extra: decodeBinaryStateNumber(globalState.tokenKickerExtra),
         mode_enabled: globalState.modeEnabled?.asNumber() || 7, // Default: all enabled
       };
     } catch (error) {
       log.error('failed to get machine state', error);
       throw error;
     }
+  }
+
+  private createArc200ApproveTransaction(
+    walletAddress: string,
+    tokenAppId: number,
+    spenderAddress: string,
+    amount: number | bigint,
+    suggestedParams: algosdk.SuggestedParams
+  ): algosdk.Transaction {
+    if (!tokenAppId) {
+      throw new Error('ARC200 approve requested without token_app_id');
+    }
+
+    const approveComposer = new algosdk.AtomicTransactionComposer();
+    approveComposer.addMethodCall({
+      method: ARC200_APPROVE_METHOD,
+      methodArgs: [spenderAddress, BigInt(amount)],
+      sender: walletAddress,
+      signer: async () => [],
+      appID: tokenAppId,
+      suggestedParams: {
+        ...suggestedParams,
+        fee: Math.max(suggestedParams.fee || 1000, 1000),
+      },
+    });
+
+    const approveGroup = approveComposer.buildGroup();
+    if (approveGroup.length !== 1) {
+      throw new Error('Failed to build ARC200 approve transaction');
+    }
+
+    return approveGroup[0].txn;
   }
 
   /**

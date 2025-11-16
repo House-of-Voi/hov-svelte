@@ -48,6 +48,8 @@ export interface QueuedSpin {
   betAmount?: number;
   /** Spin index (W2W only) */
   index?: number;
+  /** Spin index from global state (spin_count) - used for grid retrieval (W2W only) */
+  spinIndex?: number;
   /** Mode: 0=bonus, 1=credit, 2=network, 4=token (W2W only) */
   mode?: number;
   /** Total bet amount (betPerLine * paylines for 5reel, betAmount for W2W) */

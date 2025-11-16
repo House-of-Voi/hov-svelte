@@ -64,6 +64,19 @@
 	let pendingSpinId: string | null = $state(null);
 	let isAutoBonusMode = $state(false); // Track if we're in auto bonus spin mode
 	let isAutoSpinning = $state(false); // Prevent multiple simultaneous auto-spins
+	let bonusSpinIntervalId: ReturnType<typeof setInterval> | null = $state(null); // Track bonus spin interval timer
+	let voiAddress = $state<string | null>(null);
+	let configContractId = $state<string | null>(null);
+	let isArc200Machine = $state(false);
+	let arc200ContractId = $state<number | null>(null);
+	let arc200TokenSymbol = $state('ARC200');
+	let arc200TokenName = $state('ARC200 Token');
+	let arc200Decimals = $state(6);
+	let arc200Balance = $state<string | null>(null);
+	let isArc200DataLoading = $state(false);
+	let arc200Error = $state<string | null>(null);
+	let lastArc200FetchKey: string | null = null;
+	let lastSlotConfigFetchId: string | null = null;
 	
 	// Queue tracking
 	interface QueuedSpin {
@@ -88,6 +101,7 @@
 	}
 	let spinQueue = $state<QueuedSpin[]>([]);
 	let pendingSpins = $derived(spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length);
+	const arc200DisplayLabel = $derived(isArc200Machine ? arc200TokenSymbol : 'ARC200');
 
 	// Spin detail modal state
 	let selectedSpin = $state<QueuedSpin | null>(null);
@@ -100,6 +114,8 @@
 	let messageHandler: ((event: MessageEvent) => void) | null = null;
 
 	onMount(() => {
+		fetchSessionAddress();
+
 		// Set up postMessage listener
 		messageHandler = (event: MessageEvent) => {
 			// In production, validate origin
@@ -159,6 +175,8 @@
 			window.removeEventListener('message', messageHandler);
 			messageHandler = null;
 		}
+		// Clean up bonus spin interval
+		clearBonusSpinInterval();
 	});
 
 	/**
@@ -171,6 +189,141 @@
 				namespace: MESSAGE_NAMESPACE,
 			};
 			window.parent.postMessage(messageWithNamespace, '*'); // Use specific origin in production
+		}
+	}
+
+	async function fetchSessionAddress(): Promise<void> {
+		try {
+			const response = await fetch('/api/auth/voi/session/check', { credentials: 'include' });
+			if (!response.ok) {
+				return;
+			}
+			const data = await response.json();
+			const fetchedAddress = data?.voiAddress || null;
+			if (fetchedAddress) {
+				voiAddress = fetchedAddress;
+				if (isArc200Machine && arc200ContractId) {
+					await refreshArc200TokenInfo(true);
+				}
+			}
+		} catch (error) {
+			console.error('Failed to fetch Voi session address:', error);
+		}
+	}
+
+	async function loadSlotMachineMetadata(contractId?: string): Promise<void> {
+		if (!contractId) {
+			return;
+		}
+		if (lastSlotConfigFetchId === contractId && (arc200ContractId || !isArc200Machine)) {
+			return;
+		}
+
+		try {
+			const response = await fetch(`/api/games/slot-configs?contract_id=${contractId}`);
+			if (!response.ok) {
+				throw new Error('Failed to load slot machine configuration');
+			}
+			const result = await response.json();
+			const config = result?.data;
+
+			lastSlotConfigFetchId = contractId;
+
+			if (result?.success && config) {
+				const arcIdRaw = config.ybt_asset_id ?? null;
+				if (arcIdRaw) {
+					const tokenId = Number(arcIdRaw);
+					if (Number.isFinite(tokenId)) {
+						arc200ContractId = tokenId;
+						isArc200Machine = true;
+						arc200TokenSymbol = 'ARC200';
+						arc200TokenName = 'ARC200 Token';
+						arc200Balance = null;
+						arc200Error = null;
+						lastArc200FetchKey = null;
+						applyArc200ModePreference();
+						await refreshArc200TokenInfo(true);
+						return;
+					}
+				}
+			}
+
+			// Not an ARC200 machine or failed to parse token ID
+			isArc200Machine = false;
+			arc200ContractId = null;
+			arc200Balance = null;
+			arc200Error = null;
+			lastArc200FetchKey = null;
+		} catch (error) {
+			console.error('Failed to load slot machine metadata:', error);
+			lastSlotConfigFetchId = null;
+		}
+	}
+
+	async function refreshArc200TokenInfo(force = false): Promise<void> {
+		if (!arc200ContractId) {
+			return;
+		}
+		const addressKey = voiAddress || 'session';
+		const fetchKey = `${arc200ContractId}:${addressKey}`;
+
+		if (!force && lastArc200FetchKey === fetchKey && arc200Balance !== null) {
+			return;
+		}
+
+		try {
+			isArc200DataLoading = true;
+			arc200Error = null;
+
+			const params = new URLSearchParams();
+			if (voiAddress) {
+				params.set('address', voiAddress);
+			}
+			const query = params.toString();
+			const endpoint = query
+				? `/api/arc200/${arc200ContractId}?${query}`
+				: `/api/arc200/${arc200ContractId}`;
+
+			const response = await fetch(endpoint, { credentials: 'include' });
+			if (!response.ok) {
+				throw new Error('Failed to fetch ARC200 token info');
+			}
+
+			const result = await response.json();
+			if (!result?.success || !result?.data) {
+				throw new Error(result?.error || 'Failed to fetch ARC200 token info');
+			}
+
+			const data = result.data;
+			arc200TokenSymbol = data.symbol || 'ARC200';
+			arc200TokenName = data.name || arc200TokenSymbol;
+			arc200Decimals = Number(data.decimals ?? arc200Decimals);
+			arc200Balance = data.balance ?? (voiAddress ? '0' : null);
+			lastArc200FetchKey = fetchKey;
+		} catch (error) {
+			console.error('Failed to fetch ARC200 token info:', error);
+			arc200Error = error instanceof Error ? error.message : 'Failed to load ARC200 token data';
+		} finally {
+			isArc200DataLoading = false;
+		}
+	}
+
+	function applyArc200ModePreference(currentCredits?: number): void {
+		if (!isArc200Machine || !(modeEnabled & 4)) {
+			return;
+		}
+
+		const creditAmount = currentCredits ?? credits;
+		if (creditAmount > 0) {
+			return;
+		}
+
+		if (mode === 0) {
+			return;
+		}
+
+		if (mode !== 4) {
+			mode = 4;
 		}
 	}
 
@@ -229,7 +382,7 @@
 			isSpinning = false;
 			pendingSpinId = null;
 			
-			// After all spins complete, check if we should auto-submit bonus spins
+			// After all spins complete, ensure bonus spin interval is running if needed
 			// This handles the case where the queue becomes empty
 			if (!showingWinDisplay && bonusSpins > 0 && isAutoBonusMode) {
 				setTimeout(() => {
@@ -250,10 +403,10 @@
 			showingWinDisplay = true;
 		} else {
 			showingWinDisplay = false;
-			// If no win display, check for auto-submit immediately after a short delay
+			// If no win display, ensure bonus spin interval is running after a short delay
 			// This handles the case where the spin completes but there's no win to display
 			setTimeout(() => {
-				if (!showingWinDisplay && !isSpinning && !waitingForOutcome) {
+				if (!showingWinDisplay && !isSpinning && !waitingForOutcome && bonusSpins > 0 && isAutoBonusMode) {
 					checkAndAutoSubmitBonusSpin();
 				}
 			}, 500);
@@ -262,6 +415,10 @@
 		// Query user data from contract to get actual bonus spin count
 		// This ensures we have the latest count after the claim transaction
 		sendMessage({ type: 'GET_CREDIT_BALANCE' });
+
+		if (isArc200Machine && arc200ContractId) {
+			refreshArc200TokenInfo(true);
+		}
 	}
 
 	/**
@@ -291,24 +448,27 @@
 		const newCredits = Number(payload.credits) || 0;
 		const newBonusSpins = Number(payload.bonusSpins) || 0;
 		
-		// Set default mode based on credits:
-		// - If user has credits, default to Credit mode (1)
-		// - If user has no credits, default to VOI mode (2)
-		// Only set default if mode is not already set to a valid enabled mode
+		const arc200Preferred = isArc200Machine && Boolean(modeEnabled & 4);
+		// Set default mode based on credits and ARC200 availability
 		if (mode === 0 || (mode !== 1 && mode !== 2 && mode !== 4)) {
 			if (newCredits > 0 && (modeEnabled & 1)) {
 				// User has credits, default to Credit mode
 				mode = 1;
+			} else if (arc200Preferred) {
+				// ARC200 machine with no credits - default to token mode
+				mode = 4;
 			} else if (modeEnabled & 2) {
-				// User has no credits, default to VOI mode
+				// Default to VOI if available
 				mode = 2;
 			} else if (modeEnabled & 4) {
 				// Fallback to ARC200 mode if VOI not available
 				mode = 4;
 			}
 		} else if (mode === 1 && newCredits === 0 && credits > 0) {
-			// User just ran out of credits, switch to VOI mode
-			if (modeEnabled & 2) {
+			// User just ran out of credits
+			if (arc200Preferred) {
+				mode = 4;
+			} else if (modeEnabled & 2) {
 				mode = 2;
 			} else if (modeEnabled & 4) {
 				mode = 4;
@@ -319,8 +479,13 @@
 		const previousBonusSpins = bonusSpins;
 		bonusSpins = newBonusSpins;
 
+		if (arc200Preferred) {
+			applyArc200ModePreference(newCredits);
+		}
+
 		// Exit auto bonus mode if bonus spins ran out
 		if (bonusSpins === 0 && isAutoBonusMode) {
+			clearBonusSpinInterval();
 			isAutoBonusMode = false;
 			isAutoSpinning = false;
 		}
@@ -328,8 +493,8 @@
 		// If we just received bonus spins and we're not currently spinning,
 		// and we're in auto mode or should enter it, trigger auto-submit
 		// Only trigger if bonus spins increased (new bonus spins detected)
-		if (newBonusSpins > previousBonusSpins && !isSpinning && !waitingForOutcome && !isAutoSpinning) {
-			// If no win display is showing, trigger immediately
+		if (newBonusSpins > previousBonusSpins && !isSpinning && !waitingForOutcome) {
+			// If no win display is showing, start interval immediately
 			if (!showingWinDisplay) {
 				checkAndAutoSubmitBonusSpin();
 			}
@@ -343,6 +508,7 @@
 	function handleConfig(message: ConfigMessage): void {
 		const payload = message.payload;
 		slotConfig = {
+			contractId: payload.contractId,
 			minBet: payload.minBet,
 			maxBet: payload.maxBet,
 			rtpTarget: payload.rtpTarget,
@@ -355,6 +521,11 @@
 		// Update modeEnabled if available in config (W2W format)
 		if ('modeEnabled' in payload) {
 			modeEnabled = Number(payload.modeEnabled) ?? 7;
+		}
+
+		if (payload.contractId) {
+			configContractId = payload.contractId;
+			loadSlotMachineMetadata(payload.contractId);
 		}
 	}
 
@@ -386,6 +557,7 @@
 
 		// Exit auto bonus mode on error to prevent stuck state
 		if (isAutoBonusMode) {
+			clearBonusSpinInterval();
 			isAutoBonusMode = false;
 			isAutoSpinning = false;
 		}
@@ -551,47 +723,81 @@
 		bonusSpinsAwarded = 0;
 		jackpotHit = false;
 		
-		// After win display closes, check if we should auto-submit bonus spins
+		// After win display closes, ensure bonus spin interval is running if needed
 		checkAndAutoSubmitBonusSpin();
 	}
 
 	/**
-	 * Check if we should auto-submit a bonus spin and do it
+	 * Clear the bonus spin interval timer
 	 */
-	function checkAndAutoSubmitBonusSpin(): void {
-		// Don't auto-submit if:
-		// - Already auto-spinning
-		// - Currently spinning or waiting for outcome
-		// - No bonus spins available
-		// - User manually changed mode (not in auto bonus mode and mode is not 0)
-		if (isAutoSpinning || isSpinning || waitingForOutcome || bonusSpins === 0) {
+	function clearBonusSpinInterval(): void {
+		if (bonusSpinIntervalId !== null) {
+			clearInterval(bonusSpinIntervalId);
+			bonusSpinIntervalId = null;
+		}
+	}
+
+	/**
+	 * Start the bonus spin interval timer (submits spins every 3 seconds)
+	 */
+	function startBonusSpinInterval(): void {
+		// Don't start if already running
+		if (bonusSpinIntervalId !== null) {
 			return;
 		}
 
-		// If we have bonus spins and we're either in auto mode or should enter it
-		if (bonusSpins > 0) {
-			// Enter auto bonus mode if not already in it
-			if (!isAutoBonusMode) {
-				isAutoBonusMode = true;
+		// Enter auto bonus mode if not already in it
+		if (!isAutoBonusMode) {
+			isAutoBonusMode = true;
+		}
+
+		// Set up interval to submit spins every 3 seconds
+		bonusSpinIntervalId = setInterval(() => {
+			// Check if we should continue submitting
+			if (!isAutoBonusMode || bonusSpins === 0) {
+				clearBonusSpinInterval();
+				isAutoBonusMode = false;
+				isAutoSpinning = false;
+				return;
 			}
 
-			// Prevent multiple simultaneous auto-spins
-			isAutoSpinning = true;
+			// Optional: Limit queue size to prevent overwhelming the system
+			// Allow up to 10 pending spins before pausing
+			const maxPendingSpins = 10;
+			if (pendingSpins >= maxPendingSpins) {
+				console.log('⏸️ Bonus spin interval paused: too many pending spins', { pendingSpins });
+				return;
+			}
 
-			// Small delay to ensure UI is ready
-			setTimeout(() => {
-				try {
-					handleSpin();
-					// Reset auto-spinning flag after a short delay to allow spin to be queued
-					setTimeout(() => {
-						isAutoSpinning = false;
-					}, 500);
-				} catch (error) {
-					console.error('Auto bonus spin failed:', error);
-					isAutoSpinning = false;
-					isAutoBonusMode = false; // Exit auto mode on error
-				}
-			}, 300);
+			// Submit a spin
+			try {
+				handleSpin();
+			} catch (error) {
+				console.error('Auto bonus spin failed:', error);
+				clearBonusSpinInterval();
+				isAutoBonusMode = false;
+				isAutoSpinning = false;
+			}
+		}, 3000); // 3 seconds
+
+		console.log('▶️ Bonus spin interval started (3s interval)');
+	}
+
+	/**
+	 * Check if we should auto-submit bonus spins and start the interval
+	 */
+	function checkAndAutoSubmitBonusSpin(): void {
+		// Don't start if:
+		// - Already has an interval running
+		// - No bonus spins available
+		// - Currently showing win display (will start when it closes)
+		if (bonusSpinIntervalId !== null || bonusSpins === 0 || showingWinDisplay) {
+			return;
+		}
+
+		// If we have bonus spins, start the interval
+		if (bonusSpins > 0) {
+			startBonusSpinInterval();
 		}
 	}
 
@@ -599,6 +805,7 @@
 	 * Exit bonus spin mode manually
 	 */
 	function exitBonusSpinMode(): void {
+		clearBonusSpinInterval();
 		isAutoBonusMode = false;
 		isAutoSpinning = false;
 		// Switch back to the previous mode (or default to VOI)
@@ -622,6 +829,9 @@
 		isRefreshingBalance = true;
 		sendMessage({ type: 'GET_BALANCE' });
 		sendMessage({ type: 'GET_CREDIT_BALANCE' });
+		if (isArc200Machine && arc200ContractId) {
+			refreshArc200TokenInfo(true);
+		}
 	}
 
 	/**
@@ -746,6 +956,31 @@
 	function formatNumber(num: number): string {
 		return num.toLocaleString();
 	}
+
+	function formatTokenAmount(raw: string | null | undefined, decimals: number, fractionDigits = 4): string {
+		if (!raw) {
+			return '0.00';
+		}
+		try {
+			const value = BigInt(raw);
+			if (decimals <= 0) {
+				return value.toLocaleString();
+			}
+			const divisor = 10n ** BigInt(decimals);
+			const whole = value / divisor;
+			const fraction = value % divisor;
+			if (fraction === 0n) {
+				return whole.toLocaleString();
+			}
+			const padded = fraction.toString().padStart(decimals, '0');
+			const trimmed = padded.replace(/0+$/, '');
+			const slice = trimmed.slice(0, Math.max(2, fractionDigits));
+			return `${whole.toLocaleString()}.${slice}`;
+		} catch (error) {
+			console.error('Failed to format ARC200 amount:', error);
+			return raw;
+		}
+	}
 </script>
 
 <div class="w2w-slot-machine">
@@ -781,6 +1016,7 @@
 					<W2WBettingControls
 						betAmount={betAmount}
 						{mode}
+						tokenLabel={arc200DisplayLabel}
 						disabled={false}
 						isSpinning={pendingSpins > 0}
 						onBetChange={handleBetChange}
@@ -797,6 +1033,7 @@
 				<W2WModeSelector
 					{mode}
 					{modeEnabled}
+					tokenLabel={arc200DisplayLabel}
 					{credits}
 					{bonusSpins}
 					disabled={pendingSpins > 0}
@@ -824,13 +1061,49 @@
 				</CardHeader>
 				<CardContent>
 					<div class="space-y-3">
-						<!-- Always show VOI Balance first -->
-						<div class="flex justify-between">
-							<span class="text-tertiary">VOI Balance:</span>
-							<span class="text-primary-400 font-bold">
-								{(balance / 1_000_000).toFixed(2)}
-							</span>
-						</div>
+						{#if isArc200Machine && arc200ContractId}
+							<div class="space-y-1">
+								<div class="flex flex-row justify-between">
+									<div class="text-xs uppercase tracking-wide text-tertiary">{arc200TokenName || arc200DisplayLabel}</div>
+									<div class="text-3xl font-extrabold text-primary-400">
+										{#if isArc200DataLoading}
+											Loading...
+										{:else if arc200Error}
+											<span class="text-error-400 text-base">Error</span>
+										{:else if arc200Balance !== null}
+											{formatTokenAmount(arc200Balance, arc200Decimals, 6)}
+										{:else}
+											{voiAddress ? '0.00' : 'Sign in to view'}
+										{/if}
+									</div>
+								</div>
+								{#if arc200Error}
+									<div class="flex items-center justify-between text-xs text-error-400">
+										<span>{arc200Error}</span>
+										<button
+											class="underline hover:text-error-300"
+											onclick={() => refreshArc200TokenInfo(true)}
+										>
+											Retry
+										</button>
+									</div>
+								{/if}
+							</div>
+							<div class="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
+								<span>VOI Balance:</span>
+								<span class="text-primary-300 font-medium">
+									{(balance / 1_000_000).toFixed(2)}
+								</span>
+							</div>
+						{:else}
+							<!-- VOI balance first for non-ARC200 machines -->
+							<div class="flex justify-between">
+								<span class="text-tertiary">VOI Balance:</span>
+								<span class="text-3xl font-extrabold text-primary-400">
+									{(balance / 1_000_000).toFixed(2)}
+								</span>
+							</div>
+						{/if}
 						<!-- Always show Bonus Spins below VOI Balance -->
 						<div class="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
 							<span>Bonus Spins:</span>
@@ -873,7 +1146,16 @@
 						</div>
 						<div class="flex justify-between py-2">
 							<span class="text-tertiary">Bet Amount:</span>
-							<span class="text-secondary font-semibold">{betAmount} {mode === 1 ? 'credits' : mode === 2 ? 'VOI' : 'ARC200'}</span>
+							<span class="text-secondary font-semibold">
+								{betAmount}
+								{mode === 1
+									? ' credits'
+									: mode === 2
+										? ' VOI'
+										: mode === 4
+											? ` ${arc200DisplayLabel}`
+											: ''}
+							</span>
 						</div>
 					</CardContent>
 				</Card>
@@ -881,7 +1163,7 @@
 
 			<!-- Spin Queue -->
 			<div class="mt-6">
-				<W2WSpinQueue {spinQueue} onSpinClick={handleSpinClick} />
+				<W2WSpinQueue {spinQueue} tokenLabel={arc200DisplayLabel} onSpinClick={handleSpinClick} />
 			</div>
 		</div>
 	</div>
@@ -910,6 +1192,7 @@
 			jackpotHit={jackpotHit}
 			jackpotAmount={jackpotWinAmount}
 			winLevel={winLevel}
+			currencyLabel={mode === 4 ? arc200DisplayLabel : mode === 2 ? 'VOI' : 'credits'}
 			onClose={handleWinDisplayClose}
 		/>
 	{/if}
@@ -1003,4 +1286,3 @@
 		animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 	}
 </style>
-

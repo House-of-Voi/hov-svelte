@@ -168,6 +168,8 @@ export interface BetKey {
   claimBlock: number;
   /** Bet key as hex string (for compatibility) */
   betKey?: string;
+  /** Spin index from global state (spin_count) - used for grid retrieval (W2W only) */
+  spinIndex?: number;
 }
 
 /**

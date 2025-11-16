@@ -26,10 +26,11 @@
 
 	interface Props {
 		spinQueue: QueuedSpin[];
+		tokenLabel?: string;
 		onSpinClick?: (spin: QueuedSpin) => void;
 	}
 
-	let { spinQueue, onSpinClick }: Props = $props();
+	let { spinQueue, tokenLabel = 'ARC200', onSpinClick }: Props = $props();
 
 	// Separate active and completed spins
 	let activeSpins = $derived(
@@ -73,7 +74,7 @@
 			case 2:
 				return 'VOI';
 			case 4:
-				return 'ARC200';
+				return tokenLabel;
 			default:
 				return 'Unknown';
 		}

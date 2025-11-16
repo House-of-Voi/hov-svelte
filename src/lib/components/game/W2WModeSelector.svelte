@@ -4,6 +4,8 @@
 		mode: number;
 		/** Mode enabled bitmask from contract (0-7) */
 		modeEnabled: number;
+		/** Optional label for ARC200/token mode */
+		tokenLabel?: string;
 		/** Available credits (for credit mode) */
 		credits?: number;
 		/** Available bonus spins (for bonus mode) */
@@ -17,17 +19,12 @@
 	let {
 		mode,
 		modeEnabled = 7,
+		tokenLabel = 'ARC200',
 		credits = 0,
 		bonusSpins = 0,
 		disabled = false,
 		onModeChange
 	}: Props = $props();
-
-	const allModes = [
-		{ value: 1, label: 'Credit', icon: '💳', description: 'Play with free-play credits' },
-		{ value: 2, label: 'VOI', icon: '🌐', description: 'Play with VOI tokens' },
-		{ value: 4, label: 'ARC200', icon: '🪙', description: 'Play with ARC200 tokens' }
-	];
 
 	/**
 	 * Check if a mode is enabled in the contract
@@ -41,7 +38,16 @@
 
 	// Filter modes to only show enabled ones (exclude bonus mode - it's automatic)
 	const enabledModes = $derived(
-		allModes.filter((m) => isModeEnabled(m.value))
+		[
+			{ value: 1, label: 'Credit', icon: '💳', description: 'Play with free-play credits' },
+			{ value: 2, label: 'VOI', icon: '🌐', description: 'Play with VOI tokens' },
+			{
+				value: 4,
+				label: tokenLabel || 'ARC200',
+				icon: '🪙',
+				description: `Play with ${tokenLabel || 'ARC200'} tokens`
+			}
+		].filter((m) => isModeEnabled(m.value))
 	);
 
 	// Ensure current mode is valid - if not, switch to first available enabled mode
@@ -205,4 +211,3 @@
 		@apply bg-white text-primary-500;
 	}
 </style>
-

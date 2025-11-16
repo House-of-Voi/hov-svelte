@@ -1,13 +1,15 @@
 <script lang="ts">
 	import type { WaysWin } from '$lib/game-engine/types/results';
 
-	interface Props {
-		/** Ways-to-win results */
-		waysWins: WaysWin[];
-		/** Total payout */
-		totalPayout: number;
-		/** Bonus spins awarded */
-		bonusSpinsAwarded?: number;
+interface Props {
+	/** Ways-to-win results */
+	waysWins: WaysWin[];
+	/** Total payout */
+	totalPayout: number;
+	/** Currency label for display */
+	currencyLabel?: string;
+	/** Bonus spins awarded */
+	bonusSpinsAwarded?: number;
 		/** Whether jackpot was hit */
 		jackpotHit?: boolean;
 		/** Jackpot amount */
@@ -21,6 +23,7 @@
 	let {
 		waysWins = [],
 		totalPayout = 0,
+		currencyLabel = 'credits',
 		bonusSpinsAwarded = 0,
 		jackpotHit = false,
 		jackpotAmount = 0,
@@ -59,7 +62,7 @@
 	});
 
 	function formatPayout(amount: number): string {
-		return amount.toLocaleString();
+		return `${amount.toLocaleString()} ${currencyLabel}`;
 	}
 
 	function getSymbolName(symbol: string): string {
@@ -257,4 +260,3 @@
 		animation: fade-in 0.3s ease-out;
 	}
 </style>
-

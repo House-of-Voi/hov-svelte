@@ -63,7 +63,7 @@ export interface BlockchainAdapter {
   // 5reel format
   claimSpin(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome>;
   // W2W format (overload)
-  claimSpinW2W?(betKey: string, claimBlock: number, index?: number): Promise<SpinOutcome>;
+  claimSpinW2W?(betKey: string, claimBlock: number, spinIndex?: number): Promise<SpinOutcome>;
   // 5reel format
   calculateOutcomeFromBlockSeed(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome>;
   getBalance(address: string): Promise<number>;
@@ -539,6 +539,7 @@ export class SlotMachineEngine {
         spinTxId: betKey.txId,
         submitBlock: betKey.submitBlock,
         claimBlock: betKey.claimBlock,
+        spinIndex: betKey.spinIndex,
       } as const;
 
       this.store.updateSpin(spin.id, betKeyData);
@@ -583,8 +584,8 @@ export class SlotMachineEngine {
       const w2wAdapter = this.adapter as any;
       if (w2wAdapter.claimSpinW2W) {
         // Always call claim() to get the outcome from the contract
-        // Pass index if available to enable grid retrieval
-        outcome = await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, spin.index);
+        // Pass spinIndex (from global state delta) if available to enable grid retrieval
+        outcome = await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, spin.spinIndex);
       } else {
         throw new Error('W2W adapter missing claimSpinW2W method');
       }
@@ -715,7 +716,7 @@ export class SlotMachineEngine {
       if (spin.gameType === 'w2w' && this.isW2WAdapter()) {
         const w2wAdapter = this.adapter as any;
         if (w2wAdapter.claimSpinW2W) {
-          await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock);
+          await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, spin.spinIndex);
         }
       }
       // Handle 5reel format

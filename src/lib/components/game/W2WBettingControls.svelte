@@ -6,6 +6,8 @@
 		betAmount: number;
 		/** Current mode (0=bonus, 1=credit/free-play, 2=VOI, 4=ARC200) */
 		mode: number;
+		/** Label to use when displaying ARC200 tokens */
+		tokenLabel?: string;
 		/** Whether spin button is disabled */
 		disabled?: boolean;
 		/** Whether currently spinning */
@@ -21,6 +23,7 @@
 	let {
 		betAmount = 40,
 		mode = 1,
+		tokenLabel = 'ARC200',
 		disabled = false,
 		isSpinning = false,
 		onBetChange,
@@ -59,7 +62,7 @@
 					{:else if mode === 2}
 						<span class="bet-unit">VOI</span>
 					{:else if mode === 4}
-						<span class="bet-unit">ARC200</span>
+						<span class="bet-unit">{tokenLabel}</span>
 					{/if}
 				</div>
 				{#if mode !== 0}
@@ -112,7 +115,7 @@
 				{:else if mode === 2}
 					<span class="bet-unit">VOI</span>
 				{:else if mode === 4}
-					<span class="bet-unit">tokens</span>
+					<span class="bet-unit">{tokenLabel}</span>
 				{/if}
 			</div>
 		</div>
@@ -226,4 +229,3 @@
 		@apply ml-1 text-xs text-neutral-600 dark:text-neutral-400;
 	}
 </style>
-

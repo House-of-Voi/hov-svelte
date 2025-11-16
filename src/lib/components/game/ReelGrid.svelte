@@ -3,6 +3,9 @@
 	import type { WaysWin } from '$lib/game-engine/types/results';
 	import { getSymbolDisplay, PAYLINE_PATTERNS } from '$lib/game-engine/utils/gameConstants';
 	import { onMount, onDestroy } from 'svelte';
+	import type { WinStep } from '$lib/game-engine/utils/w2wWinHighlighter';
+	import { createWinSequence, isPositionInStep } from '$lib/game-engine/utils/w2wWinHighlighter';
+	import PayoutBreakdown from './PayoutBreakdown.svelte';
 
 	interface Props {
 		/** Current visible grid (5 reels x 3 symbols) */
@@ -19,8 +22,16 @@
 		waysWins?: WaysWin[];
 		/** Game type: '5reel' or 'w2w' */
 		gameType?: '5reel' | 'w2w';
+		/** Jackpot amount if triggered (W2W only) */
+		jackpotAmount?: number;
+		/** Bonus spins awarded (W2W only) */
+		bonusSpinsAwarded?: number;
+		/** Game mode (W2W only, for payout formatting) */
+		mode?: number;
 		/** Callback when spin animation completes */
 		onSpinComplete?: () => void;
+		/** Callback when win sequence completes */
+		onWinSequenceComplete?: () => void;
 	}
 
 	let {
@@ -31,7 +42,11 @@
 		winningLines = [],
 		waysWins = [],
 		gameType = '5reel',
-		onSpinComplete
+		jackpotAmount = 0,
+		bonusSpinsAwarded = 0,
+		mode = 1,
+		onSpinComplete,
+		onWinSequenceComplete
 	}: Props = $props();
 
 	// Display grid - shows random symbols while waiting, final grid when outcome is known
@@ -42,6 +57,12 @@
 		['_', '_', '_'],
 		['_', '_', '_']
 	]);
+
+	// Win sequence state (W2W only)
+	let winSequence = $state<WinStep[]>([]);
+	let currentWinStepIndex = $state<number>(-1);
+	let isPlayingWinSequence = $state(false);
+	let winSequenceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let flipInterval: ReturnType<typeof setInterval> | null = null;
 	let animationKey = $state(0); // Key to force animation restart
@@ -64,10 +85,15 @@
 	 */
 	function isWinningPosition(col: number, row: number): boolean {
 		if (gameType === 'w2w') {
-			// For W2W, highlight symbols that are part of ways-to-win
-			// Ways-to-win: consecutive matching symbols left-to-right
+			// For W2W, use sequential win highlighting if sequence is playing
+			if (isPlayingWinSequence && currentWinStepIndex >= 0 && winSequence[currentWinStepIndex]) {
+				const currentStep = winSequence[currentWinStepIndex];
+				return isPositionInStep({ reel: col, row }, currentStep);
+			}
+
+			// Fallback: highlight all wins at once if not in sequence mode
 			if (!waysWins || waysWins.length === 0) return false;
-			
+
 			const symbol = displayGrid[col]?.[row];
 			if (!symbol) return false;
 
@@ -75,21 +101,21 @@
 			return waysWins.some(win => {
 				// Check if symbol matches and is in consecutive reels from left
 				if (win.symbol !== symbol) return false;
-				
+
 				// For ways-to-win, highlight all matching symbols in consecutive reels
 				// Starting from reel 0, check if this position is part of the match
 				let matchReel = 0;
 				for (let reel = 0; reel <= col; reel++) {
 					const reelSymbols = displayGrid[reel] || [];
-					const hasMatch = reelSymbols.includes(win.symbol) || 
+					const hasMatch = reelSymbols.includes(win.symbol) ||
 						reelSymbols.includes('B') || // Wild
 						reelSymbols.includes('C') || // Wild 2x
 						reelSymbols.includes('D');   // Wild 3x
-					
+
 					if (!hasMatch) break;
 					if (reel === col) {
 						// This reel is part of the match - check if this row has the symbol
-						return reelSymbols[row] === win.symbol || 
+						return reelSymbols[row] === win.symbol ||
 							reelSymbols[row] === 'B' ||
 							reelSymbols[row] === 'C' ||
 							reelSymbols[row] === 'D';
@@ -197,7 +223,65 @@
 		// Call completion callback after a brief delay
 		setTimeout(() => {
 			onSpinComplete?.();
+			// Start win sequence for W2W if there are wins
+			if (gameType === 'w2w' && waysWins.length > 0) {
+				startWinSequence();
+			}
 		}, 150);
+	}
+
+	/**
+	 * Start the sequential win highlighting sequence (W2W only)
+	 */
+	function startWinSequence() {
+		if (gameType !== 'w2w' || waysWins.length === 0) return;
+
+		// Clear any existing sequence
+		stopWinSequence();
+
+		// Create win sequence
+		winSequence = createWinSequence(waysWins, displayGrid, jackpotAmount, bonusSpinsAwarded);
+
+		if (winSequence.length === 0) return;
+
+		// Wait 500ms before starting sequence
+		setTimeout(() => {
+			isPlayingWinSequence = true;
+			currentWinStepIndex = 0;
+			playNextWinStep();
+		}, 500);
+	}
+
+	/**
+	 * Play the next step in the win sequence
+	 */
+	function playNextWinStep() {
+		if (currentWinStepIndex >= winSequence.length) {
+			// Sequence complete
+			stopWinSequence();
+			onWinSequenceComplete?.();
+			return;
+		}
+
+		const currentStep = winSequence[currentWinStepIndex];
+
+		// Schedule next step
+		winSequenceTimer = setTimeout(() => {
+			currentWinStepIndex++;
+			playNextWinStep();
+		}, currentStep.duration);
+	}
+
+	/**
+	 * Stop the win sequence
+	 */
+	function stopWinSequence() {
+		if (winSequenceTimer) {
+			clearTimeout(winSequenceTimer);
+			winSequenceTimer = null;
+		}
+		isPlayingWinSequence = false;
+		currentWinStepIndex = -1;
 	}
 
 	/**
@@ -274,53 +358,73 @@
 		if (flipInterval) {
 			clearInterval(flipInterval);
 		}
+		if (winSequenceTimer) {
+			clearTimeout(winSequenceTimer);
+		}
 	});
 </script>
 
-<div class="reel-grid">
-	{#each Array(5) as _, reelIndex}
-		<div class="reel-container">
-			<div class="reel-mask">
-				<div class="reel-strip">
-					{#each Array(3) as _, row}
-						{@const symbol = displayGrid[reelIndex]?.[row] || '_'}
-						{@const display = getSymbolDisplay(symbol, gameType)}
-						{@const isWinner = isWinningPosition(reelIndex, row)}
-						{@const isFlipping = waitingForOutcome || isSpinning}
-						{@const isWildSymbol = gameType === 'w2w' && isWild(symbol)}
-						{@const wildMultiplier = gameType === 'w2w' ? getWildMultiplier(symbol) : 0}
-						{@const isSpecial = gameType === 'w2w' && isSpecialSymbol(symbol)}
-						<div
-							class="symbol"
-							class:winning={isWinner}
-							class:flipping={isFlipping}
-							class:wild={isWildSymbol}
-							class:special={isSpecial}
-							style="animation-delay: {row * 50}ms"
-							data-key={animationKey}
-						>
-							<div class="symbol-content">
-								<span
-									class="symbol-emoji"
-									style="color: {display.color}; text-shadow: {isWinner
-										? `0 0 20px ${display.glowColor}`
-										: 'none'}"
-								>
-									{display.emoji}
-								</span>
-								{#if wildMultiplier > 0}
-									<div class="wild-multiplier">×{wildMultiplier}</div>
-								{/if}
+<div class="reel-grid-container">
+	<div class="reel-grid">
+		{#each Array(5) as _, reelIndex}
+			<div class="reel-container">
+				<div class="reel-mask">
+					<div class="reel-strip">
+						{#each Array(3) as _, row}
+							{@const symbol = displayGrid[reelIndex]?.[row] || '_'}
+							{@const display = getSymbolDisplay(symbol, gameType)}
+							{@const isWinner = isWinningPosition(reelIndex, row)}
+							{@const isFlipping = waitingForOutcome || isSpinning}
+							{@const isWildSymbol = gameType === 'w2w' && isWild(symbol)}
+							{@const wildMultiplier = gameType === 'w2w' ? getWildMultiplier(symbol) : 0}
+							{@const isSpecial = gameType === 'w2w' && isSpecialSymbol(symbol)}
+							<div
+								class="symbol"
+								class:winning={isWinner}
+								class:flipping={isFlipping}
+								class:wild={isWildSymbol}
+								class:special={isSpecial}
+								style="animation-delay: {row * 50}ms"
+								data-key={animationKey}
+							>
+								<div class="symbol-content">
+									<span
+										class="symbol-emoji"
+										style="color: {display.color}; text-shadow: {isWinner
+											? `0 0 20px ${display.glowColor}`
+											: 'none'}"
+									>
+										{display.emoji}
+									</span>
+									{#if wildMultiplier > 0}
+										<div class="wild-multiplier">×{wildMultiplier}</div>
+									{/if}
+								</div>
 							</div>
-						</div>
-					{/each}
+						{/each}
+					</div>
 				</div>
 			</div>
-		</div>
-	{/each}
+		{/each}
+	</div>
+
+	<!-- Payout breakdown overlay (W2W only) -->
+	{#if gameType === 'w2w' && isPlayingWinSequence && currentWinStepIndex >= 0}
+		<PayoutBreakdown
+			currentStep={winSequence[currentWinStepIndex]}
+			currentStepIndex={currentWinStepIndex}
+			winSequence={winSequence}
+			mode={mode}
+			visible={isPlayingWinSequence}
+		/>
+	{/if}
 </div>
 
 <style>
+	.reel-grid-container {
+		position: relative;
+	}
+
 	.reel-grid {
 		display: grid;
 		grid-template-columns: repeat(5, 1fr);
