@@ -32,7 +32,7 @@
 
 	let { spinQueue, tokenLabel = 'ARC200', onSpinClick }: Props = $props();
 
-	// Separate active and completed spins
+	// Separate active and completed spins (preserve original order)
 	let activeSpins = $derived(
 		spinQueue.filter((s) => s.status === 'pending' || s.status === 'submitted')
 	);
@@ -40,6 +40,10 @@
 		spinQueue.filter((s) => s.status === 'completed' || s.status === 'failed')
 	);
 	let pendingCount = $derived(activeSpins.length);
+	
+	// Display all spins in their original insertion order (FIFO)
+	// This ensures the order never changes regardless of when spins complete
+	let orderedSpins = $derived([...spinQueue]);
 
 	/**
 	 * Format elapsed time since spin was queued
@@ -111,10 +115,11 @@
 					No spins yet. Place a bet to get started!
 				</div>
 			{:else}
-				<!-- Active Spins (Pending/Submitted) -->
-				{#if activeSpins.length > 0}
-					<div class="space-y-2 mb-3">
-						{#each activeSpins as spin (spin.clientSpinId)}
+				<!-- Display all spins in their original insertion order (FIFO) -->
+				<div class="space-y-2">
+					{#each orderedSpins as spin (spin.clientSpinId)}
+						{#if spin.status === 'pending' || spin.status === 'submitted'}
+							<!-- Active Spins (Pending/Submitted) -->
 							<div class="queue-item active">
 								<div class="flex items-start justify-between gap-3">
 									<div class="flex-1">
@@ -140,14 +145,8 @@
 									<div class="spinner"></div>
 								</div>
 							</div>
-						{/each}
-					</div>
-				{/if}
-
-				<!-- Completed/Failed Spins -->
-				{#if completedSpins.length > 0}
-					<div class="space-y-2">
-						{#each completedSpins as spin (spin.clientSpinId)}
+						{:else}
+							<!-- Completed/Failed Spins -->
 							<button
 								type="button"
 								class="queue-item completed {spin.status === 'completed'
@@ -202,9 +201,9 @@
 									</div>
 								</div>
 							</button>
-						{/each}
-					</div>
-				{/if}
+						{/if}
+					{/each}
+				</div>
 			{/if}
 		</div>
 	</CardContent>

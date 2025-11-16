@@ -28,6 +28,7 @@ import type {
 import { GameEventType, SpinStatus } from './types';
 import { validateBet, validateBalance } from './utils/validation';
 import { getWinLevel } from './types/results';
+import { logger } from '$lib/utils/logger';
 
 /**
  * Spin parameters for 5reel games
@@ -62,8 +63,10 @@ export interface BlockchainAdapter {
   submitSpinW2W?(betAmount: number, index: number, mode: number, walletAddress: string): Promise<BetKey>;
   // 5reel format
   claimSpin(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome>;
-  // W2W format (overload)
-  claimSpinW2W?(betKey: string, claimBlock: number, spinIndex?: number): Promise<SpinOutcome>;
+  // W2W format - get outcome (grid + calculated payouts) without claiming
+  getOutcomeW2W?(betKey: string, claimBlock: number, spinIndex: number, mode: number): Promise<SpinOutcome>;
+  // W2W format - execute claim transaction (returns actual payout for validation)
+  claimSpinW2W?(betKey: string, claimBlock: number, calculatedPayout?: number): Promise<number>;
   // 5reel format
   calculateOutcomeFromBlockSeed(betKey: string, claimBlock: number, betPerLine: number, paylines: number): Promise<SpinOutcome>;
   getBalance(address: string): Promise<number>;
@@ -579,16 +582,90 @@ export class SlotMachineEngine {
 
     let outcome: SpinOutcome;
 
-    // Handle W2W format - always call claim() to get outcome
+    // Handle W2W format - get outcome immediately, claim in background
     if (spin.gameType === 'w2w' && this.isW2WAdapter()) {
       const w2wAdapter = this.adapter as any;
-      if (w2wAdapter.claimSpinW2W) {
-        // Always call claim() to get the outcome from the contract
-        // Pass spinIndex (from global state delta) if available to enable grid retrieval
-        outcome = await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, spin.spinIndex);
-      } else {
+      
+      // Check for required methods
+      if (!w2wAdapter.getOutcomeW2W) {
+        throw new Error('W2W adapter missing getOutcomeW2W method');
+      }
+      if (!w2wAdapter.claimSpinW2W) {
         throw new Error('W2W adapter missing claimSpinW2W method');
       }
+      
+      // Validate required parameters
+      // IMPORTANT: We must use spin.spinIndex (which is spin_count - 1 from global state delta)
+      // NOT spin.index (which is the user-provided index parameter)
+      // The contract's Bet.spin_index field stores self.spin_count, which is what we need for grid retrieval
+      if (!spin.spinIndex && spin.spinIndex !== 0) {
+        throw new Error('W2W spin missing spinIndex (spin_count from global state) - cannot retrieve grid');
+      }
+      if (spin.mode === undefined) {
+        throw new Error('W2W spin missing mode - cannot calculate payout');
+      }
+      
+      // Get outcome immediately (grid + calculated payouts)
+      // This is fast and returns before claim transaction completes
+      // Uses spin.spinIndex which is the spin_count value from contract's global state
+      let calculatedPayout = 0;
+      console.log('spin', spin);
+      try {
+        outcome = await w2wAdapter.getOutcomeW2W(
+          spin.betKey,
+          spin.claimBlock,
+          spin.spinIndex, // This is spin_count - 1 from global state delta, required for getCdfGridFromSeedAndSpin
+          spin.mode
+        );
+        calculatedPayout = outcome.totalPayout;
+      } catch (outcomeError) {
+        // If outcome retrieval fails, we still need to claim
+        // Create a minimal outcome for now, claim will provide actual data
+        const log = logger.scope('SlotMachineEngine:waitAndClaimOutcome');
+        log.warn('failed to get outcome, will still claim', { spinId: spin.id, error: outcomeError });
+        outcome = {
+          grid: [],
+          waysWins: [],
+          totalPayout: 0,
+          blockNumber: spin.claimBlock,
+          blockSeed: '',
+          betKey: spin.betKey,
+          verified: false
+        };
+      }
+      
+      // Always execute claim transaction in background (regardless of win/loss)
+      // This is required to:
+      // - Transfer funds if there's a payout (even if 0)
+      // - Update bonus spins on contract (if bonus was triggered)
+      // - Clean up the bet from contract storage
+      // - Update user's bonus spin balance
+      w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, calculatedPayout)
+        .then((actualPayout: number) => {
+          // Update outcome as verified after claim completes
+          const log = logger.scope('SlotMachineEngine:waitAndClaimOutcome');
+          log.info('background claim completed', {
+            spinId: spin.id,
+            calculatedPayout,
+            actualPayout
+          });
+          
+          // Update outcome to verified and use actual payout if outcome was incomplete
+          if (outcome) {
+            outcome.verified = true;
+            // If we had a failed outcome retrieval, update with actual payout
+            if (outcome.totalPayout === 0 && actualPayout > 0) {
+              outcome.totalPayout = actualPayout;
+            }
+            this.store.updateSpin(spin.id, { outcome });
+          }
+        })
+        .catch((error: Error) => {
+          const log = logger.scope('SlotMachineEngine:waitAndClaimOutcome');
+          log.error('background claim failed', { spinId: spin.id, error });
+          // Don't fail the spin - outcome is already shown to user
+          // Just log the error for debugging
+        });
     }
     // Handle 5reel format
     else if (spin.betPerLine !== undefined && spin.paylines !== undefined) {
@@ -637,7 +714,7 @@ export class SlotMachineEngine {
       totalBet: spin.totalBet,
       winnings: outcome.totalPayout,
       netProfit: outcome.totalPayout - spin.totalBet,
-      winLevel: getWinLevel(outcome.totalPayout, spin.totalBet),
+      winLevel: getWinLevel(outcome.totalPayout, spin.totalBet, outcome.jackpotHit),
       isWin: outcome.totalPayout > 0,
       timestamp: Date.now(),
       spinTxId: spin.spinTxId || '',
@@ -713,10 +790,14 @@ export class SlotMachineEngine {
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Handle W2W format
+      // Note: This is an old code path - the new flow uses getOutcomeW2W + claimSpinW2W in waitAndClaimOutcome
+      // This method may not be called anymore, but keeping for backward compatibility
       if (spin.gameType === 'w2w' && this.isW2WAdapter()) {
         const w2wAdapter = this.adapter as any;
         if (w2wAdapter.claimSpinW2W) {
-          await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, spin.spinIndex);
+          // claimSpinW2W now takes calculatedPayout, not spinIndex
+          // If we don't have outcome yet, pass undefined
+          await w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, undefined);
         }
       }
       // Handle 5reel format

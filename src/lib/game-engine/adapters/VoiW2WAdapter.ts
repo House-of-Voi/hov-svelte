@@ -7,14 +7,13 @@
 
 import algosdk from 'algosdk';
 import * as algokit from '@algorandfoundation/algokit-utils';
-import type { TransactionWithSigner } from '@algorandfoundation/algokit-utils/types/transaction';
 import { CONTRACT } from 'ulujs';
 import { createAlgoKitTransactionSigner, type WalletSigner } from '$lib/wallet/algokitTransactionSigner';
 import type { BlockchainAdapter } from '../SlotMachineEngine';
 import type { BetKey, SpinOutcome, SlotMachineConfig, SymbolId } from '../types';
 import { logger } from '$lib/utils/logger';
 import { SlotMachineClient, APP_SPEC } from '$lib/clients/SlotMachineClientW2W';
-import { calculateW2WPayouts, isJackpotTriggered, isBonusTriggered, countScatterSymbols } from '../utils/w2wPayoutCalculator';
+import { calculateW2WPayouts, isJackpotTriggered, isBonusTriggered, countScatterSymbols, calculateCompletePayout, type CompletePayoutResult } from '../utils/w2wPayoutCalculator';
 
 /**
  * W2W adapter configuration
@@ -190,11 +189,12 @@ export class VoiW2WAdapter implements BlockchainAdapter {
       const contractAddress = algosdk.getApplicationAddress(Number(this.config.contractId));
       const suggestedParams = await this.algodClient.getTransactionParams().do();
       const signerAdapter = createAlgoKitTransactionSigner(this.config.walletSigner);
+      const walletAddress = this.config.walletSigner.address;
       
       // Validate and adjust bet amount based on mode
       let actualBetAmount = betAmount;
       let paymentAmount = 0; // No payment transaction by default
-      let arc200ApproveTxnWithSigner: TransactionWithSigner | null = null;
+      let arc200ApproveTxnWithSigner: Awaited<ReturnType<typeof algokit.getTransactionWithSigner>> | null = null;
 
       if (mode === 0 || mode === 1) {
         // Bonus mode: bet_amount must be 0
@@ -244,9 +244,9 @@ export class VoiW2WAdapter implements BlockchainAdapter {
 
         // Build ARC200 approve transaction (approve contract to spend bet amount)
         const approveTxn = this.createArc200ApproveTransaction(
-          walletAddress as string,
+          walletAddress,
           tokenAppId,
-          contractAddress,
+          algosdk.encodeAddress(contractAddress.publicKey),
           actualBetAmount,
           suggestedParams
         );
@@ -408,9 +408,325 @@ export class VoiW2WAdapter implements BlockchainAdapter {
     throw new Error('W2W adapter does not support 5reel format. Use claimSpinW2W instead.');
   }
 
-  async claimSpinW2W(betKey: string, claimBlock: number, spinIndex?: number): Promise<SpinOutcome> {
+  /**
+   * Get grid for a W2W spin without claiming
+   * Must be called after claim block is reached (block seed needed)
+   * 
+   * @param betKey Bet key for the spin
+   * @param claimBlock Block number where outcome can be claimed
+   * @param spinIndex Spin index from global state (spin_count)
+   * @returns Grid as SymbolId[][]
+   */
+  async getGridW2W(betKey: string, claimBlock: number, spinIndex: number): Promise<SymbolId[][]> {
+    const log = logger.scope('VoiW2WAdapter:getGridW2W');
+    log.info('getting W2W grid', { betKey, claimBlock, spinIndex });
+
+    if (!this.slotMachineClient || !this.algodClient || !this.config.walletSigner) {
+      throw new Error('Adapter not initialized or wallet signer missing');
+    }
+
+    try {
+      const walletAddress = this.config.walletSigner.address;
+      
+      // Get block seed as bytes (32 bytes) for the contract call
+      // The contract's _get_spin_results uses: seed = _get_block_seed(claim_round)
+      const blockSeedBytes = await this.getBlockSeedBytes(claimBlock);
+      
+      if (blockSeedBytes.length !== 32) {
+        throw new Error(`Block seed is not 32 bytes, got ${blockSeedBytes.length}`);
+      }
+
+      log.info('retrieving grid from contract', {
+        claimBlock,
+        spinIndex,
+        blockSeedLength: blockSeedBytes.length
+      });
+
+      // Use composer to simulate getCdfGridFromSeedAndSpin (readonly call)
+      // The contract method does: grid_seed = sha256(seed + spin_index.bytes)
+      const signerAdapter = createAlgoKitTransactionSigner(this.config.walletSigner);
+      const composer = this.slotMachineClient.compose();
+      composer.getCdfGridFromSeedAndSpin(
+        {
+          seed: blockSeedBytes,
+          spinIndex: BigInt(spinIndex),
+        },
+        {
+          sender: {
+            addr: walletAddress as unknown as algosdk.Address,
+            signer: signerAdapter,
+          },
+          sendParams: {
+            populateAppCallResources: true,
+            skipSending: true, // Don't send, just simulate
+            fee: algokit.microAlgos(300_000)
+          } as any, // skipSending is needed for simulation but not in type
+          apps: [ 47060800 ]
+        }
+      );
+
+      // Simulate the transaction to get the grid
+      const simResult = await composer.simulate({
+        allowEmptySignatures: true,
+        allowMoreLogging: true
+      });
+
+      // Extract grid bytes from simulation result
+      // The returns array contains the return values from each method call
+      // simResult.returns[0] is an array of 15 numbers (byte values: 0-255)
+      const returns = simResult.returns as any;
+      const gridBytes = (returns && Array.isArray(returns) && returns.length > 0) 
+        ? (returns[0] as Array<number>)
+        : undefined;
+      
+      if (!gridBytes || !Array.isArray(gridBytes) || gridBytes.length !== 15) {
+        throw new Error(`Invalid grid bytes from contract: ${gridBytes?.length || 0} bytes`);
+      }
+
+      // Convert grid bytes to 2D array (5 reels × 3 rows)
+      // Contract returns grid as COLUMN-MAJOR: [reel0_row0, reel0_row1, reel0_row2, reel1_row0, reel1_row1, ...]
+      // So: bytes 0-2 = reel 0, bytes 3-5 = reel 1, bytes 6-8 = reel 2, bytes 9-11 = reel 3, bytes 12-14 = reel 4
+      // Contract stores symbols as ASCII bytes that directly map to symbol IDs: '0'-'9' and 'A'-'F'
+      
+      // Convert bytes to characters (these are the symbol IDs)
+      const gridString = gridBytes.map(byte => String.fromCharCode(byte)).join('');
+      
+      // Build grid as columns (reels) with rows
+      // grid[reel][row] format expected by ReelGrid component
+      const symbolGrid: SymbolId[][] = [];
+      for (let reel = 0; reel < NUM_REELS; reel++) {
+        const reelSymbols: SymbolId[] = [];
+        for (let row = 0; row < NUM_ROWS; row++) {
+          const gridIndex = reel * NUM_ROWS + row;
+          const symbol = gridString[gridIndex] as SymbolId;
+          reelSymbols.push(symbol);
+        }
+        symbolGrid.push(reelSymbols);
+      }
+      
+      log.info('Grid retrieved from contract', { 
+        gridString: gridString,
+        visualRows: {
+          row1: `${gridString[0]} ${gridString[3]} ${gridString[6]} ${gridString[9]} ${gridString[12]}`,
+          row2: `${gridString[1]} ${gridString[4]} ${gridString[7]} ${gridString[10]} ${gridString[13]}`,
+          row3: `${gridString[2]} ${gridString[5]} ${gridString[8]} ${gridString[11]} ${gridString[14]}`
+        }
+      });
+
+      return symbolGrid;
+    } catch (error) {
+      log.error('failed to get grid', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract bet amount from bet key
+   * Bet key format: address (32 bytes) + betAmount (8 bytes) + index (8 bytes) + mode (8 bytes) = 56 bytes
+   */
+  private extractBetAmountFromBetKey(betKey: string): number {
+    try {
+      const betKeyBytes = Buffer.from(betKey, 'hex');
+      if (betKeyBytes.length !== 56) {
+        throw new Error(`Invalid bet key length: expected 56 bytes, got ${betKeyBytes.length}`);
+      }
+      // Bet amount is at bytes 32-40 (8 bytes, uint64)
+      const betAmountBytes = betKeyBytes.slice(32, 40);
+      return Number(algosdk.decodeUint64(betAmountBytes, 'bigint'));
+    } catch (error) {
+      logger.scope('VoiW2WAdapter:extractBetAmountFromBetKey').warn('failed to extract bet amount from bet key', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Calculate payout for a W2W grid using client-side logic
+   * Validates against contract logic
+   * 
+   * @param grid The symbol grid
+   * @param mode Spin mode: 0=bonus, 1=credit, 2=network, 4=token
+   * @param isBonusSpin Whether this is a bonus spin (mode === 0)
+   * @param betAmount Bet amount in microAlgos (for network/token modes) or credits (for credit mode)
+   * @returns Complete payout result with ways wins, total payout, bonus spins, jackpot info
+   */
+  async calculatePayoutW2W(
+    grid: SymbolId[][],
+    mode: number,
+    isBonusSpin: boolean,
+    betAmount?: number
+  ): Promise<CompletePayoutResult> {
+    const log = logger.scope('VoiW2WAdapter:calculatePayoutW2W');
+    log.info('calculating W2W payout', { mode, isBonusSpin, betAmount });
+
+    if (!this.slotMachineClient) {
+      throw new Error('Adapter not initialized');
+    }
+
+    try {
+      // Get machine state to retrieve jackpot values
+      const machineState = await this.getMachineState();
+      
+      // Determine jackpot value based on mode
+      // Contract uses jackpot_network for network mode, jackpot_token for token mode, jackpot_credit for credit mode
+      let jackpotValue = 0;
+      if (mode === 2) {
+        // Network mode: use network jackpot (in microAlgos)
+        jackpotValue = Number(machineState.jackpot_network || 0);
+      } else if (mode === 4) {
+        // Token mode: use token jackpot (in microAlgos equivalent)
+        const tokenJackpot = machineState.jackpot_token;
+        if (tokenJackpot && tokenJackpot.length > 0) {
+          // Token jackpot is stored as Uint256 bytes, convert to number
+          // Take last 8 bytes (Uint64) for the value
+          const bytes = new Uint8Array(tokenJackpot);
+          if (bytes.length >= 8) {
+            const last8Bytes = bytes.slice(-8);
+            jackpotValue = Number(algosdk.decodeUint64(Buffer.from(last8Bytes), 'bigint'));
+          }
+        }
+      } else if (mode === 1) {
+        // Credit mode: use credit jackpot (in credits/microVOI)
+        jackpotValue = Number(machineState.jackpot_credit || 0);
+      } else if (mode === 0) {
+        // Bonus mode: use network jackpot (bonus spins can win jackpot)
+        jackpotValue = Number(machineState.jackpot_network || 0);
+      }
+
+      log.info('jackpot value', { mode, jackpotValue });
+
+      // Calculate complete payout using client-side logic
+      const payoutResult = calculateCompletePayout(grid, isBonusSpin, jackpotValue);
+
+      // Apply mode-specific multipliers
+      // Contract applies multipliers in claim methods:
+      // - Bonus mode (0): 1.75x multiplier (contract line 5245)
+      // - Credit mode (1): 1x multiplier (contract line 5309)
+      // - Network mode (2): payout = spin_result.payout.native * bet_amount.native (contract line 5369)
+      // - Token mode (4): payout = spin_result.payout.native * bet_amount.native (contract line 5411)
+      
+      let finalTotalPayout = payoutResult.totalPayout;
+      let finalLinePayout = payoutResult.linePayout;
+
+      if (mode === 0) {
+        // Bonus mode: payout = base_payout * 40_000_000 (40 VOI in microAlgos)
+        // This represents the fixed bet amount for bonus spins
+        finalTotalPayout = payoutResult.totalPayout * 40_000_000;
+        finalLinePayout = payoutResult.linePayout * 40_000_000;
+        log.info('applied bonus mode multiplier (40_000_000)', { 
+          original: payoutResult.totalPayout, 
+          final: finalTotalPayout 
+        });
+      } else if (mode === 2 || mode === 4) {
+        // Network/Token mode: payout = base_payout * bet_amount
+        // Contract line 5369/5411: payout = spin_result.payout.native * bet.bet_amount.native
+        // Our calculateCompletePayout returns in credits (same units as paytable)
+        // So we multiply by bet_amount (which is in microAlgos for network/token modes)
+        if (!betAmount || betAmount === 0) {
+          log.warn('betAmount not provided for network/token mode, payout may be incorrect');
+        } else {
+          finalTotalPayout = payoutResult.totalPayout * betAmount;
+          finalLinePayout = payoutResult.linePayout * betAmount;
+          log.info('applied network/token mode multiplier (bet amount)', { 
+            original: payoutResult.totalPayout, 
+            betAmount,
+            final: finalTotalPayout 
+          });
+        }
+      }
+      // Credit mode (1): no multiplier, payout stays as is
+
+      return {
+        ...payoutResult,
+        totalPayout: finalTotalPayout,
+        linePayout: finalLinePayout
+      };
+    } catch (error) {
+      log.error('failed to calculate payout', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get outcome for a W2W spin (grid + calculated payouts) without claiming
+   * Returns immediately after claim block is reached, before claim transaction completes
+   * 
+   * @param betKey Bet key for the spin
+   * @param claimBlock Block number where outcome can be claimed
+   * @param spinIndex Spin index from global state (spin_count)
+   * @param mode Spin mode: 0=bonus, 1=credit, 2=network, 4=token
+   * @returns SpinOutcome with grid and calculated payouts
+   */
+  async getOutcomeW2W(
+    betKey: string,
+    claimBlock: number,
+    spinIndex: number,
+    mode: number
+  ): Promise<SpinOutcome> {
+    const log = logger.scope('VoiW2WAdapter:getOutcomeW2W');
+    log.info('getting W2W outcome', { betKey, claimBlock, spinIndex, mode });
+
+    if (!spinIndex) {
+      throw new Error('spinIndex is required for getOutcomeW2W');
+    }
+
+    try {
+      // Get grid using getGridW2W (requires claim block to be reached)
+      const symbolGrid = await this.getGridW2W(betKey, claimBlock, spinIndex);
+
+      // Determine if this is a bonus spin
+      const isBonusSpin = mode === 0;
+
+      // Extract bet amount from bet key for network/token modes
+      const betAmount = this.extractBetAmountFromBetKey(betKey);
+      log.info('extracted bet amount from bet key', { betAmount, mode });
+
+      // Calculate payouts using client-side logic
+      const payoutResult = await this.calculatePayoutW2W(symbolGrid, mode, isBonusSpin, betAmount);
+
+      // Get block seed for reference
+      const blockSeedHex = await this.getBlockSeed(claimBlock);
+
+      // Build SpinOutcome with calculated values
+      const outcome: SpinOutcome = {
+        grid: symbolGrid,
+        waysWins: payoutResult.waysWins || [],
+        totalPayout: payoutResult.totalPayout,
+        blockNumber: claimBlock,
+        blockSeed: blockSeedHex,
+        betKey,
+        verified: false, // Not yet verified via claim transaction
+        bonusSpinsAwarded: payoutResult.bonusSpinsAwarded,
+        jackpotHit: payoutResult.jackpotHit === 1,
+        jackpotAmount: payoutResult.jackpotAmount
+      };
+
+      log.info('outcome calculated', {
+        totalPayout: outcome.totalPayout,
+        bonusSpinsAwarded: outcome.bonusSpinsAwarded,
+        jackpotHit: outcome.jackpotHit,
+        waysWinsCount: outcome.waysWins?.length || 0
+      });
+
+      return outcome;
+    } catch (error) {
+      log.error('failed to get outcome', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Execute claim transaction for a W2W spin
+   * This should be called in background after getOutcomeW2W returns
+   * Returns the actual payout from contract for validation
+   * 
+   * @param betKey Bet key for the spin
+   * @param claimBlock Block number where outcome can be claimed
+   * @param calculatedPayout The payout calculated by getOutcomeW2W (for validation)
+   * @returns Actual payout amount from contract (for validation)
+   */
+  async claimSpinW2W(betKey: string, claimBlock: number, calculatedPayout?: number): Promise<number> {
     const log = logger.scope('VoiW2WAdapter:claimSpinW2W');
-    log.info('claiming W2W spin', { betKey, claimBlock, spinIndex });
+    log.info('executing claim transaction', { betKey, claimBlock, calculatedPayout });
 
     if (!this.slotMachineClient || !this.algodClient || !this.config.walletSigner) {
       throw new Error('Adapter not initialized or wallet signer missing');
@@ -425,13 +741,12 @@ export class VoiW2WAdapter implements BlockchainAdapter {
 
       const walletAddress = this.config.walletSigner.address;
 
+      // Ensure claim block has been reached
       const status = await this.algodClient.statusAfterBlock(claimBlock).do();
-      // const status = await this.algodClient.status().do();
       const currentRound = Number(status.lastRound);
-      console.log('currentRound', currentRound);
-      console.log('claimBlock', status);
+      log.info('claim block status', { claimBlock, currentRound });
 
-      // Use SlotMachineClient to call claim
+      // Execute claim transaction
       const signerAdapter = createAlgoKitTransactionSigner(this.config.walletSigner);
       const result = await this.slotMachineClient.claim(
         {
@@ -448,178 +763,34 @@ export class VoiW2WAdapter implements BlockchainAdapter {
         }
       );
 
-      console.log('result', result);
-
       // Get payout from return value - claim() returns uint64 (payout amount)
       const payout = result.return || 0n;
       const payoutAmount = typeof payout === 'bigint' ? Number(payout) : (typeof payout === 'number' ? payout : 0);
 
-      log.info('claim completed', { payoutAmount });
+      log.info('claim transaction completed', { payoutAmount });
 
-      // Get block seed for this claim block (as hex string for reference)
-      const blockSeedHex = await this.getBlockSeed(claimBlock);
-
-      // Get grid from contract using getCdfGridFromSeedAndSpin if spinIndex is provided
-      let symbolGrid: SymbolId[][] = [];
-      if (spinIndex !== undefined) {
-        try {
-          // Get block seed as bytes (32 bytes) for the contract call
-          // The confirmation block is where the claim transaction was confirmed
-          // For now, we'll use the claimBlock itself
-          const confirmationBlock = claimBlock;
-          const blockSeedBytes = await this.getBlockSeedBytes(confirmationBlock);
-
-          console.log('cdf grid from seed and spin', {
-            seed: blockSeedBytes,
-            spinIndex: BigInt(spinIndex),
+      // Validate calculated payout against actual payout from contract
+      if (calculatedPayout !== undefined) {
+        const difference = Math.abs(payoutAmount - calculatedPayout);
+        const tolerance = 1; // Allow 1 unit difference for rounding
+        
+        if (difference > tolerance) {
+          log.warn('Payout mismatch detected', {
+            calculated: calculatedPayout,
+            actual: payoutAmount,
+            difference
           });
-          
-          if (blockSeedBytes.length !== 32) {
-            log.warn('Block seed is not 32 bytes, cannot get grid', { length: blockSeedBytes.length });
-          } else {
-            // Use composer to simulate getCdfGridFromSeedAndSpin (readonly call)
-            const composer = this.slotMachineClient.compose();
-            composer.getCdfGridFromSeedAndSpin(
-              {
-                seed: blockSeedBytes,
-                spinIndex: BigInt(spinIndex),
-              },
-              {
-                sender: {
-                  addr: walletAddress as unknown as algosdk.Address,
-                  signer: signerAdapter,
-                },
-                sendParams: {
-                  populateAppCallResources: true,
-                  skipSending: true, // Don't send, just simulate
-                  fee: algokit.microAlgos(300_000)
-                } as any, // skipSending is needed for simulation but not in type
-                apps: [ 47060800 ]
-              }
-            );
-
-            // Simulate the transaction to get the grid
-            const simResult = await composer.simulate({
-              allowEmptySignatures: true,
-              allowMoreLogging: true
-            });
-
-            // Log raw simulation result for troubleshooting
-            const rawReturns = simResult.returns as any;
-            console.log('🔍 RAW CDF simulation result:', {
-              returns: rawReturns,
-              returns0: rawReturns?.[0],
-              returns0Length: rawReturns?.[0]?.length
-            });
-
-            // Extract grid bytes from simulation result
-            // The returns array contains the return values from each method call
-            // simResult.returns[0] is an array of 15 numbers (byte values: 0-255)
-            const returns = simResult.returns as any;
-            const gridBytes = (returns && Array.isArray(returns) && returns.length > 0) 
-              ? (returns[0] as Array<number>)
-              : undefined;
-            
-            console.log('🔍 Extracted gridBytes:', {
-              gridBytes,
-              gridBytesType: typeof gridBytes,
-              gridBytesIsArray: Array.isArray(gridBytes),
-              gridBytesLength: gridBytes?.length,
-              gridBytesValues: gridBytes
-            });
-            
-            if (gridBytes && Array.isArray(gridBytes) && gridBytes.length === 15) {
-              // Convert grid bytes to 2D array (5 reels × 3 rows)
-              // Contract returns grid as COLUMN-MAJOR: [reel0_row0, reel0_row1, reel0_row2, reel1_row0, reel1_row1, ...]
-              // So: bytes 0-2 = reel 0, bytes 3-5 = reel 1, bytes 6-8 = reel 2, bytes 9-11 = reel 3, bytes 12-14 = reel 4
-              // Contract stores symbols as ASCII bytes that directly map to symbol IDs: '0'-'9' and 'A'-'F'
-              
-              // Convert bytes to characters (these are the symbol IDs)
-              const gridString = gridBytes.map(byte => String.fromCharCode(byte)).join('');
-              
-              // Build grid as columns (reels) with rows
-              // grid[reel][row] format expected by ReelGrid component
-              // Index formula: reel * NUM_ROWS + row
-              // Reel 0: indices 0,1,2 (rows 0-2)
-              // Reel 1: indices 3,4,5 (rows 0-2)
-              // Reel 2: indices 6,7,8 (rows 0-2)
-              // Reel 3: indices 9,10,11 (rows 0-2)
-              // Reel 4: indices 12,13,14 (rows 0-2)
-              for (let reel = 0; reel < NUM_REELS; reel++) {
-                const reelSymbols: SymbolId[] = [];
-                for (let row = 0; row < NUM_ROWS; row++) {
-                  const gridIndex = reel * NUM_ROWS + row;
-                  const symbol = gridString[gridIndex] as SymbolId;
-                  reelSymbols.push(symbol);
-                }
-                symbolGrid.push(reelSymbols);
-              }
-              
-              log.info('Grid retrieved from contract', { 
-                gridString: gridString,
-                visualRows: {
-                  row1: `${gridString[0]} ${gridString[3]} ${gridString[6]} ${gridString[9]} ${gridString[12]}`,
-                  row2: `${gridString[1]} ${gridString[4]} ${gridString[7]} ${gridString[10]} ${gridString[13]}`,
-                  row3: `${gridString[2]} ${gridString[5]} ${gridString[8]} ${gridString[11]} ${gridString[14]}`
-                }
-              });
-            } else {
-              console.warn('Invalid grid bytes from contract', { 
-                length: gridBytes?.length || 0,
-                isArray: Array.isArray(gridBytes),
-                gridBytes: gridBytes
-              });
-            }
-          }
-        } catch (gridError) {
-          log.warn('Failed to get grid from contract, continuing without grid', { error: gridError });
-        }
-      } else {
-        log.warn('SpinIndex not provided, cannot retrieve grid from contract');
-      }
-
-
-      // Calculate ways wins from the grid
-      let waysWins = [];
-      let bonusSpinsAwarded = 0;
-      let jackpotHit = false;
-      let jackpotAmountValue = 0;
-
-      if (symbolGrid.length > 0) {
-        // Calculate ways wins using our client-side calculator
-        waysWins = calculateW2WPayouts(symbolGrid);
-
-        // Check for bonus trigger
-        if (isBonusTriggered(symbolGrid)) {
-          bonusSpinsAwarded = 8;
-        }
-
-        // Check for jackpot trigger
-        if (isJackpotTriggered(symbolGrid)) {
-          jackpotHit = true;
-          // Jackpot amount is included in the payout, so we can estimate it
-          // by subtracting line wins from total payout
-          const linePayoutTotal = waysWins.reduce((sum, win) => sum + win.payout, 0);
-          jackpotAmountValue = payoutAmount - linePayoutTotal;
+        } else {
+          log.info('Payout validation passed', {
+            calculated: calculatedPayout,
+            actual: payoutAmount
+          });
         }
       }
 
-      const outcome: SpinOutcome = {
-        grid: symbolGrid,
-        waysWins,
-        totalPayout: payoutAmount,
-        blockNumber: claimBlock,
-        blockSeed: blockSeedHex,
-        betKey,
-        verified: true,
-        bonusSpinsAwarded,
-        jackpotHit,
-        jackpotAmount: jackpotAmountValue
-      };
-
-      return outcome;
+      return payoutAmount;
     } catch (error) {
-      log.error('claim failed', error);
+      log.error('claim transaction failed', error);
       throw error;
     }
   }
@@ -853,7 +1024,7 @@ export class VoiW2WAdapter implements BlockchainAdapter {
       appID: tokenAppId,
       suggestedParams: {
         ...suggestedParams,
-        fee: Math.max(suggestedParams.fee || 1000, 1000),
+        fee: Math.max(Number(suggestedParams.fee || 1000), 1000),
       },
     });
 

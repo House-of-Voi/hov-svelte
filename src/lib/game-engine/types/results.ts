@@ -247,15 +247,34 @@ export interface WinCelebration {
 
 /**
  * Helper function to determine win level
+ * Note: winLevel should only be 'jackpot' if an actual jackpot was hit (jackpotHit flag)
+ * This function calculates based on multiplier, but jackpot status should be checked separately
  */
-export function getWinLevel(winnings: number, totalBet: number): WinLevel {
-  if (totalBet === 0) return 'small';
+export function getWinLevel(winnings: number, totalBet: number, jackpotHit?: boolean): WinLevel {
+  // If jackpot was actually hit, return jackpot level
+  if (jackpotHit === true) {
+    return 'jackpot';
+  }
 
+  // For bonus spins or zero bet, return small (can't calculate multiplier)
+  if (totalBet === 0 || totalBet < 1) {
+    return 'small';
+  }
+
+  // Calculate multiplier
   const multiplier = winnings / totalBet;
 
-  if (multiplier >= 100) return 'jackpot';
-  if (multiplier >= 20) return 'large';
-  if (multiplier >= 5) return 'medium';
+  // Only return jackpot if jackpotHit is explicitly true
+  // For regular wins, use multiplier thresholds but cap at 'large'
+  if (multiplier >= 100) {
+    return 'large'; // High multiplier wins are 'large', not 'jackpot' unless jackpotHit is true
+  }
+  if (multiplier >= 20) {
+    return 'large';
+  }
+  if (multiplier >= 5) {
+    return 'medium';
+  }
   return 'small';
 }
 

@@ -30,6 +30,10 @@
 	 */
 	async function establishVoiSession() {
 		if (!browser) return;
+		if (!session) {
+			console.log('No session available; skipping Voi session establishment');
+			return;
+		}
 
 		try {
 			isEstablishing = true;
@@ -205,14 +209,24 @@
 
 	// Watch for session changes and establish if needed
 	$effect(() => {
-		if (browser && !isEstablishing && !hasEstablished) {
+		// Only attempt establishment in the browser when a session exists
+		if (!browser || !session) {
+			return;
+		}
+
+		// Allow re-establishment if the session loses its Voi address (e.g., cookie expired)
+		if (!session.voiAddress && !isEstablishing) {
+			hasEstablished = false;
+		}
+
+		if (!isEstablishing && !hasEstablished) {
 			// If session already has voiAddress, we're done
 			if (session?.voiAddress) {
 				hasEstablished = true;
 				return;
 			}
 			
-			// Otherwise, try to establish (only once)
+			// Otherwise, try to establish (only once per missing-session cycle)
 			hasEstablished = true;
 			establishVoiSession();
 		}

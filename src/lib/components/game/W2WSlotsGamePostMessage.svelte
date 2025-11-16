@@ -65,6 +65,8 @@
 	let isAutoBonusMode = $state(false); // Track if we're in auto bonus spin mode
 	let isAutoSpinning = $state(false); // Prevent multiple simultaneous auto-spins
 	let bonusSpinIntervalId: ReturnType<typeof setInterval> | null = $state(null); // Track bonus spin interval timer
+	let isDisplayingResults = $state(false); // Track when displaying results before next spin
+	let winSequenceCompleteTimeout: ReturnType<typeof setTimeout> | null = null; // Track win sequence completion timeout
 	let voiAddress = $state<string | null>(null);
 	let configContractId = $state<string | null>(null);
 	let isArc200Machine = $state(false);
@@ -176,7 +178,13 @@
 			messageHandler = null;
 		}
 		// Clean up bonus spin interval
+		console.log('🧹 Component destroying, clearing bonus spin interval');
 		clearBonusSpinInterval();
+		// Clean up win sequence timeout
+		if (winSequenceCompleteTimeout) {
+			clearTimeout(winSequenceCompleteTimeout);
+			winSequenceCompleteTimeout = null;
+		}
 	});
 
 	/**
@@ -342,8 +350,36 @@
 		if ('waysWins' in payload) {
 			waysWins = payload.waysWins || [];
 			bonusSpinsAwarded = payload.bonusSpinsAwarded || 0;
-			jackpotHit = payload.jackpotHit || false;
-			jackpotWinAmount = payload.jackpotAmount || 0;
+			
+			// FORCE validation: Count HOV symbols in grid and ONLY set jackpotHit if grid has 3+
+			// IGNORE payload.jackpotHit completely - trust the grid only
+			let hovCount = 0;
+			if (payload.grid && Array.isArray(payload.grid)) {
+				// Grid format is [reel][row] - flatten and count 'E' symbols
+				for (const reel of payload.grid) {
+					if (Array.isArray(reel)) {
+						for (const symbol of reel) {
+							if (symbol === 'E') {
+								hovCount++;
+							}
+						}
+					}
+				}
+			}
+			
+			// EXPLICITLY set jackpotHit to false unless grid has 3+ HOV symbols
+			// Completely ignore what payload.jackpotHit says
+			jackpotHit = hovCount >= 3;
+			jackpotWinAmount = jackpotHit ? (payload.jackpotAmount || 0) : 0;
+			
+			// Always log for debugging
+			console.log('🎰 Jackpot validation:', {
+				hovCount,
+				jackpotHit,
+				payloadJackpotHit: payload.jackpotHit,
+				grid: payload.grid,
+				gridFlat: payload.grid?.flat()
+			});
 		} else {
 			// 5reel format - set defaults
 			waysWins = [];
@@ -353,11 +389,20 @@
 		}
 
 		// Mark spin as completed in queue and store outcome data
-		// Match by engineSpinId (from SPIN_SUBMITTED) or clientSpinId (fallback)
+		// Match by engineSpinId first (most reliable), then clientSpinId as fallback
+		// Only update spins that aren't already completed to prevent duplicate updates
 		if (payload.spinId) {
-			spinQueue = spinQueue.map(s =>
-				(s.engineSpinId === payload.spinId || s.clientSpinId === payload.spinId)
-					? {
+			spinQueue = spinQueue.map(s => {
+				// Skip if already completed or failed
+				if (s.status === 'completed' || s.status === 'failed') {
+					return s;
+				}
+				
+				// Match by engineSpinId first (preferred), then clientSpinId
+				const matches = s.engineSpinId === payload.spinId || s.clientSpinId === payload.spinId;
+				
+				if (matches) {
+					return {
 						...s,
 						status: 'completed' as const,
 						completedAt: Date.now(),
@@ -370,21 +415,58 @@
 							jackpotAmount: jackpotWinAmount,
 							winLevel: payload.winLevel
 						}
-					}
-					: s
-			);
+					};
+				}
+				
+				return s;
+			});
 		}
 
-		// Only clear spinning state if no other spins are pending
+		// Check if there are other pending spins
 		const remainingPending = spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length;
-		if (remainingPending === 0) {
+		
+		// If there are other pending spins, pause to show results
+		if (remainingPending > 0) {
+			// Stop spinning temporarily to show results
+			waitingForOutcome = false;
+			isSpinning = false;
+			isDisplayingResults = true;
+			
+			// Calculate minimum pause time based on whether there are wins
+			const hasWins = payload.winnings > 0 || bonusSpinsAwarded > 0 || jackpotHit;
+			const minPauseTime = hasWins ? 3000 : 1500; // 3s for wins, 1.5s for no wins
+			
+			// Wait for win sequence to complete (or minimum pause time)
+			// The win sequence completion will be handled by onWinSequenceComplete callback
+			// But we also set a timeout as a fallback
+			if (winSequenceCompleteTimeout) {
+				clearTimeout(winSequenceCompleteTimeout);
+			}
+			
+			winSequenceCompleteTimeout = setTimeout(() => {
+				// Resume spinning for next spin
+				isDisplayingResults = false;
+				winSequenceCompleteTimeout = null;
+				
+				// Check if there are still pending spins to continue with
+				const stillPending = spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length;
+				if (stillPending > 0) {
+					// Start next spin
+					isSpinning = true;
+					waitingForOutcome = true;
+				}
+			}, minPauseTime);
+		} else {
+			// No more pending spins - clear all states
 			waitingForOutcome = false;
 			isSpinning = false;
 			pendingSpinId = null;
+			isDisplayingResults = false;
 			
 			// After all spins complete, ensure bonus spin interval is running if needed
-			// This handles the case where the queue becomes empty
-			if (!showingWinDisplay && bonusSpins > 0 && isAutoBonusMode) {
+			// The interval should continue running regardless of showingWinDisplay state
+			// It will keep adding spins every 3 seconds as long as bonusSpins > 0
+			if (bonusSpins > 0 && isAutoBonusMode) {
 				setTimeout(() => {
 					checkAndAutoSubmitBonusSpin();
 				}, 500);
@@ -399,14 +481,26 @@
 		// Update win display
 		if (payload.winnings > 0 || bonusSpinsAwarded > 0 || jackpotHit) {
 			winAmount = payload.winnings;
-			winLevel = payload.winLevel;
+			// FORCE winLevel to match payload - don't let it be 'jackpot' unless jackpotHit is true
+			const payloadWinLevel = payload.winLevel || 'small';
+			// Only allow 'jackpot' winLevel if jackpotHit is actually true
+			winLevel = (payloadWinLevel === 'jackpot' && !jackpotHit) ? 'large' : payloadWinLevel;
 			showingWinDisplay = true;
+			
+			console.log('🎰 Win display update:', {
+				winnings: payload.winnings,
+				jackpotHit,
+				payloadWinLevel,
+				actualWinLevel: winLevel,
+				showingWinDisplay
+			});
 		} else {
 			showingWinDisplay = false;
-			// If no win display, ensure bonus spin interval is running after a short delay
-			// This handles the case where the spin completes but there's no win to display
+			// Ensure bonus spin interval is running after a short delay
+			// The interval should run regardless of processing states
+			// It will continue adding spins every 3 seconds as long as bonusSpins > 0
 			setTimeout(() => {
-				if (!showingWinDisplay && !isSpinning && !waitingForOutcome && bonusSpins > 0 && isAutoBonusMode) {
+				if (bonusSpins > 0 && isAutoBonusMode) {
 					checkAndAutoSubmitBonusSpin();
 				}
 			}, 500);
@@ -485,6 +579,7 @@
 
 		// Exit auto bonus mode if bonus spins ran out
 		if (bonusSpins === 0 && isAutoBonusMode) {
+			console.log('🛑 Bonus spins ran out, exiting auto bonus mode');
 			clearBonusSpinInterval();
 			isAutoBonusMode = false;
 			isAutoSpinning = false;
@@ -493,12 +588,10 @@
 		// If we just received bonus spins and we're not currently spinning,
 		// and we're in auto mode or should enter it, trigger auto-submit
 		// Only trigger if bonus spins increased (new bonus spins detected)
+		// The interval should start regardless of showingWinDisplay or other processing states
 		if (newBonusSpins > previousBonusSpins && !isSpinning && !waitingForOutcome) {
-			// If no win display is showing, start interval immediately
-			if (!showingWinDisplay) {
-				checkAndAutoSubmitBonusSpin();
-			}
-			// Otherwise, it will trigger when win display closes
+			// Start interval immediately - it will continue running regardless of UI state
+			checkAndAutoSubmitBonusSpin();
 		}
 	}
 
@@ -606,8 +699,16 @@
 
 		// If user manually clicks spin during auto bonus mode, exit auto mode
 		// This allows user to take control
-		if (isAutoBonusMode && !isAutoSpinning) {
+		// BUT: if we're in auto bonus mode and the interval is running, this is an auto-spin
+		// so we should NOT exit auto mode. Only exit if it's a manual click (interval not running)
+		if (isAutoBonusMode && !isAutoSpinning && bonusSpinIntervalId === null) {
+			console.log('👤 Manual spin click detected, exiting auto bonus mode');
 			isAutoBonusMode = false;
+		}
+		
+		// Mark that we're auto-spinning if in auto bonus mode
+		if (isAutoBonusMode && bonusSpinIntervalId !== null) {
+			isAutoSpinning = true;
 		}
 
 		// Auto-detect bonus spins: if user has bonus spins, automatically use bonus mode (0)
@@ -724,7 +825,36 @@
 		jackpotHit = false;
 		
 		// After win display closes, ensure bonus spin interval is running if needed
+		console.log('🪟 Win display closed, checking bonus spin interval', { bonusSpins, isAutoBonusMode });
 		checkAndAutoSubmitBonusSpin();
+	}
+
+	/**
+	 * Handle win sequence completion from ReelGrid
+	 * Called when the win highlighting animation sequence finishes
+	 */
+	function handleWinSequenceComplete(): void {
+		// If we're displaying results and there are pending spins, continue to next spin
+		if (isDisplayingResults) {
+			// Clear the timeout since win sequence completed
+			if (winSequenceCompleteTimeout) {
+				clearTimeout(winSequenceCompleteTimeout);
+				winSequenceCompleteTimeout = null;
+			}
+			
+			// Small delay before starting next spin (allows win sequence to fully finish)
+			setTimeout(() => {
+				isDisplayingResults = false;
+				
+				// Check if there are still pending spins to continue with
+				const stillPending = spinQueue.filter(s => s.status !== 'completed' && s.status !== 'failed').length;
+				if (stillPending > 0) {
+					// Start next spin
+					isSpinning = true;
+					waitingForOutcome = true;
+				}
+			}, 300); // Small delay to ensure smooth transition
+		}
 	}
 
 	/**
@@ -732,6 +862,7 @@
 	 */
 	function clearBonusSpinInterval(): void {
 		if (bonusSpinIntervalId !== null) {
+			console.log('🛑 Clearing bonus spin interval');
 			clearInterval(bonusSpinIntervalId);
 			bonusSpinIntervalId = null;
 		}
@@ -743,6 +874,7 @@
 	function startBonusSpinInterval(): void {
 		// Don't start if already running
 		if (bonusSpinIntervalId !== null) {
+			console.log('⏭️ Bonus spin interval already running, skipping start');
 			return;
 		}
 
@@ -750,55 +882,70 @@
 		if (!isAutoBonusMode) {
 			isAutoBonusMode = true;
 		}
+		
+		// Mark that we're auto-spinning
+		isAutoSpinning = true;
 
 		// Set up interval to submit spins every 3 seconds
+		// This interval should continue running regardless of processing state
 		bonusSpinIntervalId = setInterval(() => {
 			// Check if we should continue submitting
+			// Only check for auto mode and bonus spins - don't block on processing states
 			if (!isAutoBonusMode || bonusSpins === 0) {
+				console.log('🛑 Bonus spin interval stopping:', { isAutoBonusMode, bonusSpins });
 				clearBonusSpinInterval();
 				isAutoBonusMode = false;
 				isAutoSpinning = false;
 				return;
 			}
 
-			// Optional: Limit queue size to prevent overwhelming the system
-			// Allow up to 10 pending spins before pausing
-			const maxPendingSpins = 10;
-			if (pendingSpins >= maxPendingSpins) {
-				console.log('⏸️ Bonus spin interval paused: too many pending spins', { pendingSpins });
-				return;
-			}
+			// Remove the pending spins limit - bonus spins should queue continuously
+			// The queue will handle processing in order, and we want to keep adding spins
+			// every 3 seconds without waiting for previous spins to complete
 
 			// Submit a spin
 			try {
+				console.log('🎰 Auto-queuing bonus spin', { bonusSpins, pendingSpins });
 				handleSpin();
 			} catch (error) {
-				console.error('Auto bonus spin failed:', error);
-				clearBonusSpinInterval();
-				isAutoBonusMode = false;
-				isAutoSpinning = false;
+				console.error('❌ Auto bonus spin failed:', error);
+				// Don't clear interval on error - let it retry on next interval
+				// Only clear if it's a critical error that prevents continuation
 			}
 		}, 3000); // 3 seconds
 
-		console.log('▶️ Bonus spin interval started (3s interval)');
+		console.log('▶️ Bonus spin interval started (3s interval)', { bonusSpins });
 	}
 
 	/**
 	 * Check if we should auto-submit bonus spins and start the interval
+	 * This should start the interval whenever we have bonus spins, regardless of processing state
 	 */
 	function checkAndAutoSubmitBonusSpin(): void {
 		// Don't start if:
 		// - Already has an interval running
 		// - No bonus spins available
-		// - Currently showing win display (will start when it closes)
-		if (bonusSpinIntervalId !== null || bonusSpins === 0 || showingWinDisplay) {
+		// Note: We removed the showingWinDisplay check - the interval should run even during win displays
+		// The interval will continue adding spins to the queue every 3 seconds regardless of UI state
+		if (bonusSpinIntervalId !== null) {
+			console.log('⏭️ Bonus spin interval already running, skipping checkAndAutoSubmitBonusSpin');
+			return;
+		}
+
+		if (bonusSpins === 0) {
+			console.log('⏭️ No bonus spins available, skipping interval start');
 			return;
 		}
 
 		// If we have bonus spins, start the interval
-		if (bonusSpins > 0) {
-			startBonusSpinInterval();
-		}
+		// The interval will continue running and adding spins regardless of:
+		// - isDisplayingResults
+		// - showingWinDisplay
+		// - isSpinning
+		// - waitingForOutcome
+		// It only stops when bonusSpins reaches 0 or isAutoBonusMode is false
+		console.log('✅ Starting bonus spin interval check', { bonusSpins, showingWinDisplay, isDisplayingResults });
+		startBonusSpinInterval();
 	}
 
 	/**
@@ -849,95 +996,74 @@
 	}
 
 	/**
-	 * Auto-remove completed/failed spins after 10 seconds with fade-out animation
+	 * Auto-remove completed/failed spins when queue reaches 10 items
+	 * Only removes completed/failed spins (oldest first) to maintain queue size
 	 */
 	$effect(() => {
+		// Only start removing when queue reaches 10 items
+		if (spinQueue.length < 10) {
+			// Clean up any existing timeouts since we're not removing anything
+			for (const [spinId, timeoutId] of removalTimeouts.entries()) {
+				clearTimeout(timeoutId);
+				removalTimeouts.delete(spinId);
+			}
+			return;
+		}
+
+		// Find completed/failed spins that aren't already fading
 		const completedOrFailedSpins = spinQueue.filter(
-			s => (s.status === 'completed' || s.status === 'failed') && s.completedAt && !s.fadingOut
+			s => (s.status === 'completed' || s.status === 'failed') && !s.fadingOut
 		);
 
-		completedOrFailedSpins.forEach((spin) => {
-			// Skip if we already have a timeout set for this spin
-			if (removalTimeouts.has(spin.clientSpinId) || fadeOutTimeouts.has(spin.clientSpinId)) {
-				return;
-			}
+		// If no completed spins to remove, nothing to do
+		if (completedOrFailedSpins.length === 0) {
+			return;
+		}
 
-			const timeElapsed = Date.now() - (spin.completedAt || 0);
-			const timeRemaining = Math.max(0, 10000 - timeElapsed);
-
-			if (timeRemaining > 0) {
-				// Set up timeout and track it
-				const timeoutId = setTimeout(() => {
-					try {
-						// Check if spin still exists and isn't already fading
-						const currentSpin = spinQueue.find(s => s.clientSpinId === spin.clientSpinId);
-						if (!currentSpin || currentSpin.fadingOut) {
-							removalTimeouts.delete(spin.clientSpinId);
-							return;
-						}
-
-						// Mark spin as fading out
-						spinQueue = spinQueue.map(s =>
-							s.clientSpinId === spin.clientSpinId
-								? { ...s, fadingOut: true }
-								: s
-						);
-						removalTimeouts.delete(spin.clientSpinId);
-
-						// After fade animation completes (1 second), remove from queue
-						const fadeTimeoutId = setTimeout(() => {
-							try {
-								spinQueue = spinQueue.filter(s => s.clientSpinId !== spin.clientSpinId);
-								fadeOutTimeouts.delete(spin.clientSpinId);
-							} catch (error) {
-								console.error('Error removing spin from queue:', error);
-								fadeOutTimeouts.delete(spin.clientSpinId);
-							}
-						}, 1000);
-
-						fadeOutTimeouts.set(spin.clientSpinId, fadeTimeoutId);
-					} catch (error) {
-						console.error('Error starting fade-out:', error);
-						removalTimeouts.delete(spin.clientSpinId);
-					}
-				}, timeRemaining);
-
-				removalTimeouts.set(spin.clientSpinId, timeoutId);
-			} else {
-				// Already past 10 seconds, start fade-out immediately
-				// Check if already fading to avoid duplicate updates
-				if (!spin.fadingOut) {
-					spinQueue = spinQueue.map(s =>
-						s.clientSpinId === spin.clientSpinId
-							? { ...s, fadingOut: true }
-							: s
-					);
-				}
-
-				// After fade animation completes (1 second), remove from queue
-				// Only set timeout if not already set
-				if (!fadeOutTimeouts.has(spin.clientSpinId)) {
-					const fadeTimeoutId = setTimeout(() => {
-						try {
-							spinQueue = spinQueue.filter(s => s.clientSpinId !== spin.clientSpinId);
-							fadeOutTimeouts.delete(spin.clientSpinId);
-						} catch (error) {
-							console.error('Error removing spin from queue:', error);
-							fadeOutTimeouts.delete(spin.clientSpinId);
-						}
-					}, 1000);
-
-					fadeOutTimeouts.set(spin.clientSpinId, fadeTimeoutId);
-				}
-			}
+		// Sort by completedAt (oldest first), fallback to timestamp if completedAt is missing
+		const sortedSpins = [...completedOrFailedSpins].sort((a, b) => {
+			const aTime = a.completedAt || a.timestamp;
+			const bTime = b.completedAt || b.timestamp;
+			return aTime - bTime;
 		});
 
-		// Cleanup: remove timeout IDs for spins that are no longer in the queue or are fading out
+		// Process only the oldest completed spin at a time
+		const oldestSpin = sortedSpins[0];
+
+		// Skip if we already have a timeout set for this spin
+		if (removalTimeouts.has(oldestSpin.clientSpinId) || fadeOutTimeouts.has(oldestSpin.clientSpinId)) {
+			return;
+		}
+
+		// Mark spin as fading out
+		spinQueue = spinQueue.map(s =>
+			s.clientSpinId === oldestSpin.clientSpinId
+				? { ...s, fadingOut: true }
+				: s
+		);
+
+		// After fade animation completes (1 second), remove from queue
+		const fadeTimeoutId = setTimeout(() => {
+			try {
+				// Check if spin still exists before removing
+				const currentSpin = spinQueue.find(s => s.clientSpinId === oldestSpin.clientSpinId);
+				if (currentSpin) {
+					spinQueue = spinQueue.filter(s => s.clientSpinId !== oldestSpin.clientSpinId);
+				}
+				fadeOutTimeouts.delete(oldestSpin.clientSpinId);
+			} catch (error) {
+				console.error('Error removing spin from queue:', error);
+				fadeOutTimeouts.delete(oldestSpin.clientSpinId);
+			}
+		}, 1000);
+
+		fadeOutTimeouts.set(oldestSpin.clientSpinId, fadeTimeoutId);
+
+		// Cleanup: remove timeout IDs for spins that are no longer in the queue
 		const currentSpinIds = new Set(spinQueue.map(s => s.clientSpinId));
-		const fadingOutIds = new Set(spinQueue.filter(s => s.fadingOut).map(s => s.clientSpinId));
 		
 		for (const [spinId, timeoutId] of removalTimeouts.entries()) {
-			if (!currentSpinIds.has(spinId) || fadingOutIds.has(spinId)) {
+			if (!currentSpinIds.has(spinId)) {
 				clearTimeout(timeoutId);
 				removalTimeouts.delete(spinId);
 			}
@@ -1005,7 +1131,10 @@
 						waitingForOutcome={waitingForOutcome}
 						waysWins={waysWins}
 						gameType="w2w"
+						jackpotAmount={jackpotAmount}
+						bonusSpinsAwarded={bonusSpinsAwarded}
 						onSpinComplete={() => console.log('Spin animation complete')}
+						onWinSequenceComplete={handleWinSequenceComplete}
 					/>
 				</CardContent>
 			</Card>

@@ -30,6 +30,10 @@ interface Props {
 		winLevel = 'none',
 		onClose
 	}: Props = $props();
+	
+	// FORCE jackpotHit to be explicitly false if not true
+	// This prevents any truthy values from accidentally showing jackpot
+	const isJackpot = jackpotHit === true;
 
 	const isWin = totalPayout > 0 || jackpotHit || bonusSpinsAwarded > 0;
 
@@ -91,14 +95,14 @@ interface Props {
 {#if isWin}
 	<div 
 		class="win-display w2w" 
-		class:jackpot={jackpotHit} 
+		class:jackpot={isJackpot} 
 		class:big-win={winLevel === 'large' || winLevel === 'jackpot'}
 		role="dialog"
 		aria-live="polite"
 		aria-label="Win celebration"
 	>
 		<div class="win-content">
-			{#if jackpotHit}
+			{#if isJackpot}
 				<div class="jackpot-banner">
 					<h2 class="jackpot-title">🎰 JACKPOT! 🎰</h2>
 					<div class="jackpot-amount">{formatPayout(jackpotAmount)}</div>
