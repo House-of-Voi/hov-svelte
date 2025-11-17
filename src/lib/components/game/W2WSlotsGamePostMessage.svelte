@@ -8,7 +8,6 @@
 	// W2W Game components
 	import ReelGrid from './ReelGrid.svelte';
 	import W2WBettingControls from './W2WBettingControls.svelte';
-	import W2WWinDisplay from './W2WWinDisplay.svelte';
 	import W2WModeSelector from './W2WModeSelector.svelte';
 	import W2WSpinQueue from './W2WSpinQueue.svelte';
 	import W2WSpinDetailModal from './W2WSpinDetailModal.svelte';
@@ -51,9 +50,6 @@
 	let betAmount = $state(40);
 	let mode = $state(2); // 0=bonus, 1=credit (free-play), 2=VOI, 4=ARC200 (default to VOI, will be updated when credits load)
 	let lastError = $state<string | null>(null);
-	let showingWinDisplay = $state(false);
-	let winAmount = $state(0);
-	let winLevel = $state<'none' | 'small' | 'medium' | 'large' | 'jackpot'>('none');
 	let waysWins = $state<any[]>([]);
 	let bonusSpinsAwarded = $state(0);
 	let jackpotHit = $state(false);
@@ -79,6 +75,19 @@
 	let arc200Error = $state<string | null>(null);
 	let lastArc200FetchKey: string | null = null;
 	let lastSlotConfigFetchId: string | null = null;
+
+	// Queue display states so win animations can finish before showing the next outcome
+	interface DisplayState {
+		grid: string[][];
+		waysWins: any[];
+		bonusSpinsAwarded: number;
+		jackpotHit: boolean;
+		jackpotWinAmount: number;
+		winnings: number;
+		hasWinAnimation: boolean;
+	}
+	let displayQueue: DisplayState[] = [];
+	let isWinAnimationActive = false;
 	
 	// Queue tracking
 	interface QueuedSpin {
@@ -188,15 +197,39 @@
 	});
 
 	/**
-	 * Send message to parent (bridge)
+	 * Send message to parent (bridge) or same window
 	 */
 	function sendMessage(message: GameRequest): void {
-		if (window.parent) {
-			const messageWithNamespace = {
-				...message,
-				namespace: MESSAGE_NAMESPACE,
-			};
-			window.parent.postMessage(messageWithNamespace, '*'); // Use specific origin in production
+		const messageWithNamespace = {
+			...message,
+			namespace: MESSAGE_NAMESPACE,
+		};
+
+		// Check if we're in an iframe
+		const isInIframe = window !== window.parent;
+
+		if (isInIframe) {
+			// If in iframe, send to parent
+			window.parent.postMessage(messageWithNamespace, '*');
+		} else {
+			// If not in iframe, send to same window (for GameBridge on same page)
+			window.postMessage(messageWithNamespace, '*');
+		}
+	}
+
+	/**
+	 * Exit game and return to lobby
+	 */
+	function handleExit(): void {
+		// Check if we're in an iframe
+		const isInIframe = window !== window.parent;
+
+		if (isInIframe) {
+			// If in iframe, send EXIT message to parent
+			sendMessage({ type: 'EXIT' } as any);
+		} else {
+			// If not in iframe (running as main page), navigate directly
+			window.location.href = '/games';
 		}
 	}
 
@@ -336,6 +369,63 @@
 	}
 
 	/**
+	 * Display queue helpers
+	 * We queue outcome visuals while a win animation is active so results show sequentially
+	 */
+	function queueOrDisplayOutcome(state: DisplayState): void {
+		if (isWinAnimationActive) {
+			displayQueue.push(state);
+			console.log('⏸️ Queued outcome display until win animation completes', {
+				queueLength: displayQueue.length,
+				winnings: state.winnings,
+			});
+			return;
+		}
+
+		applyDisplayState(state);
+
+		// If there's no animation, immediately attempt to show any queued outcomes
+		if (!state.hasWinAnimation) {
+			processNextDisplayState();
+		}
+	}
+
+	function applyDisplayState(state: DisplayState): void {
+		grid = state.grid;
+		waysWins = state.waysWins;
+		bonusSpinsAwarded = state.bonusSpinsAwarded;
+		jackpotHit = state.jackpotHit;
+		jackpotWinAmount = state.jackpotWinAmount;
+		isWinAnimationActive = state.hasWinAnimation;
+	}
+
+	function processNextDisplayState(): void {
+		if (isWinAnimationActive) {
+			return;
+		}
+
+		while (displayQueue.length > 0) {
+			const nextState = displayQueue.shift();
+			if (!nextState) {
+				continue;
+			}
+			applyDisplayState(nextState);
+			if (nextState.hasWinAnimation) {
+				// Wait for this animation to complete before continuing
+				return;
+			}
+		}
+	}
+
+	function finishWinAnimation(): void {
+		if (!isWinAnimationActive) {
+			return;
+		}
+		isWinAnimationActive = false;
+		processNextDisplayState();
+	}
+
+	/**
 	 * Handle outcome message (W2W format)
 	 */
 	function handleOutcome(message: OutcomeMessage): void {
@@ -343,14 +433,14 @@
 
 		console.log('🎰 W2W Outcome received:', payload);
 
-		// Update grid
-		grid = payload.grid;
+		const gridData = Array.isArray(payload.grid) ? payload.grid : grid;
+		const isW2WOutcome = 'waysWins' in payload;
+		const waysWinsData = isW2WOutcome ? payload.waysWins || [] : [];
+		const displayBonusSpins = isW2WOutcome ? payload.bonusSpinsAwarded || 0 : 0;
+		let validatedJackpotHit = false;
+		let validatedJackpotAmount = 0;
 
-		// Update W2W-specific fields (check if it's W2W format)
-		if ('waysWins' in payload) {
-			waysWins = payload.waysWins || [];
-			bonusSpinsAwarded = payload.bonusSpinsAwarded || 0;
-			
+		if (isW2WOutcome) {
 			// FORCE validation: Count HOV symbols in grid and ONLY set jackpotHit if grid has 3+
 			// IGNORE payload.jackpotHit completely - trust the grid only
 			let hovCount = 0;
@@ -366,26 +456,20 @@
 					}
 				}
 			}
-			
+
 			// EXPLICITLY set jackpotHit to false unless grid has 3+ HOV symbols
 			// Completely ignore what payload.jackpotHit says
-			jackpotHit = hovCount >= 3;
-			jackpotWinAmount = jackpotHit ? (payload.jackpotAmount || 0) : 0;
-			
+			validatedJackpotHit = hovCount >= 3;
+			validatedJackpotAmount = validatedJackpotHit ? (payload.jackpotAmount || 0) : 0;
+
 			// Always log for debugging
 			console.log('🎰 Jackpot validation:', {
 				hovCount,
-				jackpotHit,
+				jackpotHit: validatedJackpotHit,
 				payloadJackpotHit: payload.jackpotHit,
 				grid: payload.grid,
 				gridFlat: payload.grid?.flat()
 			});
-		} else {
-			// 5reel format - set defaults
-			waysWins = [];
-			bonusSpinsAwarded = 0;
-			jackpotHit = false;
-			jackpotWinAmount = 0;
 		}
 
 		// Mark spin as completed in queue and store outcome data
@@ -408,11 +492,11 @@
 						completedAt: Date.now(),
 						outcome: {
 							totalPayout: payload.winnings,
-							waysWins: waysWins,
-							grid: payload.grid,
-							bonusSpinsAwarded: bonusSpinsAwarded,
-							jackpotHit: jackpotHit,
-							jackpotAmount: jackpotWinAmount,
+							waysWins: waysWinsData,
+							grid: gridData,
+							bonusSpinsAwarded: displayBonusSpins,
+							jackpotHit: validatedJackpotHit,
+							jackpotAmount: validatedJackpotAmount,
 							winLevel: payload.winLevel
 						}
 					};
@@ -433,8 +517,8 @@
 			isDisplayingResults = true;
 			
 			// Calculate minimum pause time based on whether there are wins
-			const hasWins = payload.winnings > 0 || bonusSpinsAwarded > 0 || jackpotHit;
-			const minPauseTime = hasWins ? 3000 : 1500; // 3s for wins, 1.5s for no wins
+			const hasWins = payload.winnings > 0 || displayBonusSpins > 0 || validatedJackpotHit;
+			const minPauseTime = hasWins ? 9000 : 1500; // 9s for wins (3x longer), 1.5s for no wins
 			
 			// Wait for win sequence to complete (or minimum pause time)
 			// The win sequence completion will be handled by onWinSequenceComplete callback
@@ -455,6 +539,8 @@
 					isSpinning = true;
 					waitingForOutcome = true;
 				}
+
+				finishWinAnimation();
 			}, minPauseTime);
 		} else {
 			// No more pending spins - clear all states
@@ -464,7 +550,7 @@
 			isDisplayingResults = false;
 			
 			// After all spins complete, ensure bonus spin interval is running if needed
-			// The interval should continue running regardless of showingWinDisplay state
+			// The interval should continue running regardless of UI state
 			// It will keep adding spins every 3 seconds as long as bonusSpins > 0
 			if (bonusSpins > 0 && isAutoBonusMode) {
 				setTimeout(() => {
@@ -474,37 +560,30 @@
 		}
 
 		// Update bonus spins if awarded
-		if (bonusSpinsAwarded > 0) {
-			bonusSpins += bonusSpinsAwarded;
+		if (displayBonusSpins > 0) {
+			bonusSpins += displayBonusSpins;
 		}
 
-		// Update win display
-		if (payload.winnings > 0 || bonusSpinsAwarded > 0 || jackpotHit) {
-			winAmount = payload.winnings;
-			// FORCE winLevel to match payload - don't let it be 'jackpot' unless jackpotHit is true
-			const payloadWinLevel = payload.winLevel || 'small';
-			// Only allow 'jackpot' winLevel if jackpotHit is actually true
-			winLevel = (payloadWinLevel === 'jackpot' && !jackpotHit) ? 'large' : payloadWinLevel;
-			showingWinDisplay = true;
-			
-			console.log('🎰 Win display update:', {
-				winnings: payload.winnings,
-				jackpotHit,
-				payloadWinLevel,
-				actualWinLevel: winLevel,
-				showingWinDisplay
-			});
-		} else {
-			showingWinDisplay = false;
-			// Ensure bonus spin interval is running after a short delay
-			// The interval should run regardless of processing states
-			// It will continue adding spins every 3 seconds as long as bonusSpins > 0
+		// Ensure bonus spin interval is running after a short delay
+		// With no modal blocking the UI, we can immediately re-check automation needs
+		if (bonusSpins > 0 && isAutoBonusMode) {
 			setTimeout(() => {
 				if (bonusSpins > 0 && isAutoBonusMode) {
 					checkAndAutoSubmitBonusSpin();
 				}
 			}, 500);
 		}
+
+		const displayState: DisplayState = {
+			grid: gridData,
+			waysWins: waysWinsData,
+			bonusSpinsAwarded: displayBonusSpins,
+			jackpotHit: validatedJackpotHit,
+			jackpotWinAmount: validatedJackpotAmount,
+			winnings: payload.winnings || 0,
+			hasWinAnimation: waysWinsData.length > 0
+		};
+		queueOrDisplayOutcome(displayState);
 
 		// Query user data from contract to get actual bonus spin count
 		// This ensures we have the latest count after the claim transaction
@@ -588,7 +667,7 @@
 		// If we just received bonus spins and we're not currently spinning,
 		// and we're in auto mode or should enter it, trigger auto-submit
 		// Only trigger if bonus spins increased (new bonus spins detected)
-		// The interval should start regardless of showingWinDisplay or other processing states
+		// The interval should start regardless of other processing states
 		if (newBonusSpins > previousBonusSpins && !isSpinning && !waitingForOutcome) {
 			// Start interval immediately - it will continue running regardless of UI state
 			checkAndAutoSubmitBonusSpin();
@@ -715,36 +794,35 @@
 		// Otherwise use the selected mode
 		const actualMode = bonusSpins > 0 ? 0 : mode;
 		
-		// Convert betAmount from VOI to microAlgos for balance calculations
-		const betAmountMicroAlgos = actualMode === 0 ? 0 : betAmount * 1_000_000;
+		// Work with normalized VOI units (balance is already in VOI from bridge)
+		const betAmountVOI = actualMode === 0 ? 0 : betAmount;
 		
-		// Transaction cost per spin
-		const spinCost = 50_500; // Transaction fee
-		const totalCostPerSpin = betAmountMicroAlgos + spinCost;
+		// Transaction cost per spin (convert from microVOI to VOI)
+		const spinCostVOI = 50_500 / 1_000_000; // Transaction fee in VOI
+		const totalCostPerSpin = betAmountVOI + spinCostVOI;
 
 		// Calculate total cost for all pending spins plus this new one
 		const totalPendingCost = spinQueue
 			.filter(s => s.status !== 'completed' && s.status !== 'failed')
 			.reduce((sum, spin) => {
-				const spinBetAmount = spin.mode === 0 ? 0 : spin.betAmount * 1_000_000;
-				return sum + spinBetAmount + spinCost;
+				const spinBetAmount = spin.mode === 0 ? 0 : spin.betAmount;
+				return sum + spinBetAmount + spinCostVOI;
 			}, 0);
 
 		const totalCostWithNewSpin = totalPendingCost + totalCostPerSpin;
 
 		// Check balance for VOI/ARC200 modes (credit/bonus modes checked by bridge)
 		if (actualMode === 2 || actualMode === 4) {
-			// availableBalance is already in microAlgos from balance updates
-			const availableBalanceMicroAlgos = availableBalance;
+			// availableBalance is already in normalized VOI from balance updates
 			
 			// Check if we have enough balance for all queued spins plus this new one
-			if (availableBalanceMicroAlgos < totalCostPerSpin) {
-				lastError = `Insufficient balance. Need ${(totalCostPerSpin / 1_000_000).toFixed(2)} VOI for this spin.`;
+			if (availableBalance < totalCostPerSpin) {
+				lastError = `Insufficient balance. Need ${totalCostPerSpin.toFixed(2)} VOI for this spin.`;
 				return;
 			}
 
 			// Check if adding this spin would exceed available balance
-			if (availableBalanceMicroAlgos < totalCostWithNewSpin) {
+			if (availableBalance < totalCostWithNewSpin) {
 				lastError = `Insufficient balance to queue another spin. ${pendingSpins} spin${pendingSpins !== 1 ? 's' : ''} already queued.`;
 				return;
 			}
@@ -816,34 +894,19 @@
 	}
 
 	/**
-	 * Handle win display close
-	 */
-	function handleWinDisplayClose(): void {
-		showingWinDisplay = false;
-		waysWins = [];
-		bonusSpinsAwarded = 0;
-		jackpotHit = false;
-		
-		// After win display closes, ensure bonus spin interval is running if needed
-		console.log('🪟 Win display closed, checking bonus spin interval', { bonusSpins, isAutoBonusMode });
-		checkAndAutoSubmitBonusSpin();
-	}
-
-	/**
 	 * Handle win sequence completion from ReelGrid
 	 * Called when the win highlighting animation sequence finishes
 	 */
 	function handleWinSequenceComplete(): void {
-		// If we're displaying results and there are pending spins, continue to next spin
-		if (isDisplayingResults) {
-			// Clear the timeout since win sequence completed
-			if (winSequenceCompleteTimeout) {
-				clearTimeout(winSequenceCompleteTimeout);
-				winSequenceCompleteTimeout = null;
-			}
-			
-			// Small delay before starting next spin (allows win sequence to fully finish)
-			setTimeout(() => {
+		// Clear the timeout since win sequence completed
+		if (winSequenceCompleteTimeout) {
+			clearTimeout(winSequenceCompleteTimeout);
+			winSequenceCompleteTimeout = null;
+		}
+		
+		// Small delay before starting next actions (allows win sequence to fully finish)
+		setTimeout(() => {
+			if (isDisplayingResults) {
 				isDisplayingResults = false;
 				
 				// Check if there are still pending spins to continue with
@@ -853,8 +916,9 @@
 					isSpinning = true;
 					waitingForOutcome = true;
 				}
-			}, 300); // Small delay to ensure smooth transition
-		}
+			}
+			finishWinAnimation();
+		}, 300); // Small delay to ensure smooth transition
 	}
 
 	/**
@@ -925,8 +989,7 @@
 		// Don't start if:
 		// - Already has an interval running
 		// - No bonus spins available
-		// Note: We removed the showingWinDisplay check - the interval should run even during win displays
-		// The interval will continue adding spins to the queue every 3 seconds regardless of UI state
+		// The interval continues adding spins to the queue every 3 seconds regardless of UI state
 		if (bonusSpinIntervalId !== null) {
 			console.log('⏭️ Bonus spin interval already running, skipping checkAndAutoSubmitBonusSpin');
 			return;
@@ -940,11 +1003,10 @@
 		// If we have bonus spins, start the interval
 		// The interval will continue running and adding spins regardless of:
 		// - isDisplayingResults
-		// - showingWinDisplay
 		// - isSpinning
 		// - waitingForOutcome
 		// It only stops when bonusSpins reaches 0 or isAutoBonusMode is false
-		console.log('✅ Starting bonus spin interval check', { bonusSpins, showingWinDisplay, isDisplayingResults });
+		console.log('✅ Starting bonus spin interval check', { bonusSpins, isDisplayingResults });
 		startBonusSpinInterval();
 	}
 
@@ -1110,6 +1172,17 @@
 </script>
 
 <div class="w2w-slot-machine">
+	<!-- Game Header -->
+	<div class="game-header">
+		<div class="game-title">Ways to Win Slots</div>
+		<button class="exit-button" onclick={handleExit} aria-label="Exit game">
+			<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<line x1="18" y1="6" x2="6" y2="18"></line>
+				<line x1="6" y1="6" x2="18" y2="18"></line>
+			</svg>
+		</button>
+	</div>
+
 	<div class="slot-machine-container">
 		<!-- Main Game Area -->
 		<div class="game-main">
@@ -1131,7 +1204,7 @@
 						waitingForOutcome={waitingForOutcome}
 						waysWins={waysWins}
 						gameType="w2w"
-						jackpotAmount={jackpotAmount}
+						jackpotAmount={jackpotHit ? jackpotWinAmount : 0}
 						bonusSpinsAwarded={bonusSpinsAwarded}
 						onSpinComplete={() => console.log('Spin animation complete')}
 						onWinSequenceComplete={handleWinSequenceComplete}
@@ -1221,7 +1294,7 @@
 							<div class="flex justify-between text-xs text-neutral-500 dark:text-neutral-400">
 								<span>VOI Balance:</span>
 								<span class="text-primary-300 font-medium">
-									{(balance / 1_000_000).toFixed(2)}
+									{balance.toFixed(2)}
 								</span>
 							</div>
 						{:else}
@@ -1229,7 +1302,7 @@
 							<div class="flex justify-between">
 								<span class="text-tertiary">VOI Balance:</span>
 								<span class="text-3xl font-extrabold text-primary-400">
-									{(balance / 1_000_000).toFixed(2)}
+									{balance.toFixed(2)}
 								</span>
 							</div>
 						{/if}
@@ -1312,20 +1385,6 @@
 		</div>
 	{/if}
 
-	<!-- Win Display Modal -->
-	{#if showingWinDisplay}
-		<W2WWinDisplay
-			waysWins={waysWins}
-			totalPayout={winAmount}
-			bonusSpinsAwarded={bonusSpinsAwarded}
-			jackpotHit={jackpotHit}
-			jackpotAmount={jackpotWinAmount}
-			winLevel={winLevel}
-			currencyLabel={mode === 4 ? arc200DisplayLabel : mode === 2 ? 'VOI' : 'credits'}
-			onClose={handleWinDisplayClose}
-		/>
-	{/if}
-
 	<!-- Spin Detail Modal -->
 	<W2WSpinDetailModal spin={selectedSpin} onClose={closeSpinDetail} />
 
@@ -1339,13 +1398,29 @@
 
 <style>
 	.w2w-slot-machine {
-		@apply min-h-screen bg-gradient-to-br from-neutral-50 via-white to-neutral-50;
+		@apply h-screen overflow-auto bg-gradient-to-br from-neutral-50 via-white to-neutral-50;
 		@apply dark:from-neutral-900 dark:via-neutral-950 dark:to-neutral-900;
-		@apply p-4 md:p-6;
+		@apply flex flex-col;
+	}
+
+	.game-header {
+		@apply flex items-center justify-between px-4 md:px-6 py-3 bg-neutral-100/80 dark:bg-neutral-800/80;
+		@apply border-b border-neutral-200 dark:border-neutral-700 backdrop-blur-sm;
+		@apply sticky top-0 z-50;
+	}
+
+	.game-title {
+		@apply text-lg md:text-xl font-bold text-neutral-800 dark:text-neutral-100;
+	}
+
+	.exit-button {
+		@apply p-2 rounded-lg text-neutral-600 dark:text-neutral-400;
+		@apply hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-900 dark:hover:text-neutral-100;
+		@apply transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary-500;
 	}
 
 	.slot-machine-container {
-		@apply max-w-7xl mx-auto grid lg:grid-cols-3 gap-6;
+		@apply max-w-7xl mx-auto grid lg:grid-cols-3 gap-6 p-4 md:p-6 flex-1;
 	}
 
 	.game-main {

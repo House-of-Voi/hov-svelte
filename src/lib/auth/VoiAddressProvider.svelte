@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { getInitializedCdp } from '$lib/auth/cdpClient';
 	import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
@@ -20,6 +19,8 @@
 	let isEstablishing = $state(false);
 	let error = $state<string | null>(null);
 	let hasEstablished = $state(false); // Track if we've already tried to establish
+	let lastSessionId = $state<string | null>(session?.profileId ?? null);
+	let lastSessionVoiAddress = $state<string | null>(session?.voiAddress ?? null);
 
 	/**
 	 * Establishes the Voi session by:
@@ -208,28 +209,40 @@
 	}
 
 	// Watch for session changes and establish if needed
+	// Track session changes so we know when to allow re-establishment
 	$effect(() => {
-		// Only attempt establishment in the browser when a session exists
+		const currentSessionId = session?.profileId ?? null;
+		const currentVoiAddress = session?.voiAddress ?? null;
+
+		// Reset when user changes or when server session loses the Voi address after previously having it
+		if (currentSessionId !== lastSessionId) {
+			hasEstablished = false;
+		} else if (lastSessionVoiAddress && !currentVoiAddress) {
+			hasEstablished = false;
+		}
+
+		lastSessionId = currentSessionId;
+		lastSessionVoiAddress = currentVoiAddress;
+	});
+
+	// Attempt to establish when needed
+	$effect(() => {
 		if (!browser || !session) {
 			return;
 		}
 
-		// Allow re-establishment if the session loses its Voi address (e.g., cookie expired)
-		if (!session.voiAddress && !isEstablishing) {
-			hasEstablished = false;
+		if (hasEstablished || isEstablishing) {
+			return;
 		}
 
-		if (!isEstablishing && !hasEstablished) {
-			// If session already has voiAddress, we're done
-			if (session?.voiAddress) {
-				hasEstablished = true;
-				return;
-			}
-			
-			// Otherwise, try to establish (only once per missing-session cycle)
+		// Session already has the Voi address, nothing to do
+		if (session.voiAddress) {
 			hasEstablished = true;
-			establishVoiSession();
+			return;
 		}
+
+		hasEstablished = true;
+		establishVoiSession();
 	});
 </script>
 

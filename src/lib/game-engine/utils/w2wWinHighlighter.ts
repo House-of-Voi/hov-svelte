@@ -110,7 +110,7 @@ export function createWinSequence(
   grid: SymbolId[][],
   jackpotAmount: number = 0,
   bonusSpinsAwarded: number = 0,
-  stepDuration: number = 1000
+  stepDuration: number = 3000
 ): WinStep[] {
   const sequence: WinStep[] = [];
 
@@ -148,7 +148,7 @@ export function createWinSequence(
       positions: hovPositions,
       payout: jackpotAmount,
       message: `🎰 JACKPOT! ${hovCount} HOV symbols`,
-      duration: 2000 // Longer duration for jackpot celebration
+      duration: 6000 // Longer duration for jackpot celebration
     });
   }
 
@@ -162,7 +162,7 @@ export function createWinSequence(
       positions: bonusPositions,
       payout: 0, // Bonus doesn't add to payout, just awards spins
       message: `🎁 ${bonusCount} BONUS! ${bonusSpinsAwarded} Free Spins`,
-      duration: 2000 // Longer duration for bonus celebration
+      duration: 6000 // Longer duration for bonus celebration
     });
   }
 

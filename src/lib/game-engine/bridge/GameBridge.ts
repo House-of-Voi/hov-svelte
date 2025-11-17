@@ -22,6 +22,7 @@ import type {
   BalanceResponse,
   SpinSubmittedMessage,
   CreditBalanceMessage,
+  ExitRequest,
 } from './types';
 import { isGameRequest, isSpinRequest, MESSAGE_NAMESPACE } from './types';
 
@@ -157,12 +158,13 @@ export class GameBridge {
     this.engine.onBalanceUpdate((balance: number, previous: number) => {
       const state = this.engine!.getState();
       // Calculate available balance: total balance minus reserved for pending spins
-      const availableBalance = Math.max(0, balance - state.reservedBalance);
+      // Convert from microVOI (engine) to normalized VOI (game)
+      const availableBalanceMicroVOI = Math.max(0, balance - state.reservedBalance);
       this.sendToGame({
         type: 'BALANCE_UPDATE',
         payload: {
-          balance,
-          availableBalance,
+          balance: balance / 1_000_000,
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
         },
       } as BalanceUpdateMessage);
     });
@@ -232,14 +234,9 @@ export class GameBridge {
         return;
       }
 
-      // Validate message structure
+      // Validate message structure - only process request messages
       if (!isGameRequest(message)) {
-        console.warn('Invalid message format:', message);
-        this.sendError({
-          code: 'INVALID_MESSAGE',
-          message: 'Invalid message format',
-          recoverable: true,
-        });
+        // Not a request message - could be a response message we sent, just ignore it silently
         return;
       }
 
@@ -258,6 +255,9 @@ export class GameBridge {
           break;
         case 'GET_CONFIG':
           await this.handleGetConfig();
+          break;
+        case 'EXIT':
+          this.handleExit();
           break;
         default:
           console.warn('Unknown message type:', message);
@@ -356,8 +356,8 @@ export class GameBridge {
           this.currentMode = mode;
         }
 
-        // Convert betAmount from VOI to microAlgos (multiply by 10^6)
-        // UI works with human-readable units (40 VOI), contract expects microAlgos (40,000,000)
+        // Convert betAmount from normalized VOI to microVOI for engine
+        // Game sends normalized VOI (40), engine expects microVOI (40,000,000)
         const betAmountMicroAlgos = mode === 0 ? 0 : betAmountVOI * 1_000_000;
 
         // Validate bet amount (in VOI units for user-friendly validation)
@@ -376,9 +376,11 @@ export class GameBridge {
       // Handle 5reel format
       else if (is5ReelFormat) {
         const { paylines, betPerLine } = message.payload as { paylines: number; betPerLine: number };
-        totalBet = betPerLine * paylines;
+        // Convert betPerLine from normalized VOI to microVOI for engine
+        const betPerLineMicroVOI = betPerLine * 1_000_000;
+        totalBet = betPerLineMicroVOI * paylines;
 
-        // Check balance
+        // Check balance (engine uses microVOI)
         const state = this.engine.getState();
         const availableBalance = Math.max(0, state.balance - state.reservedBalance);
         if (availableBalance < totalBet) {
@@ -390,7 +392,7 @@ export class GameBridge {
           return;
         }
 
-        spinId = await this.engine.spin(betPerLine, paylines);
+        spinId = await this.engine.spin(betPerLineMicroVOI, paylines);
       } else {
         this.sendError({
           code: 'INVALID_REQUEST',
@@ -401,13 +403,14 @@ export class GameBridge {
       }
       
       // Immediately send balance update reflecting the reserved balance
+      // Convert from microVOI (engine) to normalized VOI (game)
       const state = this.engine.getState();
-      const availableBalance = Math.max(0, state.balance - state.reservedBalance);
+      const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
       this.sendToGame({
         type: 'BALANCE_UPDATE',
         payload: {
-          balance: state.balance,
-          availableBalance,
+          balance: state.balance / 1_000_000,
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
         },
       } as BalanceUpdateMessage);
       
@@ -436,29 +439,30 @@ export class GameBridge {
     }
 
     // Refresh balance from blockchain before sending
+    // Convert from microVOI (engine) to normalized VOI (game)
     try {
-      const currentBalance = await this.engine.getBalance();
+      const currentBalanceMicroVOI = await this.engine.getBalance();
       const state = this.engine.getState();
       // Calculate available balance: total balance minus reserved for pending spins
-      const availableBalance = Math.max(0, currentBalance - state.reservedBalance);
+      const availableBalanceMicroVOI = Math.max(0, currentBalanceMicroVOI - state.reservedBalance);
       
       this.sendToGame({
         type: 'BALANCE_RESPONSE',
         payload: {
-          balance: currentBalance,
-          availableBalance,
+          balance: currentBalanceMicroVOI / 1_000_000,
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
         },
       } as BalanceResponse);
     } catch (error) {
       console.error('Failed to get balance:', error);
       // Still send state balance even if refresh fails
       const state = this.engine.getState();
-      const availableBalance = Math.max(0, (state.balance || 0) - state.reservedBalance);
+      const availableBalanceMicroVOI = Math.max(0, (state.balance || 0) - state.reservedBalance);
       this.sendToGame({
         type: 'BALANCE_RESPONSE',
         payload: {
-          balance: state.balance || 0,
-          availableBalance,
+          balance: (state.balance || 0) / 1_000_000,
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
         },
       } as BalanceResponse);
     }
@@ -599,8 +603,8 @@ export class GameBridge {
         type: 'CONFIG',
         payload: {
           contractId: config.contractId.toString(),
-          minBet: config.minBet,
-          maxBet: config.maxBet,
+          minBet: config.minBet / 1_000_000, // Convert from microVOI to VOI
+          maxBet: config.maxBet / 1_000_000, // Convert from microVOI to VOI
           rtpTarget: config.rtpTarget,
           houseEdge: config.houseEdge,
           jackpotAmount,
@@ -614,14 +618,23 @@ export class GameBridge {
         type: 'CONFIG',
         payload: {
           contractId: config.contractId.toString(),
-          minBet: config.minBet,
-          maxBet: config.maxBet,
+          minBet: config.minBet / 1_000_000, // Convert from microVOI to VOI
+          maxBet: config.maxBet / 1_000_000, // Convert from microVOI to VOI
           maxPaylines: config.maxPaylines,
           rtpTarget: config.rtpTarget,
           houseEdge: config.houseEdge,
         },
       } as ConfigMessage);
     }
+  }
+
+  /**
+   * Handle EXIT request
+   */
+  private handleExit(): void {
+    console.log('GameBridge: Handling EXIT request, navigating to /games');
+    // Navigate to game lobby
+    window.location.href = '/games';
   }
 
   /**
@@ -661,11 +674,12 @@ export class GameBridge {
     
     if (isW2W) {
       // W2W format
+      // Convert all amounts from microVOI (engine) to normalized VOI (game)
       const serializableWaysWins = (result.outcome.waysWins || []).map((win) => ({
         symbol: String(win.symbol),
         ways: Number(win.ways),
         matchLength: Number(win.matchLength),
-        payout: Number(win.payout),
+        payout: Number(win.payout) / 1_000_000, // Convert from microVOI to VOI
       }));
 
       this.sendToGame({
@@ -676,21 +690,22 @@ export class GameBridge {
           winnings: Number(result.winnings) / 1_000_000, // Convert microVOI to VOI
           isWin: Boolean(result.isWin),
           waysWins: serializableWaysWins,
-          betAmount: Number(result.betAmount || 0),
+          betAmount: Number(result.betAmount || 0) / 1_000_000, // Convert from microVOI to VOI
           bonusSpinsAwarded: Number(result.outcome.bonusSpinsAwarded || 0),
           jackpotHit: Boolean(result.outcome.jackpotHit),
           jackpotAmount: result.outcome.jackpotAmount ? Number(result.outcome.jackpotAmount) / 1_000_000 : undefined, // Convert microVOI to VOI
           winLevel: String(result.winLevel),
-          totalBet: Number(result.totalBet),
+          totalBet: Number(result.totalBet) / 1_000_000, // Convert from microVOI to VOI
         },
       } as OutcomeMessage);
     } else {
       // 5reel format
+      // Convert all amounts from microVOI (engine) to normalized VOI (game)
       const serializableWinningLines = (result.outcome.winningLines || []).map((line) => ({
         paylineIndex: line.paylineIndex,
         symbol: String(line.symbol), // Ensure string
         matchCount: Number(line.matchCount), // Ensure number
-        payout: Number(line.payout), // Ensure number
+        payout: Number(line.payout) / 1_000_000, // Convert from microVOI to VOI
       }));
 
       this.sendToGame({
@@ -702,39 +717,39 @@ export class GameBridge {
           isWin: Boolean(result.isWin),
           winningLines: serializableWinningLines,
           winLevel: String(result.winLevel),
-          betPerLine: Number(result.betPerLine || 0),
+          betPerLine: Number(result.betPerLine || 0) / 1_000_000, // Convert from microVOI to VOI
           paylines: Number(result.paylines || 0),
-          totalBet: Number(result.totalBet),
+          totalBet: Number(result.totalBet) / 1_000_000, // Convert from microVOI to VOI
         },
       } as OutcomeMessage);
     }
 
     // Immediately send balance update with correct reserved balance
     // The spin is now COMPLETED, so reserved balance should exclude it
-    // We use the current state balance (may be slightly stale) but with correct reserved balance
-    const availableBalance = Math.max(0, state.balance - state.reservedBalance);
+    // Convert from microVOI (engine) to normalized VOI (game)
+    const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
     this.sendToGame({
       type: 'BALANCE_UPDATE',
       payload: {
-        balance: state.balance,
-        availableBalance,
+        balance: state.balance / 1_000_000,
+        availableBalance: availableBalanceMicroVOI / 1_000_000,
       },
     } as BalanceUpdateMessage);
 
     // Also refresh balance from blockchain in background (especially important after wins)
     // This will trigger onBalanceUpdate which will send another update if balance changed
     try {
-      const currentBalance = await this.engine!.getBalance();
+      const currentBalanceMicroVOI = await this.engine!.getBalance();
       const updatedState = this.engine!.getState();
-      const updatedAvailableBalance = Math.max(0, currentBalance - updatedState.reservedBalance);
+      const updatedAvailableBalanceMicroVOI = Math.max(0, currentBalanceMicroVOI - updatedState.reservedBalance);
       
       // Only send update if balance actually changed
-      if (currentBalance !== state.balance || updatedAvailableBalance !== availableBalance) {
+      if (currentBalanceMicroVOI !== state.balance || updatedAvailableBalanceMicroVOI !== availableBalanceMicroVOI) {
         this.sendToGame({
           type: 'BALANCE_UPDATE',
           payload: {
-            balance: currentBalance,
-            availableBalance: updatedAvailableBalance,
+            balance: currentBalanceMicroVOI / 1_000_000,
+            availableBalance: updatedAvailableBalanceMicroVOI / 1_000_000,
           },
         } as BalanceUpdateMessage);
       }
@@ -777,7 +792,14 @@ export class GameBridge {
         console.error('Failed to send message to iframe:', error);
       }
     } else {
-      // Fallback: dispatch custom event if iframe not available
+      // Fallback: send postMessage to same window (for non-iframe setup)
+      try {
+        window.postMessage(messageWithNamespace, '*');
+      } catch (error) {
+        console.error('Failed to send message to window:', error);
+      }
+
+      // Also dispatch custom event for backwards compatibility
       window.dispatchEvent(
         new CustomEvent('gameBridgeMessage', {
           detail: messageWithNamespace,
@@ -812,10 +834,13 @@ export class GameBridge {
       }
 
       // Validate bet amount
-      if (betPerLine < config.minBet || betPerLine > config.maxBet) {
+      // betPerLine is in normalized VOI, config values are in microVOI - convert for comparison
+      const minBetVOI = config.minBet / 1_000_000;
+      const maxBetVOI = config.maxBet / 1_000_000;
+      if (betPerLine < minBetVOI || betPerLine > maxBetVOI) {
         return {
           valid: false,
-          error: `Bet per line must be between ${config.minBet / 1_000_000} and ${config.maxBet / 1_000_000} VOI`,
+          error: `Bet per line must be between ${minBetVOI} and ${maxBetVOI} VOI`,
         };
       }
     } else if (isW2WFormat) {

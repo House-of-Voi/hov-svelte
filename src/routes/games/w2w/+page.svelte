@@ -1,54 +1,52 @@
 <script lang="ts">
-  import { page } from '$app/stores';
-  import { onMount } from 'svelte';
-  import GameContainer from '$lib/components/game/GameContainer.svelte';
-  import { gameConfigService } from '$lib/services/gameConfigService';
-  import type { PageData } from './$types';
+	import W2WSlotsGamePostMessage from '$lib/components/game/W2WSlotsGamePostMessage.svelte';
+	import GameBridgeWrapper from '$lib/components/game/GameBridgeWrapper.svelte';
+	import { gameConfigService } from '$lib/services/gameConfigService';
+	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import type { PageData } from './$types';
 
-  let { data }: { data: PageData } = $props();
+	let { data }: { data: PageData } = $props();
 
-  // Parse contractId from string to bigint
-  const contractId = data.contractId ? BigInt(data.contractId) : undefined;
+	// Parse contractId from string to bigint (skip for test-mode)
+	const contractId = $derived(
+		data.contractId && data.contractId !== 'test-mode' ? BigInt(data.contractId) : undefined
+	);
+	const algorandAddress = $derived(data.algorandAddress);
 
-  // Get mode and gameUrl from query params
-  const mode = $derived($page.url.searchParams.get('mode'));
-  const gameUrl = $derived($page.url.searchParams.get('url') || undefined);
-  const useEmbeddedTest = $derived($page.url.searchParams.get('test') === 'embed');
+	// Fetch game config for page title
+	let gameConfig = $state<{ display_name: string } | null>(null);
 
-  // Default: use iframe version (postMessage API)
-  // Use embedded version only if test=embed param is present or mode=embedded is explicitly set
-  const finalMode = $derived(
-    useEmbeddedTest || mode === 'embedded' ? 'embedded' : 'external'
-  );
-  // Don't provide default gameUrl - let GameContainer detect from game_type
-  const finalGameUrl = $derived(
-    finalMode === 'external' ? gameUrl : undefined
-  );
-
-  // Fetch game config for page title
-  let gameConfig = $state<{ display_name: string } | null>(null);
-
-  onMount(async () => {
-    if (contractId) {
-      try {
-        const config = await gameConfigService.getConfigByContractId(contractId);
-        if (config) {
-          gameConfig = { display_name: config.display_name };
-        }
-      } catch (err) {
-        console.error('Failed to fetch game config for title:', err);
-      }
-    }
-  });
+	onMount(async () => {
+		if (contractId) {
+			try {
+				const config = await gameConfigService.getConfigByContractId(contractId);
+				if (config) {
+					gameConfig = { display_name: config.display_name };
+				}
+			} catch (err) {
+				console.error('Failed to fetch game config for title:', err);
+			}
+		}
+	});
 </script>
 
 <svelte:head>
-  <title>{gameConfig?.display_name || 'Ways to Win Slots'} - House of Voi</title>
+	<title>{gameConfig?.display_name || 'Ways to Win Slots'} - House of Voi</title>
 </svelte:head>
 
-<GameContainer
-  contractId={contractId}
-  algorandAddress={data.algorandAddress}
-  mode={finalMode}
-  gameUrl={finalGameUrl}
-/>
+{#if data.contractId === 'test-mode'}
+	<!-- Test mode: No bridge needed, parent (testing suite) handles all communication -->
+	<W2WSlotsGamePostMessage />
+{:else if contractId && algorandAddress}
+	<!-- Normal mode: Use GameBridge for blockchain communication -->
+	<GameBridgeWrapper contractId={contractId} walletAddress={algorandAddress}>
+		<W2WSlotsGamePostMessage />
+	</GameBridgeWrapper>
+{:else}
+	<div class="flex items-center justify-center h-screen bg-neutral-50 dark:bg-neutral-900">
+		<div class="text-center p-8">
+			<div class="text-neutral-600 dark:text-neutral-400">Loading game...</div>
+		</div>
+	</div>
+{/if}

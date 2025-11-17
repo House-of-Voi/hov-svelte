@@ -41,9 +41,8 @@
 	);
 	let pendingCount = $derived(activeSpins.length);
 	
-	// Display all spins in their original insertion order (FIFO)
-	// This ensures the order never changes regardless of when spins complete
-	let orderedSpins = $derived([...spinQueue]);
+	// Display spins with the most recent entries first (LIFO style)
+	let orderedSpins = $derived([...spinQueue].reverse());
 
 	/**
 	 * Format elapsed time since spin was queued
@@ -115,7 +114,7 @@
 					No spins yet. Place a bet to get started!
 				</div>
 			{:else}
-				<!-- Display all spins in their original insertion order (FIFO) -->
+				<!-- Display spins with most recent first -->
 				<div class="space-y-2">
 					{#each orderedSpins as spin (spin.clientSpinId)}
 						{#if spin.status === 'pending' || spin.status === 'submitted'}

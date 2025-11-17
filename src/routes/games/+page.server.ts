@@ -9,6 +9,7 @@ interface SlotConfig {
   theme: string | null;
   contract_id: number;
   chain: 'base' | 'voi' | 'solana';
+  game_type: '5reel' | 'w2w';
   rtp_target: string;
   house_edge: string;
   min_bet: number;

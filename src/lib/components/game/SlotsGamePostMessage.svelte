@@ -25,7 +25,6 @@
 	import { MESSAGE_NAMESPACE } from '$lib/game-engine/bridge/types';
 
 	import { onMount, onDestroy } from 'svelte';
-	import { formatVoi } from '$lib/game-engine/utils/gameConstants';
 
 	// Default symbols for initial grid
 	const DEFAULT_SYMBOLS: string[] = ['A', 'B', 'C', 'D', '_'];
@@ -43,7 +42,7 @@
 	let availableBalance = $state(0);
 	let isSpinning = $state(false);
 	let waitingForOutcome = $state(false);
-	let betPerLine = $state(1_000_000); // 1 VOI
+	let betPerLine = $state(1); // 1 VOI (normalized)
 	let paylines = $state(20);
 	let totalBet = $derived(betPerLine * paylines);
 	let lastError = $state<string | null>(null);
@@ -119,15 +118,39 @@
 	});
 
 	/**
-	 * Send message to parent (bridge)
+	 * Send message to parent (bridge) or same window
 	 */
 	function sendMessage(message: GameRequest): void {
-		if (window.parent) {
-			const messageWithNamespace = {
-				...message,
-				namespace: MESSAGE_NAMESPACE,
-			};
-			window.parent.postMessage(messageWithNamespace, '*'); // Use specific origin in production
+		const messageWithNamespace = {
+			...message,
+			namespace: MESSAGE_NAMESPACE,
+		};
+
+		// Check if we're in an iframe
+		const isInIframe = window !== window.parent;
+
+		if (isInIframe) {
+			// If in iframe, send to parent
+			window.parent.postMessage(messageWithNamespace, '*');
+		} else {
+			// If not in iframe, send to same window (for GameBridge on same page)
+			window.postMessage(messageWithNamespace, '*');
+		}
+	}
+
+	/**
+	 * Exit game and return to lobby
+	 */
+	function handleExit(): void {
+		// Check if we're in an iframe
+		const isInIframe = window !== window.parent;
+
+		if (isInIframe) {
+			// If in iframe, send EXIT message to parent
+			sendMessage({ type: 'EXIT' } as any);
+		} else {
+			// If not in iframe (running as main page), navigate directly
+			window.location.href = '/games';
 		}
 	}
 
@@ -289,27 +312,19 @@
 	// Note: Config and balance are requested in the main onMount above
 </script>
 
-<div class="space-y-6 max-w-6xl mx-auto p-4">
-	<!-- Header - Hidden in iframe mode -->
-	<div class="flex items-center justify-between" style="display: none;">
-		<div>
-			<h1
-				class="text-4xl font-black text-warning-500 dark:text-warning-400 neon-text uppercase flex items-center gap-3"
-			>
-				<SlotMachineIcon size={48} />
-				5-Reel Slots
-			</h1>
-			<p class="text-tertiary mt-2">
-				Match 3+ symbols on a payline to win. Provably fair blockchain gaming on Voi.
-			</p>
-			<p class="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-				(postMessage Mode - E2E Test)
-			</p>
-		</div>
-		<a href="/games">
-			<Button variant="ghost" size="sm"> ← Back to Lobby </Button>
-		</a>
+<div class="slots-game-container">
+	<!-- Game Header -->
+	<div class="game-header">
+		<div class="game-title">5-Reel Slots</div>
+		<button class="exit-button" onclick={handleExit} aria-label="Exit game">
+			<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<line x1="18" y1="6" x2="6" y2="18"></line>
+				<line x1="6" y1="6" x2="18" y2="18"></line>
+			</svg>
+		</button>
 	</div>
+
+	<div class="game-content">
 
 	<!-- Error Display -->
 	{#if lastError}
@@ -390,13 +405,13 @@
 						<div class="flex justify-between">
 							<span class="text-tertiary">Available:</span>
 							<span class="text-warning-500 dark:text-warning-400 font-bold">
-								{formatVoi(availableBalance || 0)}
+								{(availableBalance || 0).toFixed(2)}
 							</span>
 						</div>
 						<div class="flex justify-between text-sm">
 							<span class="text-tertiary">Total:</span>
 							<span class="text-neutral-600 dark:text-neutral-400">
-								{formatVoi(balance || 0)}
+								{(balance || 0).toFixed(2)}
 							</span>
 						</div>
 					</div>
@@ -413,7 +428,7 @@
 						<div class="flex justify-between">
 							<span class="text-tertiary">Per Line:</span>
 							<span class="text-neutral-950 dark:text-white font-medium">
-								{formatVoi(betPerLine)}
+								{betPerLine.toFixed(2)}
 							</span>
 						</div>
 						<div class="flex justify-between">
@@ -423,7 +438,7 @@
 						<div class="flex justify-between border-t border-neutral-200 dark:border-neutral-700 pt-2 mt-2">
 							<span class="text-tertiary font-semibold">Total:</span>
 							<span class="text-warning-500 dark:text-warning-400 font-bold">
-								{formatVoi(totalBet)}
+								{totalBet.toFixed(2)}
 							</span>
 						</div>
 					</div>
@@ -440,5 +455,34 @@
 		{winLevel}
 		onClose={handleWinCelebrationClose}
 	/>
+	</div>
 </div>
+
+<style>
+	.slots-game-container {
+		@apply h-screen overflow-auto bg-gradient-to-br from-neutral-50 via-white to-neutral-50;
+		@apply dark:from-neutral-900 dark:via-neutral-950 dark:to-neutral-900;
+		@apply flex flex-col;
+	}
+
+	.game-header {
+		@apply flex items-center justify-between px-4 md:px-6 py-3 bg-neutral-100/80 dark:bg-neutral-800/80;
+		@apply border-b border-neutral-200 dark:border-neutral-700 backdrop-blur-sm;
+		@apply sticky top-0 z-50;
+	}
+
+	.game-title {
+		@apply text-lg md:text-xl font-bold text-neutral-800 dark:text-neutral-100;
+	}
+
+	.exit-button {
+		@apply p-2 rounded-lg text-neutral-600 dark:text-neutral-400;
+		@apply hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-900 dark:hover:text-neutral-100;
+		@apply transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary-500;
+	}
+
+	.game-content {
+		@apply space-y-6 max-w-6xl mx-auto p-4 flex-1 overflow-auto;
+	}
+</style>
 

@@ -1,15 +1,14 @@
 <script lang="ts">
 	import type { WinLevel } from '$lib/game-engine/types';
-	import { formatVoi } from '$lib/game-engine/utils/gameConstants';
 	import { fly, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
 	interface Props {
 		/** Whether to show the win display */
 		show: boolean;
-		/** Win amount in VOI */
+		/** Win amount in normalized VOI */
 		winAmount: number;
-		/** Total bet in microVOI */
+		/** Total bet in normalized VOI */
 		totalBet: number;
 		/** Win level for styling */
 		winLevel?: WinLevel;
@@ -19,9 +18,8 @@
 
 	let { show, winAmount, totalBet, winLevel = 'small', onClose }: Props = $props();
 
-	// Calculate multiplier (convert totalBet from microVOI to VOI)
-	let totalBetVOI = $derived(totalBet / 1_000_000);
-	let multiplier = $derived(totalBetVOI > 0 ? (winAmount / totalBetVOI).toFixed(2) : '0');
+	// Calculate multiplier (both values are already in normalized VOI)
+	let multiplier = $derived(totalBet > 0 ? (winAmount / totalBet).toFixed(2) : '0');
 
 	// Get win level styling
 	let winLevelConfig = $derived.by(() => {
@@ -90,7 +88,7 @@
 			</h2>
 
 			<div class="win-amount">
-				<span class="win-amount-value">{formatVoi(winAmount * 1_000_000)}</span>
+				<span class="win-amount-value">{winAmount.toFixed(2)}</span>
 			</div>
 
 			<div class="win-multiplier">

@@ -241,7 +241,8 @@
             <!-- Play Button -->
             <div class="mt-6">
               {#if canPlay}
-                <a href="/games/slots?contract={game.contract_id}" class="block">
+                {@const gameRoute = game.game_type === 'w2w' ? '/games/w2w' : '/games/slots'}
+                <a href="{gameRoute}?contract={game.contract_id}" class="block">
                   <Button variant="primary" size="md" class="w-full">
                     Play Now
                   </Button>

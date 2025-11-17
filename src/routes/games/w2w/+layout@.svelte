@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Minimal layout for iframe - resets layout stack to skip parent layouts
+	// Fullscreen layout for W2W game - resets layout stack to skip parent layouts
 </script>
 
 <slot />
@@ -9,16 +9,16 @@
 	:global(body) {
 		margin: 0;
 		padding: 0;
-		overflow: auto;
+		overflow: hidden;
 		width: 100%;
-		min-height: 100%;
+		height: 100vh;
 	}
 
 	:global(#app) {
 		margin: 0;
 		padding: 0;
 		width: 100%;
-		min-height: 100%;
+		height: 100vh;
+		overflow: hidden;
 	}
 </style>
-

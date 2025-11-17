@@ -68,12 +68,18 @@ export interface InitRequest {
   };
 }
 
+export interface ExitRequest {
+  namespace: string;
+  type: 'EXIT';
+}
+
 export type GameRequest =
   | SpinRequest
   | GetBalanceRequest
   | GetCreditBalanceRequest
   | GetConfigRequest
-  | InitRequest;
+  | InitRequest
+  | ExitRequest;
 
 // ============================================================================
 // RESPONSE MESSAGES (Bridge → Game)
@@ -84,7 +90,7 @@ export interface WinningLine {
   paylineIndex: number;
   symbol: string;
   matchCount: number;
-  payout: number; // microVOI
+  payout: number; // VOI
 }
 
 // w2w-specific types
@@ -92,7 +98,7 @@ export interface WaysWin {
   symbol: string;
   ways: number;
   matchLength: number;
-  payout: number; // credits or microVOI
+  payout: number; // credits or VOI
 }
 
 /**
@@ -104,7 +110,7 @@ export interface OutcomeMessage {
   payload: {
     spinId: string;
     grid: string[][]; // Grid dimensions vary: 5reel = 3x5, w2w = 4x5
-    winnings: number; // microVOI or credits depending on game type
+    winnings: number; // VOI or credits depending on game type
     isWin: boolean;
     winLevel: 'none' | 'small' | 'medium' | 'large' | 'jackpot';
     totalBet: number;
@@ -130,8 +136,8 @@ export interface BalanceUpdateMessage {
   namespace: string;
   type: 'BALANCE_UPDATE';
   payload: {
-    balance: number; // microVOI
-    availableBalance: number; // microVOI
+    balance: number; // VOI
+    availableBalance: number; // VOI
   };
 }
 
@@ -164,8 +170,8 @@ export interface ConfigMessage {
   type: 'CONFIG';
   payload: {
     contractId: string;
-    minBet: number; // microVOI or credits
-    maxBet: number; // microVOI or credits
+    minBet: number; // VOI or credits
+    maxBet: number; // VOI or credits
     rtpTarget: number;
     houseEdge: number;
   } & (
@@ -186,8 +192,8 @@ export interface BalanceResponse {
   namespace: string;
   type: 'BALANCE_RESPONSE';
   payload: {
-    balance: number; // microVOI
-    availableBalance: number; // microVOI
+    balance: number; // VOI
+    availableBalance: number; // VOI
   };
 }
 
@@ -229,7 +235,8 @@ export function isGameRequest(message: unknown): message is GameRequest {
     msg.type === 'GET_BALANCE' ||
     msg.type === 'GET_CREDIT_BALANCE' ||
     msg.type === 'GET_CONFIG' ||
-    msg.type === 'INIT'
+    msg.type === 'INIT' ||
+    msg.type === 'EXIT'
   );
 }
 

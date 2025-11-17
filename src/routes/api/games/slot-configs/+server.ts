@@ -13,6 +13,27 @@ export const GET: RequestHandler = async ({ url }) => {
     const chain = url.searchParams.get('chain') as 'base' | 'voi' | 'solana' | null;
     const contractId = url.searchParams.get('contract_id');
 
+    // Special case: test-mode returns a minimal mock config
+    // This allows games to load in the testing suite without a real contract
+    if (contractId === 'test-mode') {
+      return json<ApiResponse<any>>(
+        {
+          success: true,
+          data: {
+            contract_id: 'test-mode',
+            chain: 'voi',
+            game_type: 'w2w', // Default to w2w, will be overridden by postMessage CONFIG
+            is_active: true,
+            min_bet: 40,
+            max_bet: 60,
+            rtp_target: 96.5,
+            house_edge: 3.5
+          }
+        },
+        { status: 200 }
+      );
+    }
+
     const supabase = createAdminClient();
 
     // Build query - only return active configs
@@ -88,6 +109,7 @@ export const GET: RequestHandler = async ({ url }) => {
       theme: config.theme,
       contract_id: config.contract_id,
       chain: config.chain,
+      game_type: config.game_type, // Include game_type to determine which route to use
       rtp_target: config.rtp_target,
       house_edge: config.house_edge,
       min_bet: config.min_bet,

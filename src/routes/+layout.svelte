@@ -24,10 +24,11 @@
 
   let { children, data }: { children: () => unknown; data: LayoutData } = $props();
 
-  // Check if we're on an iframe route (slots or w2w)
-  const isIframeRoute = $derived(
-    $page.route.id === '/games/slots/iframe' || 
-    $page.route.id === '/games/w2w/iframe'
+  // Check if we're on a fullscreen game route (slots, w2w, or testing)
+  const isFullscreenGameRoute = $derived(
+    $page.route.id === '/games/slots' ||
+    $page.route.id === '/games/w2w' ||
+    $page.route.id === '/games/testing'
   );
 
   let isAdminUser = $state(data.isAdminUser);
@@ -112,7 +113,7 @@
   <div class="min-h-screen bg-white dark:bg-neutral-950">
     <NavigationProgress />
     <div class="flex min-h-screen flex-col">
-      {#if !isIframeRoute}
+      {#if !isFullscreenGameRoute}
       <header class="sticky top-0 z-50 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-xl border-b border-neutral-200 dark:border-neutral-800">
         <div class="mx-auto max-w-7xl px-6">
           <div class="flex items-center justify-between h-16">
@@ -164,8 +165,8 @@
       </header>
       {/if}
 
-      {#if isIframeRoute}
-        <!-- Iframe mode: no padding, full viewport -->
+      {#if isFullscreenGameRoute}
+        <!-- Fullscreen game mode: no padding, full viewport -->
         <main class="w-full h-screen m-0 p-0">
           {@render children()}
         </main>
@@ -176,7 +177,7 @@
         </main>
       {/if}
 
-      {#if !isIframeRoute}
+      {#if !isFullscreenGameRoute}
       <footer class="border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50">
         <div class="mx-auto max-w-7xl px-6 py-12">
           <div class="text-center">
@@ -198,7 +199,7 @@
       {/if}
     </div>
 
-    {#if !isIframeRoute}
+    {#if !isFullscreenGameRoute}
     <!-- Global Notification Container -->
     <NotificationContainer />
     {/if}

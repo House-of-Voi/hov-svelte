@@ -215,6 +215,12 @@ window.parent.postMessage({
   namespace: 'com.houseofvoi',
   type: 'INIT'
 }, '*');
+
+// Exit game and return to lobby
+window.parent.postMessage({
+  namespace: 'com.houseofvoi',
+  type: 'EXIT'
+}, '*');
 ```
 
 ## Message Namespace
@@ -403,6 +409,29 @@ Initialize connection and get initial state.
 ```
 
 **Response:** `BALANCE_RESPONSE` and `CONFIG`
+
+#### EXIT
+
+Request to exit the game and navigate back to the game lobby. This allows games to implement their own exit/close buttons.
+
+```typescript
+{
+  namespace: 'com.houseofvoi';
+  type: 'EXIT';
+}
+```
+
+**Response:** None (navigation occurs immediately)
+
+**Example:**
+```javascript
+// User clicks exit button in game
+function onExitButtonClicked() {
+  window.parent.postMessage({
+    namespace: 'com.houseofvoi',
+    type: 'EXIT'
+  }, '*');
+}
 
 ### Response Messages (Bridge → Game)
 

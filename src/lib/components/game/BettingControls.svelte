@@ -1,9 +1,9 @@
 <script lang="ts">
 	import Button from '$lib/components/ui/Button.svelte';
-	import { BETTING_CONSTANTS, formatVoi, calculateTotalBet } from '$lib/game-engine/utils/gameConstants';
+	import { BETTING_CONSTANTS, calculateTotalBet } from '$lib/game-engine/utils/gameConstants';
 
 	interface Props {
-		/** Current bet per line in microVOI */
+		/** Current bet per line in normalized VOI */
 		betPerLine: number;
 		/** Number of selected paylines (1-20) */
 		paylines: number;
@@ -41,8 +41,8 @@
 		onStopAutoSpin
 	}: Props = $props();
 
-	// Quick bet amounts (in microVOI) - Only show first 4 options
-	const quickBets = BETTING_CONSTANTS.QUICK_BET_AMOUNTS.slice(0, 4).map((voi) => voi * 1_000_000);
+	// Quick bet amounts (in normalized VOI) - Only show first 4 options
+	const quickBets = BETTING_CONSTANTS.QUICK_BET_AMOUNTS.slice(0, 4);
 
 	// Auto-spin options
 	const autoSpinOptions = [10, 25, 50, 100];
@@ -78,7 +78,7 @@
 			<!-- Bet Per Line -->
 			<label class="control-label">Bet Per Line</label>
 			<div class="bet-amount-display">
-				<span class="amount-value">{formatVoi(betPerLine)}</span>
+				<span class="amount-value">{betPerLine.toFixed(2)}</span>
 			</div>
 			<div class="quick-bets">
 				{#each quickBets as amount}
@@ -88,7 +88,7 @@
 						onclick={() => handleQuickBet(amount)}
 						disabled={disabled || isSpinning}
 					>
-						{formatVoi(amount, false)}
+						{amount.toFixed(2)}
 					</button>
 				{/each}
 			</div>
@@ -121,7 +121,7 @@
 		<div class="control-section">
 			<label class="control-label">Total Bet</label>
 			<div class="total-bet">
-				<span class="total-value">{formatVoi(totalBet)}</span>
+				<span class="total-value">{totalBet.toFixed(2)}</span>
 			</div>
 
 			<!-- Spin Buttons -->
