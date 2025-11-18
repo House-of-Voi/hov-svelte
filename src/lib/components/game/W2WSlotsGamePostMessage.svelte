@@ -559,11 +559,6 @@
 			}
 		}
 
-		// Update bonus spins if awarded
-		if (displayBonusSpins > 0) {
-			bonusSpins += displayBonusSpins;
-		}
-
 		// Ensure bonus spin interval is running after a short delay
 		// With no modal blocking the UI, we can immediately re-check automation needs
 		if (bonusSpins > 0 && isAutoBonusMode) {

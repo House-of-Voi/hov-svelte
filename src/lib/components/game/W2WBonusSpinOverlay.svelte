@@ -40,7 +40,8 @@
 
 <style>
 	.bonus-spin-overlay {
-		@apply fixed top-4 left-1/2 transform -translate-x-1/2 z-40;
+		@apply fixed left-1/2 transform -translate-x-1/2 z-40;
+		@apply top-20 md:top-24;
 		@apply pointer-events-none;
 	}
 

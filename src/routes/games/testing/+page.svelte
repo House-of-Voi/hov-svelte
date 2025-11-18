@@ -29,6 +29,8 @@
 	let lastSpinId = $state<string | null>(null); // Track last spin request for matching responses
 	let pendingSpinId = $state<string | null>(null); // Spin ID waiting for outcome selection
 	let isOverlayStuck = $state(true); // Default to stuck mode
+	let currentBonusSpins = $state(0); // Track current bonus spin count
+	let currentCredits = $state(5000); // Track current credits for W2W games
 
 	// Stats
 	let stats = $derived.by(() => {
@@ -178,7 +180,7 @@
 		const configMessage: GameResponse = {
 			namespace: MESSAGE_NAMESPACE,
 			type: 'CONFIG',
-			payload: configPayload
+			payload: configPayload as any
 		};
 
 		sendResponseToGame(configMessage);
@@ -257,16 +259,22 @@
 				outcome = gameResponseTemplates.OUTCOME_W2W();
 				const payload = outcome.payload as any;
 				payload.winnings = winnings;
-				payload.winLevel = winLevel;
-				payload.isWin = winnings > 0;
+				// If bonus spins are awarded, treat it as a win even if winnings are 0
+				if (bonusSpins > 0) {
+					payload.winLevel = 'small';
+					payload.isWin = true;
+				} else {
+					payload.winLevel = winLevel;
+					payload.isWin = winnings > 0;
+				}
 				payload.jackpotHit = jackpotHit;
 				if (jackpotHit) {
 					payload.jackpotAmount = winnings;
 				}
 				payload.bonusSpinsAwarded = bonusSpins;
 				payload.spinId = spinId;
-				// Clear waysWins for losses (no winnings and no jackpot)
-				if (winnings === 0 && !jackpotHit) {
+				// Clear waysWins for losses (no winnings, no jackpot, and no bonus spins)
+				if (winnings === 0 && !jackpotHit && bonusSpins === 0) {
 					payload.waysWins = [];
 				}
 			} else {
@@ -290,6 +298,15 @@
 				sendBalanceUpdate(currentBalance);
 			}
 
+			// Handle bonus spins for W2W games
+			if (gameType === 'w2w' && bonusSpins > 0) {
+				currentBonusSpins += bonusSpins;
+				// Send credit balance update after a short delay to ensure outcome is processed first
+				setTimeout(() => {
+					sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
+				}, 100);
+			}
+
 			// Clear the lastSpinId so we're ready for the next spin
 			lastSpinId = null;
 		}, 500); // Small delay to simulate network
@@ -309,6 +326,21 @@
 		sendResponseToGame(balanceMessage);
 	}
 
+	// Send credit balance update to game (W2W only)
+	function sendCreditBalanceUpdate(credits: number, bonusSpins: number) {
+		const creditMessage: GameResponse = {
+			namespace: MESSAGE_NAMESPACE,
+			type: 'CREDIT_BALANCE',
+			payload: {
+				credits,
+				bonusSpins,
+				spinCount: 0
+			}
+		};
+
+		sendResponseToGame(creditMessage);
+	}
+
 	// Auto-respond to game requests
 	function autoRespondToMessage(message: GameRequest) {
 		if (!iframeElement || !iframeElement.contentWindow) {
@@ -325,6 +357,11 @@
 				sendConfigToGame();
 				// Also send initial balance
 				sendBalanceUpdate(currentBalance);
+				// Send initial credit balance for W2W games
+				const detectedGameTypeOnInit = gameType || detectGameTypeFromUrl(gameUrl);
+				if (detectedGameTypeOnInit === 'w2w') {
+					sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
+				}
 				return;
 
 			case 'GET_CONFIG':
@@ -336,16 +373,7 @@
 				return;
 
 			case 'GET_CREDIT_BALANCE':
-				const creditResponse: GameResponse = {
-					namespace: MESSAGE_NAMESPACE,
-					type: 'CREDIT_BALANCE',
-					payload: {
-						credits: 5000,
-						bonusSpins: 0,
-						spinCount: 0
-					}
-				};
-				sendResponseToGame(creditResponse);
+				sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
 				return;
 
 			case 'SPIN_REQUEST':
@@ -377,6 +405,15 @@
 					if (spinRequestPayload.reserved === 0 && spinRequestPayload.betAmount) {
 						betAmount = spinRequestPayload.betAmount;
 					}
+					
+					// Handle bonus spin usage (reserved === 1)
+					if (spinRequestPayload.reserved === 1) {
+						if (currentBonusSpins > 0) {
+							currentBonusSpins = Math.max(0, currentBonusSpins - 1);
+							// Send updated credit balance after decrementing bonus spin
+							sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
+						}
+					}
 				}
 				
 				// Deduct bet from balance (only if betAmount > 0)
@@ -386,7 +423,7 @@
 					sendBalanceUpdate(currentBalance);
 				}
 				
-				console.log('[Auto-Respond] SPIN_REQUEST received with spinId:', spinId, 'betAmount:', betAmount);
+				console.log('[Auto-Respond] SPIN_REQUEST received with spinId:', spinId, 'betAmount:', betAmount, 'reserved:', spinRequestPayload.reserved);
 				// Show toast - don't send outcome automatically
 				return;
 
