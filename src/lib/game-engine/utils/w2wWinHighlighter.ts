@@ -121,7 +121,25 @@ export function createWinSequence(
     const positions = getWinningPositions(grid, waysWin);
 
     // Calculate base payout for breakdown display
-    const basePayout = Math.floor(waysWin.payout / (waysWin.ways * waysWin.wildMultiplier));
+    // Ensure wildMultiplier defaults to 1 if missing/invalid
+    const wildMultiplier = (waysWin.wildMultiplier && Number.isFinite(waysWin.wildMultiplier) && waysWin.wildMultiplier > 0)
+      ? waysWin.wildMultiplier
+      : 1;
+    
+    // Ensure ways is valid and > 0
+    const ways = (waysWin.ways && Number.isFinite(waysWin.ways) && waysWin.ways > 0)
+      ? waysWin.ways
+      : 1;
+    
+    // Calculate basePayout with validation to avoid NaN/Infinity
+    let basePayout = 0;
+    const divisor = ways * wildMultiplier;
+    if (divisor > 0 && Number.isFinite(waysWin.payout) && waysWin.payout >= 0) {
+      const calculated = waysWin.payout / divisor;
+      if (Number.isFinite(calculated) && calculated >= 0) {
+        basePayout = Math.floor(calculated);
+      }
+    }
 
     sequence.push({
       type: 'symbol',
@@ -131,8 +149,8 @@ export function createWinSequence(
       breakdown: {
         symbol: waysWin.symbol,
         basePayout,
-        ways: waysWin.ways,
-        wildMultiplier: waysWin.wildMultiplier
+        ways: ways,
+        wildMultiplier: wildMultiplier
       },
       duration: stepDuration
     });

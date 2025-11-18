@@ -70,8 +70,12 @@
 
 		<div class="payout-celebration" class:jackpot={currentStep.type === 'jackpot'} class:bonus={currentStep.type === 'bonus'}>
 			{#if currentStep.type === 'symbol' && currentStep.breakdown && currentStep.waysWin}
-				{@const { symbol, basePayout, ways, wildMultiplier } = currentStep.breakdown}
+				{@const { symbol, basePayout: rawBasePayout, ways: rawWays, wildMultiplier: rawWildMultiplier } = currentStep.breakdown}
 				{@const display = getSymbolDisplay(symbol, 'w2w')}
+				
+				{@const basePayout = (Number.isFinite(rawBasePayout) && rawBasePayout >= 0) ? rawBasePayout : 0}
+				{@const ways = (Number.isFinite(rawWays) && rawWays > 0) ? rawWays : 1}
+				{@const wildMultiplier = (Number.isFinite(rawWildMultiplier) && rawWildMultiplier > 0) ? rawWildMultiplier : 1}
 
 				<!-- Large symbol icon -->
 				<div class="hero-symbol" style="color: {display.color}; text-shadow: 0 0 40px {display.glowColor}">
