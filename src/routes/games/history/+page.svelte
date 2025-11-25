@@ -2,7 +2,7 @@
   import type { PageData } from './$types';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { formatVoi } from '$lib/utils/format';
+  import { formatVoi, formatVoiCompact } from '$lib/utils/format';
   import Card from '$lib/components/ui/Card.svelte';
   import CardContent from '$lib/components/ui/CardContent.svelte';
   import CardHeader from '$lib/components/ui/CardHeader.svelte';
@@ -252,7 +252,7 @@
           Total Wagered
         </div>
         <div class="text-3xl font-black text-accent-600 dark:text-accent-400">
-          {formatVoi(totalWagered * 1_000_000)} VOI
+          {formatVoiCompact(totalWagered)} VOI
         </div>
       </CardContent>
     </Card>
@@ -263,7 +263,7 @@
           Total Payout
         </div>
         <div class="text-3xl font-black text-accent-600 dark:text-accent-400">
-          {formatVoi(totalPayout * 1_000_000)} VOI
+          {formatVoiCompact(totalPayout)} VOI
         </div>
       </CardContent>
     </Card>
@@ -274,7 +274,7 @@
           Net Profit
         </div>
         <div class="text-3xl font-black {totalProfit >= 0 ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}">
-          {totalProfit >= 0 ? '+' : ''}{formatVoi(totalProfit * 1_000_000)} VOI
+          {totalProfit >= 0 ? '+' : ''}{formatVoiCompact(totalProfit)} VOI
         </div>
       </CardContent>
     </Card>
@@ -352,7 +352,7 @@
               <div class="md:col-span-2 text-center">
                 <div class="text-xs text-primary-600 dark:text-primary-400 mb-1">Total Bet</div>
                 <div class="font-bold text-primary-700 dark:text-primary-300">
-                  {formatVoi(totalBet * 1_000_000)} VOI
+                  {formatVoiCompact(totalBet)} VOI
                 </div>
                 {#if game.gameType === 'slots' && game.betPerLine && game.selectedPaylines}
                   <div class="text-xs text-primary-600/70 dark:text-primary-400/70 mt-0.5">
@@ -365,7 +365,7 @@
               <div class="md:col-span-2 text-center">
                 <div class="text-xs text-primary-600 dark:text-primary-400 mb-1">Payout</div>
                 <div class="font-bold text-primary-700 dark:text-primary-300">
-                  {formatVoi(game.payout * 1_000_000)} VOI
+                  {formatVoiCompact(game.payout)} VOI
                 </div>
               </div>
 
@@ -373,7 +373,7 @@
               <div class="md:col-span-2 text-center">
                 <div class="text-xs text-primary-600 dark:text-primary-400 mb-1">Profit</div>
                 <div class="font-black text-lg {isWin ? 'text-success-600 dark:text-success-400' : 'text-error-600 dark:text-error-400'}">
-                  {isWin ? '+' : ''}{formatVoi(game.profit * 1_000_000)} VOI
+                  {isWin ? '+' : ''}{formatVoiCompact(game.profit)} VOI
                 </div>
               </div>
 

@@ -11,8 +11,10 @@
   import {
     formatCurrency,
     formatNumber,
+    formatNumberCompact,
     formatPercent,
     formatVoi,
+    formatVoiCompact,
     truncateAddress,
   } from '$lib/utils/format';
   import { recentWinsStore, recentWins, recentWinsLoading, recentWinsConnected } from '$lib/stores/recentWins';
@@ -30,7 +32,7 @@
     ? formatCurrency(data.platformStats.largestSingleWin)
     : '—';
   const playersCountDisplay = data.platformStats
-    ? formatNumber(data.platformStats.uniquePlayers)
+    ? formatNumberCompact(data.platformStats.uniquePlayers)
     : '—';
   const winRateValue =
     data.platformStats && data.platformStats.totalBets > 0
@@ -275,14 +277,14 @@
         <CardContent class="space-y-3">
           {#if hasProfileData}
             {@const totalBetDisplay = data.profileStats
-              ? `${formatVoi(data.profileStats.total_bet)} VOI`
+              ? `${formatVoiCompact(data.profileStats.total_bet / 1_000_000)} VOI`
               : '0.00 VOI'}
-            {@const totalSpinsDisplay = formatNumber(data.profileStats?.total_spins ?? 0)}
+            {@const totalSpinsDisplay = formatNumberCompact(data.profileStats?.total_spins ?? 0)}
             {@const winRateDisplay = data.profileStats
               ? formatPercent(Math.round(data.profileStats.win_rate))
               : '0%'}
             {@const biggestWinDisplay = data.profileStats
-              ? `${formatVoi(data.profileStats.largest_win)} VOI`
+              ? `${formatVoiCompact(data.profileStats.largest_win / 1_000_000)} VOI`
               : '0.00 VOI'}
             {@const lastSpinTime = data.profileStats?.last_spin
               ? formatRelativeTime(new Date(data.profileStats.last_spin))

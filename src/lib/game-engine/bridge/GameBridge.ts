@@ -331,12 +331,12 @@ export class GameBridge {
       this.lastSpinTime = now;
       this.spinRequestCount++;
 
-      let spinId: string;
+      let spinId: string | undefined;
       let totalBet: number;
 
       // Handle W2W format
       if (isW2WFormat) {
-        const { betAmount: betAmountVOI, mode: requestedMode, reserved } = message.payload as { betAmount: number; mode?: number; reserved: number };
+        const { betAmount: betAmountVOI, mode: requestedMode, reserved, spinId: clientSpinId } = message.payload as { betAmount: number; mode?: number; reserved: number; spinId?: string };
         // Generate spin index (should be unique per user, but for now use timestamp)
         const index = Date.now() % 1000000;
         // Determine mode: use explicit mode if provided, otherwise derive from reserved
@@ -366,6 +366,7 @@ export class GameBridge {
             code: 'INVALID_BET',
             message: 'Bet amount must be 40 or 60 for W2W games',
             recoverable: true,
+            requestId: clientSpinId,
           });
           return;
         }
@@ -417,10 +418,13 @@ export class GameBridge {
       // Outcome will be sent via onOutcome listener
     } catch (error) {
       console.error('Spin failed:', error);
+      // Try to extract clientSpinId from the request payload for error matching
+      const clientSpinId = (message.payload as any)?.spinId;
       this.sendError({
         code: 'SPIN_FAILED',
         message: error instanceof Error ? error.message : 'Spin failed',
         recoverable: true,
+        requestId: clientSpinId,
       });
     }
   }
@@ -679,7 +683,8 @@ export class GameBridge {
         symbol: String(win.symbol),
         ways: Number(win.ways),
         matchLength: Number(win.matchLength),
-        payout: Number(win.payout) / 1_000_000, // Convert from microVOI to VOI
+        payout: Number(win.payout), // Keep in microVOI for breakdown calculation
+        wildMultiplier: Number(win.wildMultiplier || 1), // Include wild multiplier, default to 1
       }));
 
       this.sendToGame({

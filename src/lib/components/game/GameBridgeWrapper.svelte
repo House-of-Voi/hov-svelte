@@ -13,8 +13,23 @@
 
 	let bridge: GameBridge | null = $state(null);
 	let initError: string | null = $state(null);
+	let isInitializing = false;
+
+	// Track previous props to detect changes
+	let prevContractId: bigint | undefined = undefined;
+	let prevWalletAddress: string | undefined = undefined;
 
 	onMount(async () => {
+		// Prevent double initialization
+		if (isInitializing || bridge) {
+			console.log('GameBridgeWrapper: Already initializing or initialized, skipping');
+			return;
+		}
+
+		isInitializing = true;
+		prevContractId = contractId;
+		prevWalletAddress = walletAddress;
+
 		try {
 			console.log('GameBridgeWrapper: Initializing bridge', {
 				contractId: contractId.toString(),
@@ -37,6 +52,8 @@
 		} catch (error) {
 			console.error('GameBridgeWrapper: Failed to initialize bridge:', error);
 			initError = error instanceof Error ? error.message : 'Failed to initialize game';
+		} finally {
+			isInitializing = false;
 		}
 	});
 

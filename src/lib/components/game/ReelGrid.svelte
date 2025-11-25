@@ -223,8 +223,8 @@
 		// Call completion callback after a brief delay
 		setTimeout(() => {
 			onSpinComplete?.();
-			// Start win sequence for W2W if there are wins
-			if (gameType === 'w2w' && waysWins.length > 0) {
+			// Start win sequence for W2W if there are wins, jackpot, or bonus spins
+			if (gameType === 'w2w' && (waysWins.length > 0 || jackpotAmount > 0 || bonusSpinsAwarded > 0)) {
 				startWinSequence();
 			}
 		}, 150);
@@ -234,7 +234,8 @@
 	 * Start the sequential win highlighting sequence (W2W only)
 	 */
 	function startWinSequence() {
-		if (gameType !== 'w2w' || waysWins.length === 0) return;
+		if (gameType !== 'w2w') return;
+		if (waysWins.length === 0 && jackpotAmount === 0 && bonusSpinsAwarded === 0) return;
 
 		// Clear any existing sequence
 		stopWinSequence();

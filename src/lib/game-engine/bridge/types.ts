@@ -103,13 +103,22 @@ export interface WaysWin {
 
 /**
  * Outcome message - supports both 5reel and w2w payload formats
+ *
+ * Grid Format: Column-major array structure
+ * - Outer array: 5 reels (indices 0-4)
+ * - Inner array: 3 rows per reel (indices 0-2)
+ * - Access pattern: grid[reelIndex][rowIndex]
+ * - Example: grid[0][0] = top symbol of reel 1
+ *           grid[4][2] = bottom symbol of reel 5
+ *
+ * Both 5reel and w2w games use 5 reels × 3 rows.
  */
 export interface OutcomeMessage {
   namespace: string;
   type: 'OUTCOME';
   payload: {
     spinId: string;
-    grid: string[][]; // Grid dimensions vary: 5reel = 3x5, w2w = 4x5
+    grid: string[][]; // Column-major format: grid[reelIndex][rowIndex], 5 reels × 3 rows for both 5reel and w2w
     winnings: number; // VOI or credits depending on game type
     isWin: boolean;
     winLevel: 'none' | 'small' | 'medium' | 'large' | 'jackpot';

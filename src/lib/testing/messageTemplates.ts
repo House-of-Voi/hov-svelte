@@ -117,9 +117,11 @@ export const gameResponseTemplates = {
 		payload: {
 			spinId: 'spin-' + Date.now(),
 			grid: [
-				['A', 'B', 'C', 'D', 'E'], // Row 1
-				['F', 'G', 'A', 'B', 'C'], // Row 2
-				['D', 'E', 'F', 'G', 'A'] // Row 3 (3x5 grid)
+				['A', 'F', 'D'], // Reel 1 (rows 0-2)
+				['B', 'G', 'E'], // Reel 2
+				['C', 'A', 'F'], // Reel 3
+				['D', 'B', 'G'], // Reel 4
+				['E', 'C', 'A'] // Reel 5 (5 reels × 3 rows, column-major)
 			],
 			winnings: 0.5, // normalized VOI
 			isWin: true,
@@ -150,10 +152,11 @@ export const gameResponseTemplates = {
 		payload: {
 			spinId: 'spin-' + Date.now(),
 			grid: [
-				['A', 'B', 'C', 'D', 'E'], // Row 1
-				['F', 'G', 'A', 'B', 'C'], // Row 2
-				['D', 'E', 'F', 'G', 'A'], // Row 3
-				['B', 'C', 'D', 'E', 'F'] // Row 4 (4x5 grid)
+				['0', '1', '2'], // Reel 1 (BUFFALO, EAGLE, COUGAR)
+				['3', '4', '5'], // Reel 2 (ELK, WOLF, A)
+				['6', '7', '8'], // Reel 3 (K, Q, J)
+				['9', 'A', 'B'], // Reel 4 (TEN, NINE, WILD1)
+				['C', 'D', 'E'] // Reel 5 (WILD2, WILD3, HOV) - 5 reels × 3 rows, column-major
 			],
 			winnings: 120, // credits or VOI
 			isWin: true,
@@ -161,13 +164,13 @@ export const gameResponseTemplates = {
 			totalBet: 40,
 			waysWins: [
 				{
-					symbol: 'A',
+					symbol: '0',
 					ways: 4,
 					matchLength: 3,
 					payout: 80
 				},
 				{
-					symbol: 'B',
+					symbol: '3',
 					ways: 2,
 					matchLength: 2,
 					payout: 40
@@ -186,10 +189,11 @@ export const gameResponseTemplates = {
 		payload: {
 			spinId: 'spin-' + Date.now(),
 			grid: [
-				['E', 'E', 'E', 'D', 'A'], // Row 1 (E = HOV symbol)
-				['F', 'G', 'A', 'B', 'C'], // Row 2
-				['D', 'E', 'F', 'G', 'A'], // Row 3
-				['B', 'C', 'D', 'E', 'F'] // Row 4
+				['E', '0', '1'], // Reel 1 (HOV on row 0)
+				['E', '2', '3'], // Reel 2 (HOV on row 0)
+				['E', '4', '5'], // Reel 3 (HOV on row 0) - 3 HOV in top row = jackpot
+				['6', '7', '8'], // Reel 4
+				['9', 'A', 'B'] // Reel 5 - 5 reels × 3 rows, column-major
 			],
 			winnings: 10000, // Jackpot amount
 			isWin: true,
@@ -209,10 +213,11 @@ export const gameResponseTemplates = {
 		payload: {
 			spinId: 'spin-' + Date.now(),
 			grid: [
-				['BONUS', 'B', 'C', 'BONUS', 'E'], // Row 1
-				['F', 'G', 'A', 'B', 'C'], // Row 2
-				['D', 'E', 'F', 'G', 'A'], // Row 3
-				['B', 'C', 'D', 'E', 'F'] // Row 4
+				['F', '0', '1'], // Reel 1 (BONUS on row 0)
+				['2', '3', '4'], // Reel 2
+				['5', '6', '7'], // Reel 3
+				['F', '8', '9'], // Reel 4 (BONUS on row 0) - 2 BONUS = 8 bonus spins
+				['A', 'B', 'C'] // Reel 5 - 5 reels × 3 rows, column-major
 			],
 			winnings: 0,
 			isWin: false,

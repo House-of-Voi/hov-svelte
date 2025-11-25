@@ -1,21 +1,25 @@
 /**
  * Format a number in a compact way (e.g., 1.2K, 3.5M)
  */
-export function formatNumberCompact(num: number): string {
-  if (num === 0) return '0';
-  if (num < 1000) return num.toString();
-
-  const units = ['', 'K', 'M', 'B', 'T'];
-  const magnitude = Math.floor(Math.log10(Math.abs(num)) / 3);
-
-  if (magnitude >= units.length) {
-    return num.toExponential(2);
+export function formatNumberCompact(num: number | string, decimals = 2): string {
+  // Convert to number if string
+  const value = typeof num === 'string' ? parseFloat(num) : num;
+  
+  if (isNaN(value) || value === 0) return '0';
+  if (Math.abs(value) < 1000) {
+    // For small numbers, just show up to 2 decimal places, removing trailing zeros
+    return parseFloat(value.toFixed(decimals)).toString();
   }
 
-  const scaled = num / Math.pow(1000, magnitude);
-  const formatted = scaled < 10 ? scaled.toFixed(1) : scaled.toFixed(0);
+  const units = ['', 'K', 'M', 'B', 'T'];
+  const magnitude = Math.floor(Math.log10(Math.abs(value)) / 3);
 
-  return `${formatted}${units[magnitude]}`;
+  if (magnitude >= units.length) {
+    return value.toExponential(decimals);
+  }
+
+  const scaled = value / Math.pow(1000, magnitude);
+  return `${scaled.toFixed(decimals)}${units[magnitude]}`;
 }
 
 /**
@@ -23,12 +27,21 @@ export function formatNumberCompact(num: number): string {
  */
 export function formatCurrency(microVoi: number): string {
   const voi = microVoi / 1_000_000;
+  return formatVoiCompact(voi);
+}
 
-  if (voi === 0) return '0';
-  if (voi < 0.01) return `${voi.toExponential(2)}`;
-  if (voi < 1000) return `${voi.toFixed(2)}`;
-
-  return `${formatNumberCompact(voi)}`;
+/**
+ * Format VOI amount compactly (e.g. 1.5M, 45.03K)
+ * Input can be raw VOI amount (not microVoi)
+ */
+export function formatVoiCompact(voi: number | string): string {
+  // Convert to number if string
+  const value = typeof voi === 'string' ? parseFloat(voi) : voi;
+  
+  if (isNaN(value) || value === 0) return '0';
+  if (Math.abs(value) < 0.01) return `${value.toExponential(2)}`;
+  
+  return formatNumberCompact(value);
 }
 
 /**

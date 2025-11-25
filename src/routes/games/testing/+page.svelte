@@ -12,10 +12,121 @@
 	} from '$lib/testing/messageTemplates';
 	import type { GameRequest, GameResponse, OutcomeMessage } from '$lib/game-engine/bridge/types';
 	import { MESSAGE_NAMESPACE, isGameRequest } from '$lib/game-engine/bridge/types';
+	import {
+		calculateW2WPayouts,
+		isJackpotTriggered,
+		isBonusTriggered
+	} from '$lib/game-engine/utils/w2wPayoutCalculator';
+	import {
+		evaluatePaylines,
+		DEFAULT_PAYLINE_PATTERNS,
+		DEFAULT_PAYTABLE
+	} from '$lib/game-engine/utils/paylineEvaluator';
+	import type { SymbolId } from '$lib/game-engine/types/config';
 
 	// Helper function to round balance to 6 decimal places
 	function roundBalance(balance: number): number {
 		return Math.round(balance * 1_000_000) / 1_000_000;
+	}
+
+	// Helper functions to generate realistic grids for test cases
+	function generateW2WJackpotGrid(): SymbolId[][] {
+		// 3+ HOV (E) symbols = jackpot (no other wins needed)
+		return [
+			['E', '1', '2'], // Reel 1 (HOV on row 0)
+			['E', '3', '4'], // Reel 2 (HOV on row 0)
+			['E', '5', '6'], // Reel 3 (HOV on row 0) - 3 HOV = jackpot
+			['7', '8', '9'], // Reel 4
+			['A', 'B', 'C'] // Reel 5 - pure jackpot, no other winning lines
+		];
+	}
+
+	function generateW2WBonusGrid(): SymbolId[][] {
+		// 2+ BONUS (F) symbols = 8 bonus spins
+		return [
+			['F', '0', '1'], // Reel 1 (BONUS on row 0)
+			['2', '3', '4'], // Reel 2
+			['5', '6', '7'], // Reel 3
+			['F', '8', '9'], // Reel 4 (BONUS on row 0) - 2 BONUS = 8 spins
+			['A', 'B', 'C'] // Reel 5
+		];
+	}
+
+	function generateW2WBigWinGrid(): SymbolId[][] {
+		// 5-of-a-kind high symbol (Buffalo) across all reels
+		return [
+			['0', '1', '2'], // Reel 1 (Buffalo on row 0)
+			['0', '3', '4'], // Reel 2 (Buffalo on row 0)
+			['0', '5', '6'], // Reel 3 (Buffalo on row 0)
+			['0', '7', '8'], // Reel 4 (Buffalo on row 0)
+			['0', '9', 'A'] // Reel 5 (Buffalo on row 0) - 5 Buffalo = big win
+		];
+	}
+
+	function generateW2WMediumWinGrid(): SymbolId[][] {
+		// 4-of-a-kind mid symbol (Eagle)
+		return [
+			['1', '0', '2'], // Reel 1 (Eagle on row 0)
+			['1', '3', '4'], // Reel 2 (Eagle on row 0)
+			['1', '5', '6'], // Reel 3 (Eagle on row 0)
+			['1', '7', '8'], // Reel 4 (Eagle on row 0) - 4 Eagle = medium win
+			['9', 'A', 'B'] // Reel 5
+		];
+	}
+
+	function generateW2WLossGrid(): SymbolId[][] {
+		// All different symbols, no matches
+		return [
+			['0', '1', '2'], // Reel 1
+			['3', '4', '5'], // Reel 2
+			['6', '7', '8'], // Reel 3
+			['9', 'A', 'B'], // Reel 4
+			['C', 'D', 'E'] // Reel 5 - no matching sequences
+		];
+	}
+
+	function generate5ReelBigWinGrid(): SymbolId[][] {
+		// 5-of-a-kind A symbols on payline 0 (middle row)
+		return [
+			['B', 'A', 'C'], // Reel 1 (A on row 1 = middle)
+			['D', 'A', 'B'], // Reel 2 (A on row 1)
+			['C', 'A', 'D'], // Reel 3 (A on row 1)
+			['B', 'A', 'C'], // Reel 4 (A on row 1)
+			['D', 'A', 'B'] // Reel 5 (A on row 1) - 5-of-a-kind on middle payline
+		];
+	}
+
+	function generate5ReelMediumWinGrid(): SymbolId[][] {
+		// 4-of-a-kind B symbols on top row + 3-of-a-kind C on middle
+		return [
+			['B', 'C', 'D'], // Reel 1 (B on row 0, C on row 1)
+			['B', 'C', 'A'], // Reel 2 (B on row 0, C on row 1)
+			['B', 'C', 'B'], // Reel 3 (B on row 0, C on row 1)
+			['B', 'D', 'A'], // Reel 4 (B on row 0) - 4 B's on top
+			['A', 'D', 'C'] // Reel 5
+		];
+	}
+
+	function generate5ReelSmallWinGrid(): SymbolId[][] {
+		// 3-of-a-kind on a payline
+		return [
+			['C', 'D', 'B'], // Reel 1 (C on row 0)
+			['C', 'A', 'D'], // Reel 2 (C on row 0)
+			['C', 'B', 'A'], // Reel 3 (C on row 0) - 3 C's
+			['A', 'D', 'B'], // Reel 4
+			['B', 'A', 'D'] // Reel 5
+		];
+	}
+
+	function generate5ReelLossGrid(): SymbolId[][] {
+		// No matching sequences on any paylines
+		return [
+			['A', 'B', 'C'], // Reel 1
+			['D', 'A', 'B'], // Reel 2
+			['C', 'D', 'A'], // Reel 3 - patterns broken
+			['B', 'C', 'D'], // Reel 4
+			['A', 'D', 'B'] // Reel 5
+		];
 	}
 
 	// State
@@ -194,31 +305,112 @@
 		const spinId = pendingSpinId || lastSpinId || generateSpinId();
 
 		switch (outcome.type) {
-			case 'random-win':
-				sendOutcome(detectedGameType, 'medium', Math.random() * 1000 + 100, false, 0, spinId);
+			case 'random-win': {
+				// Generate a realistic medium win grid
+				const grid =
+					detectedGameType === 'w2w' ? generateW2WMediumWinGrid() : generate5ReelMediumWinGrid();
+				// Calculate actual winnings from the grid
+				const calculatedWins =
+					detectedGameType === 'w2w'
+						? calculateW2WPayouts(grid)
+						: evaluatePaylines(grid, DEFAULT_PAYLINE_PATTERNS.slice(0, 10), DEFAULT_PAYTABLE, 0.1);
+				const totalPayout =
+					detectedGameType === 'w2w'
+						? calculatedWins.reduce((sum, w) => sum + w.payout, 0)
+						: calculatedWins.reduce((sum, w) => sum + w.payout, 0);
+				sendOutcome(detectedGameType, 'medium', totalPayout, false, 0, spinId, grid);
 				break;
-			case 'big-win':
-				sendOutcome(detectedGameType, 'large', Math.random() * 5000 + 1000, false, 0, spinId);
+			}
+			case 'big-win': {
+				// Generate a realistic big win grid
+				const grid =
+					detectedGameType === 'w2w' ? generateW2WBigWinGrid() : generate5ReelBigWinGrid();
+				const calculatedWins =
+					detectedGameType === 'w2w'
+						? calculateW2WPayouts(grid)
+						: evaluatePaylines(grid, DEFAULT_PAYLINE_PATTERNS.slice(0, 10), DEFAULT_PAYTABLE, 0.1);
+				const totalPayout =
+					detectedGameType === 'w2w'
+						? calculatedWins.reduce((sum, w) => sum + w.payout, 0)
+						: calculatedWins.reduce((sum, w) => sum + w.payout, 0);
+				sendOutcome(detectedGameType, 'large', totalPayout, false, 0, spinId, grid);
 				break;
-			case 'jackpot':
-				sendOutcome(detectedGameType, 'jackpot', 10000, true, 0, spinId);
+			}
+			case 'jackpot': {
+				// W2W: Generate jackpot grid (3+ HOV), 5reel: use big win grid
+				const grid = detectedGameType === 'w2w' ? generateW2WJackpotGrid() : generate5ReelBigWinGrid();
+				sendOutcome(detectedGameType, 'jackpot', 10000, true, 0, spinId, grid);
 				break;
-			case 'bonus-spins':
-				sendOutcome(detectedGameType, 'none', 0, false, 8, spinId);
+			}
+			case 'bonus-spins': {
+				// W2W only: Generate bonus grid (2+ BONUS symbols)
+				const grid = generateW2WBonusGrid();
+				sendOutcome(detectedGameType, 'none', 0, false, 8, spinId, grid);
 				break;
-			case 'loss':
-				sendOutcome(detectedGameType, 'none', 0, false, 0, spinId);
+			}
+			case 'loss': {
+				// Generate a loss grid with no matches
+				const grid = detectedGameType === 'w2w' ? generateW2WLossGrid() : generate5ReelLossGrid();
+				sendOutcome(detectedGameType, 'none', 0, false, 0, spinId, grid);
 				break;
-			case 'custom':
-				sendOutcome(
-					detectedGameType,
-					outcome.winLevel as 'none' | 'small' | 'medium' | 'large' | 'jackpot',
-					outcome.winnings,
-					outcome.winLevel === 'jackpot',
-					outcome.bonusSpins || 0,
-					spinId
-				);
+			}
+			case 'custom-grid': {
+				const grid = outcome.grid;
+				let winnings = 0;
+				let jackpotHit = false;
+				let bonusSpins = 0;
+				let winLevel: 'none' | 'small' | 'medium' | 'large' | 'jackpot' = 'none';
+
+				if (detectedGameType === 'w2w') {
+					// Calculate actual wins from the grid
+					const calculatedWins = calculateW2WPayouts(grid as SymbolId[][]);
+					winnings = calculatedWins.reduce((sum, w) => sum + w.payout, 0);
+
+					// Check for jackpot trigger (3+ HOV symbols)
+					if (isJackpotTriggered(grid as SymbolId[][])) {
+						jackpotHit = true;
+						winnings = 10000; // Jackpot amount
+						winLevel = 'jackpot';
+					} else if (winnings > 0) {
+						// Determine win level based on payout
+						if (winnings >= 5000) winLevel = 'large';
+						else if (winnings >= 1000) winLevel = 'medium';
+						else winLevel = 'small';
+					}
+
+					// Check for bonus trigger (2+ BONUS symbols)
+					if (isBonusTriggered(grid as SymbolId[][])) {
+						bonusSpins = 8;
+					}
+				} else {
+					// 5reel: Calculate wins from paylines
+					const calculatedWins = evaluatePaylines(
+						grid as SymbolId[][],
+						DEFAULT_PAYLINE_PATTERNS.slice(0, 10),
+						DEFAULT_PAYTABLE,
+						0.1
+					);
+					winnings = calculatedWins.reduce((sum, w) => sum + w.payout, 0);
+
+					if (winnings > 0) {
+						// Determine win level based on payout
+						if (winnings >= 100) winLevel = 'large';
+						else if (winnings >= 10) winLevel = 'medium';
+						else winLevel = 'small';
+					}
+				}
+
+				console.log('[Testing] Custom grid outcome:', {
+					grid,
+					winnings,
+					jackpotHit,
+					bonusSpins,
+					winLevel
+				});
+
+				sendOutcome(detectedGameType, winLevel, winnings, jackpotHit, bonusSpins, spinId, grid);
 				break;
+			}
 		}
 
 		pendingSpinId = null;
@@ -236,7 +428,8 @@
 		winnings: number,
 		jackpotHit: boolean = false,
 		bonusSpins: number = 0,
-		spinIdOverride?: string
+		spinIdOverride?: string,
+		customGrid?: string[][]
 	) {
 		const spinId = spinIdOverride || lastSpinId || generateSpinId();
 
@@ -258,6 +451,16 @@
 			if (gameType === 'w2w') {
 				outcome = gameResponseTemplates.OUTCOME_W2W();
 				const payload = outcome.payload as any;
+
+				// Use custom grid if provided and calculate actual wins
+				if (customGrid) {
+					payload.grid = customGrid;
+					// Calculate actual waysWins from the custom grid
+					const calculatedWins = calculateW2WPayouts(customGrid as SymbolId[][]);
+					payload.waysWins = calculatedWins;
+					console.log('[Testing] Calculated W2W wins from custom grid:', calculatedWins);
+				}
+
 				payload.winnings = winnings;
 				// If bonus spins are awarded, treat it as a win even if winnings are 0
 				if (bonusSpins > 0) {
@@ -280,6 +483,24 @@
 			} else {
 				outcome = gameResponseTemplates.OUTCOME_5REEL();
 				const payload = outcome.payload as any;
+
+				// Use custom grid if provided and calculate actual wins
+				if (customGrid) {
+					payload.grid = customGrid;
+					// Calculate actual winningLines from the custom grid
+					const paylines = (payload.paylines as number) || 10;
+					const betPerLine = (payload.betPerLine as number) || 0.1;
+					const selectedPaylines = DEFAULT_PAYLINE_PATTERNS.slice(0, paylines);
+					const calculatedWins = evaluatePaylines(
+						customGrid as SymbolId[][],
+						selectedPaylines,
+						DEFAULT_PAYTABLE,
+						betPerLine
+					);
+					payload.winningLines = calculatedWins;
+					console.log('[Testing] Calculated 5reel wins from custom grid:', calculatedWins);
+				}
+
 				payload.winnings = winnings;
 				payload.winLevel = winLevel;
 				payload.isWin = winnings > 0;

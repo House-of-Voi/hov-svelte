@@ -576,7 +576,7 @@
 			jackpotHit: validatedJackpotHit,
 			jackpotWinAmount: validatedJackpotAmount,
 			winnings: payload.winnings || 0,
-			hasWinAnimation: waysWinsData.length > 0
+			hasWinAnimation: waysWinsData.length > 0 || validatedJackpotHit || displayBonusSpins > 0
 		};
 		queueOrDisplayOutcome(displayState);
 

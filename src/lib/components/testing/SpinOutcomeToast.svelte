@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { GameType } from '$lib/testing/messageTemplates';
+	import GridEditor from './GridEditor.svelte';
 
 	interface Props {
 		spinId: string;
@@ -16,12 +17,9 @@
 		| { type: 'jackpot' }
 		| { type: 'bonus-spins' }
 		| { type: 'loss' }
-		| { type: 'custom'; winnings: number; winLevel: string; bonusSpins?: number };
+		| { type: 'custom-grid'; grid: string[][] };
 
-	let showCustomForm = $state(false);
-	let customWinnings = $state(1000);
-	let customWinLevel = $state('medium');
-	let customBonusSpins = $state(0);
+	let showGridEditor = $state(false);
 
 	function handleOutcome(outcome: OutcomeOption) {
 		onSelectOutcome(outcome);
@@ -68,47 +66,23 @@
 					<span class="outcome-label">Loss</span>
 				</button>
 
-				<button onclick={() => (showCustomForm = !showCustomForm)} class="outcome-btn custom">
-					<span class="outcome-icon">⚙️</span>
-					<span class="outcome-label">Custom</span>
+				<button onclick={() => (showGridEditor = true)} class="outcome-btn grid-editor">
+					<span class="outcome-icon">🎯</span>
+					<span class="outcome-label">Custom Grid</span>
 				</button>
 			</div>
 
-			{#if showCustomForm}
-				<div class="custom-form">
-					<div class="form-row">
-						<label>Winnings:</label>
-						<input type="number" bind:value={customWinnings} class="input" />
-					</div>
-					<div class="form-row">
-						<label>Win Level:</label>
-						<select bind:value={customWinLevel} class="select">
-							<option value="none">None</option>
-							<option value="small">Small</option>
-							<option value="medium">Medium</option>
-							<option value="large">Large</option>
-							<option value="jackpot">Jackpot</option>
-						</select>
-					</div>
-					{#if gameType === 'w2w'}
-						<div class="form-row">
-							<label>Bonus Spins:</label>
-							<input type="number" bind:value={customBonusSpins} class="input" />
-						</div>
-					{/if}
-					<button
-						onclick={() =>
-							handleOutcome({
-								type: 'custom',
-								winnings: customWinnings,
-								winLevel: customWinLevel,
-								bonusSpins: customBonusSpins
-							})}
-						class="send-custom-btn"
-					>
-						Send Custom Outcome
-					</button>
-				</div>
+			{#if showGridEditor}
+				<GridEditor
+					{gameType}
+					onGridComplete={(grid) => {
+						showGridEditor = false;
+						handleOutcome({ type: 'custom-grid', grid });
+					}}
+					onCancel={() => {
+						showGridEditor = false;
+					}}
+				/>
 			{/if}
 		</div>
 	</div>
@@ -272,9 +246,9 @@
 		background: #f9fafb;
 	}
 
-	.outcome-btn.custom {
-		border-color: #6366f1;
-		background: #eef2ff;
+	.outcome-btn.grid-editor {
+		border-color: #10b981;
+		background: #ecfdf5;
 	}
 
 	.outcome-icon {
@@ -286,59 +260,6 @@
 		font-weight: 600;
 		color: #111827;
 		text-align: center;
-	}
-
-	.custom-form {
-		margin-top: 1rem;
-		padding: 1rem;
-		background: #f9fafb;
-		border-radius: 0.5rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-
-	.form-row {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.form-row label {
-		font-size: 0.875rem;
-		font-weight: 500;
-		color: #374151;
-	}
-
-	.input,
-	.select {
-		padding: 0.5rem 0.75rem;
-		border: 1px solid #d1d5db;
-		border-radius: 0.375rem;
-		font-size: 0.875rem;
-	}
-
-	.input:focus,
-	.select:focus {
-		outline: none;
-		border-color: #3b82f6;
-		box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-	}
-
-	.send-custom-btn {
-		padding: 0.75rem 1.5rem;
-		background: #8b5cf6;
-		color: white;
-		border: none;
-		border-radius: 0.375rem;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: background 0.15s ease;
-	}
-
-	.send-custom-btn:hover {
-		background: #7c3aed;
 	}
 </style>
 
