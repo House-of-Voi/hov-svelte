@@ -46,6 +46,7 @@ export class GameBridge {
   private adapter: BlockchainAdapter | null = null;
   private adapterFactory: AdapterFactory;
   private initialized: boolean = false;
+  private destroyed: boolean = false; // Flag to prevent async operations after destroy
   private messageHandler: ((event: MessageEvent) => void) | null = null;
   private spinRequestCount: number = 0;
   private lastSpinTime: number = 0;
@@ -69,12 +70,24 @@ export class GameBridge {
       return;
     }
 
+    // Check if already destroyed (can happen during SPA navigation race conditions)
+    if (this.destroyed) {
+      console.log('GameBridge: Already destroyed, skipping initialization');
+      return;
+    }
+
     try {
       console.log('GameBridge: Starting initialization for contract:', this.config.contractId.toString());
-      
+
       // Query game configuration from database
       console.log('GameBridge: Fetching game config from database...');
       const gameConfig = await gameConfigService.getConfigByContractId(this.config.contractId);
+
+      // Check if destroyed during async operation
+      if (this.destroyed) {
+        console.log('GameBridge: Destroyed during config fetch, aborting initialization');
+        return;
+      }
 
       if (!gameConfig) {
         const errorMsg = `No active game configuration found for contract ${this.config.contractId}`;
@@ -110,6 +123,18 @@ export class GameBridge {
       // Initialize engine
       console.log('GameBridge: Initializing engine...');
       await this.engine.initialize();
+
+      // Check if destroyed during engine initialization
+      if (this.destroyed) {
+        console.log('GameBridge: Destroyed during engine init, aborting initialization');
+        // Clean up the engine we just created
+        if (this.engine) {
+          this.engine.destroy();
+          this.engine = null;
+        }
+        return;
+      }
+
       console.log('GameBridge: Engine initialized successfully');
 
       // Set up postMessage listener
@@ -190,6 +215,12 @@ export class GameBridge {
    * Set up postMessage listener for incoming messages
    */
   private setupMessageListener(): void {
+    // Guard against setting up listener if already destroyed
+    if (this.destroyed) {
+      console.log('GameBridge: Not setting up listener - already destroyed');
+      return;
+    }
+
     this.messageHandler = (event: MessageEvent) => {
       // Optional origin validation
       if (this.config.targetOrigin && event.origin !== this.config.targetOrigin) {
@@ -679,11 +710,17 @@ export class GameBridge {
     if (isW2W) {
       // W2W format
       // Convert all amounts from microVOI (engine) to normalized VOI (game)
+      // Note: betAmount from engine is in microVOI, convert to VOI for display
+      // Apply 0.5% bet fee reduction before calculating payouts
+      const betAmountVOI = Number(result.betAmount || 0) / 1_000_000;
+      const betAmountAfterFee = betAmountVOI * 0.995; // 0.5% fee
+
       const serializableWaysWins = (result.outcome.waysWins || []).map((win) => ({
         symbol: String(win.symbol),
         ways: Number(win.ways),
         matchLength: Number(win.matchLength),
-        payout: Number(win.payout), // Keep in microVOI for breakdown calculation
+        // Multiply payout by bet amount (after fee) - win.payout is raw paytable value, needs bet multiplier
+        payout: Number(win.payout) * betAmountAfterFee,
         wildMultiplier: Number(win.wildMultiplier || 1), // Include wild multiplier, default to 1
       }));
 
@@ -881,6 +918,9 @@ export class GameBridge {
    * Cleanup resources
    */
   destroy(): void {
+    // Set destroyed flag FIRST to prevent any async operations from completing
+    this.destroyed = true;
+
     if (this.messageHandler) {
       window.removeEventListener('message', this.messageHandler);
       this.messageHandler = null;

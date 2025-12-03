@@ -43,7 +43,7 @@
 	}
 
 	let {
-		gameAccounts,
+		gameAccounts = [],
 		activeAccountId,
 		primaryEmail = '',
 		legacyAccounts = [],
@@ -62,6 +62,20 @@
 	let unlockingAccount = $state<GameAccountInfo | null>(null);
 	let removingAccount = $state<{ id: string; address: string } | null>(null);
 	let removingLegacyAccount = $state<{ address: string } | null>(null);
+
+	// Keep active account at the top while preserving original order for others
+	const orderedGameAccounts = $derived.by(() => {
+		if (!gameAccounts || gameAccounts.length === 0) return gameAccounts || [];
+
+		const indexed = gameAccounts.map((acc, idx) => ({ acc, idx }));
+		indexed.sort((a, b) => {
+			const aActive = a.acc.id === activeAccountId ? 1 : 0;
+			const bActive = b.acc.id === activeAccountId ? 1 : 0;
+			if (aActive !== bActive) return bActive - aActive;
+			return a.idx - b.idx;
+		});
+		return indexed.map(({ acc }) => acc);
+	});
 
 	// Refresh unlocked status
 	$effect(() => {
@@ -389,7 +403,7 @@
 			</div>
 		{:else}
 			<div class="space-y-3">
-				{#each gameAccounts as account (account.id)}
+				{#each orderedGameAccounts as account (account.id)}
 					{@const unlocked = isUnlocked(account)}
 					{@const isActive = account.id === activeAccountId}
 					{@const authMethod = getAuthMethodDisplay(account)}
