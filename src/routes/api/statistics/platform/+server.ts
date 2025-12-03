@@ -7,8 +7,7 @@ import { appCache } from '$lib/cache/SimpleCache';
 import { CacheKeys } from '$lib/cache/keys';
 import { CacheTTL } from '$lib/cache/config';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
-import { getPlatformStats, getPlatformStatsByDate } from '$lib/mimir/queries';
-import { mimirClient } from '$lib/mimir/client';
+import { getPlatformStats, getPlatformStatsByTimestamp } from '$lib/mimir/queries';
 
 const querySchema = z.object({
   contractId: z.coerce.number().int().nonnegative(),
@@ -54,29 +53,18 @@ export const GET: RequestHandler = async ({ url }) => {
     let mimirStats: Awaited<ReturnType<typeof getPlatformStats>>;
 
     if (query.timeframe === 'daily' && targetDate) {
-      // Convert date to round range using block_header
+      // Use timestamp-based filtering directly on hov_events
       const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
+      startOfDay.setUTCHours(0, 0, 0, 0);
       const endOfDay = new Date(targetDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      endOfDay.setUTCHours(23, 59, 59, 999);
 
-      const roundRange = await getRoundRangeForDateRange(
+      const dailyStats = await getPlatformStatsByTimestamp(
+        query.contractId,
         startOfDay,
         endOfDay
       );
-
-      if (roundRange.startRound && roundRange.endRound) {
-        // Call the date-specific stats function
-        const dailyStats = await getPlatformStatsByDate(
-          query.contractId,
-          roundRange.startRound,
-          roundRange.endRound
-        );
-        mimirStats = [dailyStats];
-      } else {
-        // No data for this date range
-        mimirStats = [];
-      }
+      mimirStats = [dailyStats];
     } else {
       // All-time stats
       mimirStats = await getPlatformStats(query.contractId);
@@ -107,40 +95,6 @@ export const GET: RequestHandler = async ({ url }) => {
     );
   }
 };
-
-async function getRoundRangeForDateRange(
-  startDate: Date,
-  endDate: Date
-): Promise<{ startRound?: number; endRound?: number }> {
-  try {
-    // Query block_header from Mimir database to find min and max rounds within the date range
-    const { data, error } = await mimirClient
-      .from('block_header')
-      .select('round')
-      .gte('realtime', startDate.toISOString())
-      .lte('realtime', endDate.toISOString())
-      .order('round', { ascending: true });
-
-    if (error) {
-      console.error('Failed to query block_header for round range:', error);
-      return {};
-    }
-
-    if (!data || data.length === 0) {
-      console.warn('No blocks found in date range:', { startDate, endDate });
-      return {};
-    }
-
-    const rounds = data.map((row) => row.round);
-    return {
-      startRound: Math.min(...rounds),
-      endRound: Math.max(...rounds),
-    };
-  } catch (error) {
-    console.error('Error getting round range:', error);
-    return {};
-  }
-}
 
 type MachineConfigRow = {
   id: string;

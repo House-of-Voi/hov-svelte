@@ -8,8 +8,13 @@ export const load: LayoutServerLoad = async ({ cookies, locals }) => {
 		getCurrentProfile(cookies)
 	]);
 
+	const hovSession = locals.hovSession;
+
 	return {
-		session: locals.session,
+		hovSession,
+		session: hovSession, // Alias for backward compatibility with child routes
+		hasGameAccess: hovSession?.gameAccessGranted || false, // For game routes using @layout reset
+		supabaseSession: locals.supabaseSession,
 		isAdminUser,
 		initialProfile: profileData?.profile ?? null
 	};

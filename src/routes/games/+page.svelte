@@ -8,6 +8,7 @@
   import SlotMachineIcon from '$lib/components/icons/SlotMachineIcon.svelte';
   import TrendingUpIcon from '$lib/components/icons/TrendingUpIcon.svelte';
   import ChainBadge from '$lib/components/ui/ChainBadge.svelte';
+  import BrowseGamesAccountSelector from '$lib/components/gameAccounts/BrowseGamesAccountSelector.svelte';
   import {
     formatCurrency,
     formatNumber,
@@ -115,13 +116,24 @@
 
 <div class="space-y-8">
   <!-- Header -->
-  <div class="text-center space-y-3 animate-in fade-in duration-300">
-    <h1 class="text-4xl md:text-5xl font-semibold text-neutral-950 dark:text-white">
-      Browse Games
-    </h1>
-    <p class="text-neutral-700 dark:text-neutral-300 text-lg">
-      Pick your favorite and start playing
-    </p>
+  <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4 animate-in fade-in duration-300">
+    <div class="text-center md:text-left space-y-3">
+      <h1 class="text-4xl md:text-5xl font-semibold text-neutral-950 dark:text-white">
+        Browse Games
+      </h1>
+      <p class="text-neutral-700 dark:text-neutral-300 text-lg">
+        Pick your favorite and start playing
+      </p>
+    </div>
+
+    {#if canPlay && data.gameAccounts && data.gameAccounts.length > 0}
+      <div class="flex justify-center md:justify-end">
+        <BrowseGamesAccountSelector
+          gameAccounts={data.gameAccounts}
+          activeAccountId={data.activeGameAccountId}
+        />
+      </div>
+    {/if}
   </div>
 
   <!-- Featured Stats -->

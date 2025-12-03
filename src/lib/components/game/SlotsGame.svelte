@@ -23,7 +23,7 @@
 
 	// Wallet signing
 	import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
-	import { getStoredVoiAddress } from '$lib/auth/keyStorage';
+	import { getFirstStoredVoiAddress } from '$lib/auth/gameAccountStorage';
 
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
@@ -100,10 +100,10 @@
 				playerAlgorandAddress = session.voiAddress;
 			}
 
-			// If still no address, try to get it from stored keys
+			// If still no address, try to get it from stored game account keys
 			if (!playerAlgorandAddress) {
-				console.log('No address from props or session, checking stored keys...');
-				const storedVoiAddress = await getStoredVoiAddress();
+				console.log('No address from props or session, checking stored game account keys...');
+				const storedVoiAddress = getFirstStoredVoiAddress();
 				playerAlgorandAddress = storedVoiAddress;
 			}
 
@@ -253,17 +253,14 @@
 				console.error('Failed to initialize engine in effect:', err);
 			});
 		} else if (!hasAddress && !engine && !cleanupFn) {
-			// If no address from props/session, try stored keys
-			getStoredVoiAddress().then(storedAddress => {
-				if (storedAddress && !engine && !cleanupFn) {
-					console.log('🔄 Stored address found, initializing engine...');
-					initializeEngine().catch(err => {
-						console.error('Failed to initialize engine with stored address:', err);
-					});
-				}
-			}).catch(err => {
-				console.error('Failed to get stored address:', err);
-			});
+			// If no address from props/session, try stored game account keys
+			const storedAddress = getFirstStoredVoiAddress();
+			if (storedAddress) {
+				console.log('🔄 Stored game account address found, initializing engine...');
+				initializeEngine().catch(err => {
+					console.error('Failed to initialize engine with stored address:', err);
+				});
+			}
 		}
 	});
 

@@ -1,11 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { getPlayerStatsSafe } from '$lib/mimir/queries';
 
-export const GET: RequestHandler = async ({ cookies, url }) => {
+export const GET: RequestHandler = async ({ locals, url }) => {
   try {
-    const session = await getServerSessionFromCookies(cookies);
+    const session = locals.hovSession;
 
     if (!session) {
       return json(

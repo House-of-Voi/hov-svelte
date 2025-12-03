@@ -77,17 +77,16 @@ export async function signTransactions(
 	// Otherwise, use the external wallet
 	let isCdpAddress = false;
 	if (session?.cdpUserId) {
-		// Check if the address matches the stored CDP address
-		// We need to get the stored keys to check the address
+		// Check if the address has stored game account keys
 		try {
-			const { getKeys } = await import('$lib/auth/keyStorage');
-			const storedKeys = await getKeys();
-			if (storedKeys && storedKeys.voiAddress === signerAddress) {
+			const { getGameAccountKeys } = await import('$lib/auth/gameAccountStorage');
+			const storedKeys = await getGameAccountKeys(signerAddress);
+			if (storedKeys) {
 				isCdpAddress = true;
 			}
 		} catch (error) {
-			// If we can't check, assume it's not CDP
-			console.warn('Could not check if address is CDP:', error);
+			// If we can't check, assume it's not a game account
+			console.warn('Could not check if address is game account:', error);
 		}
 	}
 

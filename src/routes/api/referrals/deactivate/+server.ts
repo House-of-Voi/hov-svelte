@@ -1,14 +1,13 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 
 /**
  * POST /api/referrals/deactivate
  * Deactivates a referral code (can only deactivate your own unused codes)
  */
-export const POST: RequestHandler = async ({ request, cookies }) => {
-  const session = await getServerSessionFromCookies(cookies);
+export const POST: RequestHandler = async ({ request, locals }) => {
+  const session = locals.hovSession;
   if (!session) {
     return json({ error: 'Unauthorized' }, { status: 401 });
   }

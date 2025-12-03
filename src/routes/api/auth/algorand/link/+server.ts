@@ -3,7 +3,6 @@ import type { RequestHandler } from './$types';
 import { z } from 'zod';
 import algosdk from 'algosdk';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { getProfileIdByAccount } from '$lib/profile/data';
 import {
   verifyAlgorandLinkChallenge,
@@ -31,9 +30,9 @@ const schema = z.object({
   challenge: z.string().min(1),
 });
 
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
   try {
-    const session = await getServerSessionFromCookies(cookies);
+    const session = locals.hovSession;
 
     if (!session) {
       return json({ error: 'Not authenticated' }, { status: 401 });

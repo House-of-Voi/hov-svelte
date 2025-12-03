@@ -10,15 +10,25 @@ import nacl from 'tweetnacl';
 const DOMAIN_SEPARATOR = 'house-of-voi-algorand-derivation';
 
 /**
+ * Derived Algorand account with string address for easy serialization
+ */
+export interface DerivedAlgorandAccount {
+  /** Algorand address as a string */
+  addr: string;
+  /** Secret key as Uint8Array (64 bytes - seed + public key) */
+  sk: Uint8Array;
+}
+
+/**
  * Derives a deterministic Algorand (ED25519) keypair from an EVM private key
  *
  * Uses HKDF-SHA256 to derive a 32-byte seed from the EVM private key.
  * This ensures the same EVM key always produces the same Algorand account.
  *
  * @param evmPrivateKey - The EVM private key as a hex string (with or without 0x prefix)
- * @returns Algorand account matching algosdk.Account interface
+ * @returns Algorand account with string address and Uint8Array secret key
  */
-export function deriveAlgorandAccountFromEVM(evmPrivateKey: string): algosdk.Account {
+export function deriveAlgorandAccountFromEVM(evmPrivateKey: string): DerivedAlgorandAccount {
   // Remove 0x prefix if present and convert to Uint8Array
   const cleanHex = evmPrivateKey.replace(/^0x/, '');
   const evmKeyBytes = new Uint8Array(
@@ -42,7 +52,7 @@ export function deriveAlgorandAccountFromEVM(evmPrivateKey: string): algosdk.Acc
   // Generate Algorand keypair from the derived seed
   const keypair = nacl.sign.keyPair.fromSeed(algorandSeed);
 
-  // Return in algosdk.Account format (uses 'addr' not 'address', and 'sk' not 'secretKey')
+  // Return with string address for easy serialization/storage
   return {
     addr: algosdk.encodeAddress(keypair.publicKey),
     sk: keypair.secretKey,

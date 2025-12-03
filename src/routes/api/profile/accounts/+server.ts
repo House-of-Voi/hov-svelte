@@ -2,7 +2,6 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { z } from 'zod';
 import { getCurrentProfile } from '$lib/profile/session';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 
 /**
@@ -15,9 +14,9 @@ import { createAdminClient } from '$lib/db/supabaseAdmin';
  * - Connected accounts (additional wallets from database)
  * - Derivation information
  */
-export const GET: RequestHandler = async ({ cookies }) => {
+export const GET: RequestHandler = async ({ cookies, locals }) => {
   try {
-    const session = await getServerSessionFromCookies(cookies);
+    const session = locals.hovSession;
     const profileData = await getCurrentProfile(cookies);
 
     if (!profileData || !session) {
@@ -79,9 +78,9 @@ const deleteSchema = z.object({
   address: z.string().min(1),
 });
 
-export const DELETE: RequestHandler = async ({ request, cookies }) => {
+export const DELETE: RequestHandler = async ({ request, locals }) => {
   try {
-    const session = await getServerSessionFromCookies(cookies);
+    const session = locals.hovSession;
 
     if (!session) {
       return json({ error: 'Not authenticated' }, { status: 401 });

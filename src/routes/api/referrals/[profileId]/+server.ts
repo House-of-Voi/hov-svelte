@@ -1,6 +1,5 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 import { getReferralVolumeStats, getVoiAddressesForProfile } from '$lib/referrals/stats';
 import { getPlayerSpins } from '$lib/mimir/queries';
@@ -11,8 +10,8 @@ import { DEFAULT_REFERRAL_CREDIT_PERCENTAGE } from '$lib/referrals/credits';
  * GET /api/referrals/[profileId]
  * Returns detailed referral information for a specific referred profile
  */
-export const GET: RequestHandler = async ({ params, cookies, url }) => {
-  const session = await getServerSessionFromCookies(cookies);
+export const GET: RequestHandler = async ({ params, locals, url }) => {
+  const session = locals.hovSession;
   if (!session) {
     return json({ error: 'Unauthorized' }, { status: 401 });
   }

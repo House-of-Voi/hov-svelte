@@ -1,21 +1,23 @@
 import type { LayoutServerLoad } from './$types';
-import { getServerSessionFromCookies, hasGameAccess } from '$lib/auth/session';
+import { hasGameAccess } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 
-export const load: LayoutServerLoad = async ({ cookies }) => {
-  const session = await getServerSessionFromCookies(cookies);
+export const load: LayoutServerLoad = async ({ locals }) => {
+  const session = locals.hovSession;
 
   // If user is not authenticated, allow them to browse games
   if (!session) {
     return {
       session: null,
       hasGameAccess: false,
-      waitlistData: null
+      waitlistData: null,
+      gameAccounts: [],
+      activeGameAccountId: undefined
     };
   }
 
   // Check if authenticated user has game access
-  const access = await hasGameAccess(cookies);
+  const access = hasGameAccess(session);
 
   if (!access) {
     // User is authenticated but on waitlist - fetch waitlist data
@@ -50,7 +52,9 @@ export const load: LayoutServerLoad = async ({ cookies }) => {
         joinedAt: profile?.waitlist_joined_at || null,
         hasReferral: !!referral,
         totalOnWaitlist: waitlistCount || 0,
-      }
+      },
+      gameAccounts: [],
+      activeGameAccountId: undefined
     };
   }
 
@@ -58,6 +62,8 @@ export const load: LayoutServerLoad = async ({ cookies }) => {
   return {
     session,
     hasGameAccess: true,
-    waitlistData: null
+    waitlistData: null,
+    gameAccounts: locals.gameAccounts ?? [],
+    activeGameAccountId: locals.activeGameAccount?.id
   };
 };

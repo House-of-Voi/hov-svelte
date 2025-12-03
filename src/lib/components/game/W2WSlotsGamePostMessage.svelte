@@ -659,12 +659,10 @@
 			isAutoSpinning = false;
 		}
 
-		// If we just received bonus spins and we're not currently spinning,
-		// and we're in auto mode or should enter it, trigger auto-submit
-		// Only trigger if bonus spins increased (new bonus spins detected)
-		// The interval should start regardless of other processing states
-		if (newBonusSpins > previousBonusSpins && !isSpinning && !waitingForOutcome) {
-			// Start interval immediately - it will continue running regardless of UI state
+		// If we just received bonus spins, kick off auto-submit immediately.
+		// Don't gate on current spinning state; the interval manages queueing safely.
+		if (newBonusSpins > previousBonusSpins) {
+			// Start interval immediately - it will continue running regardless of UI/processing state
 			checkAndAutoSubmitBonusSpin();
 		}
 	}
@@ -724,9 +722,16 @@
 
 		// Exit auto bonus mode on error to prevent stuck state
 		if (isAutoBonusMode) {
+			// Reset interval but keep auto mode so we can recover
 			clearBonusSpinInterval();
-			isAutoBonusMode = false;
 			isAutoSpinning = false;
+			// Re-sync bonus spin balance and restart automation if spins remain
+			sendMessage({ type: 'GET_CREDIT_BALANCE' });
+			setTimeout(() => {
+				if (bonusSpins > 0 && isAutoBonusMode) {
+					checkAndAutoSubmitBonusSpin();
+				}
+			}, 500);
 		}
 
 		console.error('❌ Game error:', payload);

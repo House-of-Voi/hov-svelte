@@ -1,75 +1,89 @@
-import type { Cookies } from '@sveltejs/kit';
-import { getSessionCookie, getVoiAddressFromCookie } from './cookies';
 import { createAdminClient } from '../db/supabaseAdmin';
-import { createHash } from 'crypto';
+
+/**
+ * CDP recovery method for unlocking a game account
+ * - 'email' | 'sms' | 'google': CDP-based accounts with OTP/OAuth recovery
+ * - 'mnemonic': Accounts imported via 25-word Algorand mnemonic
+ */
+export type CdpRecoveryMethod = 'email' | 'sms' | 'google' | 'mnemonic' | null;
+
+/**
+ * Game account information (CDP wallet or mnemonic-imported account)
+ */
+export interface GameAccountInfo {
+  id: string;
+  cdpUserId: string; // For mnemonic accounts, format is 'mnemonic:{voiAddress}'
+  baseAddress: string; // Empty string for mnemonic accounts (no Base/EVM address)
+  voiAddress: string;
+  nickname: string | null;
+  isDefault: boolean;
+  lastUnlockedAt: string | null;
+  createdAt: string;
+  cdpRecoveryMethod: CdpRecoveryMethod;
+  cdpRecoveryHint: string | null;
+  /** True if this account was imported via mnemonic (derived from cdpUserId prefix) */
+  isMnemonicAccount: boolean;
+}
 
 /**
  * Session information for the authenticated user
  */
 export interface SessionInfo {
   sub: string; // profile_id
+  profileId: string; // Alias for sub for clarity
+
+  // Supabase authentication
+  supabaseUserId?: string;
+
+  // Legacy fields (deprecated, but kept for migration compatibility)
   cdpUserId?: string;
   baseWalletAddress?: string;
   jti?: string; // For backward compatibility
-  profileId: string; // Alias for sub for clarity
+
+  // Profile info
   gameAccessGranted?: boolean;
   displayName?: string | null;
   primaryEmail?: string;
-  voiAddress?: string; // CDP-derived Voi address (stored in session cookie)
+
+  // Active game account (CDP wallet)
+  activeGameAccountId?: string;
+  voiAddress?: string; // From active game account
   voiAddressDerivedAt?: number; // Timestamp when address was last derived
+
+  // Migration status
+  migrationStatus?: 'pending' | 'migrated' | 'new';
 }
 
-export async function getServerSessionFromCookies(cookies: Cookies): Promise<SessionInfo | null> {
-  const token = getSessionCookie(cookies);
-  if (!token) return null;
+/**
+ * Gets all game accounts for a profile
+ */
+export async function getGameAccountsForProfile(profileId: string): Promise<GameAccountInfo[]> {
+  const supabase = createAdminClient();
 
-  try {
-    const supabase = createAdminClient();
+  const { data: accounts, error } = await supabase
+    .from('game_accounts')
+    .select('*')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: true });
 
-    // Hash the token to look up the session
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-
-    // Look up session by token hash instead of calling CDP API
-    const { data: session, error: sessionError } = await supabase
-      .from('sessions')
-      .select('id, profile_id, cdp_user_id, expires_at')
-      .eq('cdp_access_token_hash', tokenHash)
-      .gt('expires_at', new Date().toISOString())
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    // If no valid session found in database, return null
-    if (sessionError || !session) {
-      console.log('No valid session found for token hash');
-      return null;
-    }
-
-    // Get profile to check game access and display name
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('game_access_granted, display_name, primary_email')
-      .eq('id', session.profile_id)
-      .single();
-
-    // Get CDP-derived Voi address from cookie (if available)
-    const voiAddressData = getVoiAddressFromCookie(cookies);
-
-    return {
-      sub: session.profile_id,
-      profileId: session.profile_id,
-      cdpUserId: session.cdp_user_id,
-      baseWalletAddress: undefined, // Not fetched server-side, derived client-side when needed
-      gameAccessGranted: profile?.game_access_granted || false,
-      displayName: profile?.display_name,
-      primaryEmail: profile?.primary_email,
-      voiAddress: voiAddressData?.address,
-      voiAddressDerivedAt: voiAddressData?.derivedAt,
-    };
-  } catch (error) {
-    console.error('Session validation error:', error);
-    return null;
+  if (error || !accounts) {
+    console.error('Error fetching game accounts:', error);
+    return [];
   }
+
+  return accounts.map((acc) => ({
+    id: acc.id,
+    cdpUserId: acc.cdp_user_id,
+    baseAddress: acc.base_address || '',
+    voiAddress: acc.voi_address,
+    nickname: acc.nickname,
+    isDefault: acc.is_default,
+    lastUnlockedAt: acc.last_unlocked_at,
+    createdAt: acc.created_at,
+    cdpRecoveryMethod: acc.cdp_recovery_method as CdpRecoveryMethod,
+    cdpRecoveryHint: acc.cdp_recovery_hint,
+    isMnemonicAccount: acc.cdp_user_id?.startsWith('mnemonic:') ?? false,
+  }));
 }
 
 /**
@@ -78,27 +92,28 @@ export async function getServerSessionFromCookies(cookies: Cookies): Promise<Ses
  *
  * @returns Array of connected accounts from database
  */
-export async function getConnectedAccounts(cookies: Cookies): Promise<Array<{
-  chain: string;
-  address: string;
-  isPrimary: boolean;
-  derivedFromChain: string | null;
-  derivedFromAddress: string | null;
-}> | null> {
-  const session = await getServerSessionFromCookies(cookies);
-  if (!session) return null;
-
+export async function getConnectedAccounts(
+  profileId: string
+): Promise<
+  Array<{
+    chain: string;
+    address: string;
+    isPrimary: boolean;
+    derivedFromChain: string | null;
+    derivedFromAddress: string | null;
+  }> | null
+> {
   const supabase = createAdminClient();
 
   // Get only connected accounts (not the primary CDP-derived ones)
   const { data: accounts } = await supabase
     .from('accounts')
     .select('chain, address, is_primary, derived_from_chain, derived_from_address')
-    .eq('profile_id', session.sub);
+    .eq('profile_id', profileId);
 
   if (!accounts) return null;
 
-  return accounts.map(acc => ({
+  return accounts.map((acc) => ({
     chain: acc.chain,
     address: acc.address,
     isPrimary: acc.is_primary,
@@ -109,10 +124,10 @@ export async function getConnectedAccounts(cookies: Cookies): Promise<Array<{
 
 /**
  * Checks if the current user has access to games
+ * Uses the session from locals (set by hooks.server.ts)
  *
  * @returns true if user has game access, false otherwise
  */
-export async function hasGameAccess(cookies: Cookies): Promise<boolean> {
-  const session = await getServerSessionFromCookies(cookies);
+export function hasGameAccess(session: SessionInfo | null): boolean {
   return session?.gameAccessGranted || false;
 }

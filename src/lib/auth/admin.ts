@@ -5,7 +5,8 @@
 
 import type { Cookies } from '@sveltejs/kit';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
-import { getServerSessionFromCookies } from './session';
+import { createSupabaseServerClient } from '$lib/db/supabaseAuthServer';
+import { getProfileByAuthUserId } from '$lib/profile/data';
 import {
   getEffectivePermissions,
   type Permission,
@@ -17,6 +18,21 @@ import {
 export { getEffectivePermissions, PERMISSIONS, type Permission, type AdminRole, type AdminRoleData } from './permissions';
 
 /**
+ * Get the current user's profile ID from Supabase auth
+ */
+async function getProfileIdFromAuth(cookies: Cookies): Promise<string | null> {
+  const supabase = createSupabaseServerClient(cookies);
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return null;
+  }
+
+  const profile = await getProfileByAuthUserId(user.id);
+  return profile?.id || null;
+}
+
+/**
  * Get the current user's admin role and permissions
  */
 export async function getAdminRole(cookies: Cookies, profileId?: string): Promise<AdminRoleData | null> {
@@ -25,11 +41,11 @@ export async function getAdminRole(cookies: Cookies, profileId?: string): Promis
 
     // If no profile ID provided, get it from session
     if (!currentProfileId) {
-      const session = await getServerSessionFromCookies(cookies);
-      if (!session) {
+      const authProfileId = await getProfileIdFromAuth(cookies);
+      if (!authProfileId) {
         return null;
       }
-      currentProfileId = session.profileId;
+      currentProfileId = authProfileId;
     }
 
     const supabase = createAdminClient();
@@ -169,11 +185,5 @@ export async function requireRole(
  * Get current profile ID from session cookie
  */
 export async function getCurrentProfileId(cookies: Cookies): Promise<string | null> {
-  try {
-    const session = await getServerSessionFromCookies(cookies);
-    return session?.profileId || null;
-  } catch (error) {
-    console.error('Error getting current profile ID:', error);
-    return null;
-  }
+  return getProfileIdFromAuth(cookies);
 }

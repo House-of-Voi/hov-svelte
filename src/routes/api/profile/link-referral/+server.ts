@@ -2,7 +2,6 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { z } from 'zod';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { validateReferralCode } from '$lib/referrals/validation';
 
 const schema = z.object({
@@ -20,10 +19,10 @@ const schema = z.object({
  *   referralCode: string (7 characters)
  * }
  */
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
   try {
     // Get authenticated session
-    const session = await getServerSessionFromCookies(cookies);
+    const session = locals.hovSession;
 
     if (!session) {
       return json(

@@ -63,6 +63,124 @@ export async function getProfileById(profileId: string): Promise<ProfileData | n
 }
 
 /**
+ * Get profile by Supabase auth user ID
+ *
+ * @param authUserId - Supabase auth user ID
+ * @returns Profile data or null if not found
+ */
+export async function getProfileByAuthUserId(authUserId: string): Promise<ProfileData | null> {
+  const supabase = createAdminClient();
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('auth_user_id', authUserId)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data as ProfileData;
+}
+
+/**
+ * Get profile with accounts by Supabase auth user ID
+ *
+ * @param authUserId - Supabase auth user ID
+ * @returns Profile with accounts or null if not found
+ */
+export async function getProfileWithAccountsByAuthUserId(authUserId: string): Promise<ProfileWithAccounts | null> {
+  const profile = await getProfileByAuthUserId(authUserId);
+  if (!profile) {
+    return null;
+  }
+
+  const accounts = await getProfileAccounts(profile.id);
+  const primaryAccount = accounts.find(a => a.is_primary) || null;
+
+  return {
+    profile,
+    accounts,
+    primaryAccount,
+  };
+}
+
+/**
+ * Create or get profile for a Supabase user
+ * Creates a new profile if one doesn't exist
+ *
+ * @param authUserId - Supabase auth user ID
+ * @param email - User's email from Supabase auth
+ * @param displayName - User's display name (optional)
+ * @param avatarUrl - User's avatar URL (optional)
+ * @returns Profile data
+ */
+export async function getOrCreateProfileForSupabaseUser(
+  authUserId: string,
+  email: string,
+  displayName?: string | null,
+  avatarUrl?: string | null
+): Promise<ProfileData> {
+  const supabase = createAdminClient();
+
+  // First try to get existing profile
+  const existing = await getProfileByAuthUserId(authUserId);
+  if (existing) {
+    return existing;
+  }
+
+  // Check if there's a profile with this email (migration case)
+  const { data: emailProfile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('primary_email', email.toLowerCase())
+    .single();
+
+  if (emailProfile) {
+    // Link existing profile to Supabase auth user
+    const { data: updated, error } = await supabase
+      .from('profiles')
+      .update({
+        auth_user_id: authUserId,
+        migration_status: 'migrated',
+        display_name: emailProfile.display_name || displayName || null,
+        avatar_url: emailProfile.avatar_url || avatarUrl || null,
+      })
+      .eq('id', emailProfile.id)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to link profile to Supabase auth: ${error.message}`);
+    }
+
+    return updated as ProfileData;
+  }
+
+  // Create new profile
+  const { data: newProfile, error } = await supabase
+    .from('profiles')
+    .insert({
+      primary_email: email.toLowerCase(),
+      auth_user_id: authUserId,
+      display_name: displayName || null,
+      avatar_url: avatarUrl || null,
+      game_access_granted: false,
+      waitlist_joined_at: new Date().toISOString(),
+      migration_status: 'new',
+    })
+    .select()
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to create profile: ${error.message}`);
+  }
+
+  return newProfile as ProfileData;
+}
+
+/**
  * Get profile by email
  *
  * @param email - Primary email address
@@ -241,30 +359,42 @@ export async function isUserAdmin(profileId: string): Promise<boolean> {
 }
 
 /**
- * Check if a user is activated (has entered a referral code)
+ * Check if a user is activated (has game access)
  *
- * A user is considered activated when they exist in the referrals table
- * as a referred_profile_id, meaning they have entered a referral code.
- * Admins are automatically considered activated.
+ * A user is considered activated when:
+ * 1. They have game_access_granted = true on their profile
+ * 2. They are an admin
+ * 3. They have been referred (exist in referrals table)
  *
  * @param profileId - UUID of the profile
- * @returns True if user has entered a referral code or is an admin, false otherwise
+ * @returns True if user has game access, false otherwise
  */
 export async function isUserActivated(profileId: string): Promise<boolean> {
   const supabase = createAdminClient();
 
-  // Check if user is an admin first
+  // Check if user has game_access_granted flag
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('game_access_granted')
+    .eq('id', profileId)
+    .single();
+
+  if (profile?.game_access_granted) {
+    return true;
+  }
+
+  // Check if user is an admin
   const isAdmin = await isUserAdmin(profileId);
   if (isAdmin) {
     return true;
   }
 
   // Check if user has a referral
-  const { data } = await supabase
+  const { data: referral } = await supabase
     .from('referrals')
     .select('id')
     .eq('referred_profile_id', profileId)
     .single();
 
-  return !!data;
+  return !!referral;
 }

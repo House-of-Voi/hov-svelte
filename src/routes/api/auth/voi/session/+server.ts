@@ -3,7 +3,6 @@ import type { RequestHandler } from './$types';
 import { z } from 'zod';
 import algosdk from 'algosdk';
 import nacl from 'tweetnacl';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { setVoiAddressCookie } from '$lib/auth/cookies';
 
 /**
@@ -26,9 +25,9 @@ const schema = z.object({
   signedTransaction: z.string().min(1),
 });
 
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async ({ request, cookies, locals }) => {
   try {
-    const session = await getServerSessionFromCookies(cookies);
+    const session = locals.hovSession;
 
     if (!session) {
       return json({ error: 'Not authenticated' }, { status: 401 });

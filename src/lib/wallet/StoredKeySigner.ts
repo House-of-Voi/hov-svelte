@@ -9,7 +9,7 @@
 
 import algosdk from 'algosdk';
 import type { WalletSigner } from '$lib/wallet/algokitTransactionSigner';
-import { getKeys } from '$lib/auth/keyStorage';
+import { getGameAccountKeys } from '$lib/auth/gameAccountStorage';
 
 /**
  * Wallet signer that uses stored encrypted keys
@@ -46,12 +46,12 @@ export class StoredKeySigner implements WalletSigner {
 	 */
 	async signTransactions(txns: algosdk.Transaction[]): Promise<Uint8Array[]> {
 		try {
-			// Step 1: Retrieve and decrypt stored keys
-			console.log('🔐 Retrieving stored keys...');
-			const storedKeys = await getKeys();
+			// Step 1: Retrieve and decrypt stored keys for this game account
+			console.log('🔐 Retrieving stored keys for address:', this.voiAddress);
+			const storedKeys = await getGameAccountKeys(this.voiAddress);
 
 			if (!storedKeys) {
-				throw new Error('No stored keys found. Please log in again to export and store your keys.');
+				throw new Error(`No stored keys found for address ${this.voiAddress}. Please unlock your game account.`);
 			}
 
 			// Verify the stored Voi address matches expected address

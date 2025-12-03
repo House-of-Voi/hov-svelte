@@ -1,18 +1,16 @@
 import type { PageServerLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { getPlayerSpins, getPlayerStatsSafe } from '$lib/mimir/queries';
 import { ensureBase32TxId } from '$lib/utils/txIdUtils';
 
-export const load: PageServerLoad = async ({ parent, url, cookies }) => {
+export const load: PageServerLoad = async ({ parent, url, locals }) => {
   const { session } = await parent();
 
   if (!session) {
     throw redirect(302, '/auth');
   }
 
-  const fullSession = await getServerSessionFromCookies(cookies);
-  const voiAddress = fullSession?.voiAddress;
+  const voiAddress = locals.voiAddress;
 
   if (!voiAddress) {
     throw redirect(302, '/auth');

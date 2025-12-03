@@ -1,23 +1,31 @@
 import type { Cookies } from '@sveltejs/kit';
-import { getServerSessionFromCookies } from '../auth/session';
-import { getProfileWithAccounts, type ProfileWithAccounts } from './data';
+import { createSupabaseServerClient } from '../db/supabaseAuthServer';
+import { createAdminClient } from '../db/supabaseAdmin';
+import { getProfileWithAccounts, getProfileByAuthUserId, type ProfileWithAccounts } from './data';
 
 /**
  * Get the current authenticated user's full profile
  *
- * This combines session validation with profile data fetching.
+ * This uses Supabase Auth to get the current user and fetches their profile.
  * Returns null if user is not authenticated or profile doesn't exist.
  *
  * @returns Profile with accounts or null
  */
 export async function getCurrentProfile(cookies: Cookies): Promise<ProfileWithAccounts | null> {
-  const session = await getServerSessionFromCookies(cookies);
+  const supabase = createSupabaseServerClient(cookies);
+  const { data: { user } } = await supabase.auth.getUser();
 
-  if (!session) {
+  if (!user) {
     return null;
   }
 
-  return getProfileWithAccounts(session.sub);
+  // Look up profile by Supabase auth user ID
+  const profile = await getProfileByAuthUserId(user.id);
+  if (!profile) {
+    return null;
+  }
+
+  return getProfileWithAccounts(profile.id);
 }
 
 /**
@@ -45,8 +53,9 @@ export async function requireCurrentProfile(cookies: Cookies): Promise<ProfileWi
  * @returns true if user has a valid session
  */
 export async function isAuthenticated(cookies: Cookies): Promise<boolean> {
-  const session = await getServerSessionFromCookies(cookies);
-  return session !== null;
+  const supabase = createSupabaseServerClient(cookies);
+  const { data: { user } } = await supabase.auth.getUser();
+  return user !== null;
 }
 
 /**
@@ -55,6 +64,13 @@ export async function isAuthenticated(cookies: Cookies): Promise<boolean> {
  * @returns Profile ID or null if not authenticated
  */
 export async function getCurrentProfileId(cookies: Cookies): Promise<string | null> {
-  const session = await getServerSessionFromCookies(cookies);
-  return session?.sub || null;
+  const supabase = createSupabaseServerClient(cookies);
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return null;
+  }
+
+  const profile = await getProfileByAuthUserId(user.id);
+  return profile?.id || null;
 }

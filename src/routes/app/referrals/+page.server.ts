@@ -1,11 +1,10 @@
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
 import type { ReferralDashboardData } from '$lib/referrals/credits';
 
-export const load: PageServerLoad = async ({ cookies, url }) => {
-  const session = await getServerSessionFromCookies(cookies);
+export const load: PageServerLoad = async ({ locals, url }) => {
+  const session = locals.hovSession;
   if (!session) {
     throw redirect(302, '/auth');
   }

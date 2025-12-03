@@ -22,7 +22,7 @@
 
 	// Wallet signing
 	import { StoredKeySigner } from '$lib/wallet/StoredKeySigner';
-	import { getStoredVoiAddress } from '$lib/auth/keyStorage';
+	import { getFirstStoredVoiAddress } from '$lib/auth/gameAccountStorage';
 
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
@@ -98,7 +98,7 @@
 			}
 
 			if (!playerAlgorandAddress) {
-				const storedAddress = await getStoredVoiAddress();
+				const storedAddress = getFirstStoredVoiAddress();
 				if (storedAddress) {
 					playerAlgorandAddress = storedAddress;
 				}
@@ -282,16 +282,13 @@
 				console.error('Failed to initialize engine in effect:', err);
 			});
 		} else if (!hasAddress && !engine && !cleanupFn) {
-			getStoredVoiAddress().then(storedAddress => {
-				if (storedAddress && !engine && !cleanupFn) {
-					console.log('🔄 Stored address found, initializing engine...');
-					initializeEngine().catch(err => {
-						console.error('Failed to initialize engine with stored address:', err);
-					});
-				}
-			}).catch(err => {
-				console.error('Failed to get stored address:', err);
-			});
+			const storedAddress = getFirstStoredVoiAddress();
+			if (storedAddress) {
+				console.log('🔄 Stored game account address found, initializing engine...');
+				initializeEngine().catch(err => {
+					console.error('Failed to initialize engine with stored address:', err);
+				});
+			}
 		}
 	});
 

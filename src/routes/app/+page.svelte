@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
+	import { browser } from '$app/environment';
+	import { invalidateAll, goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import Card from '$lib/components/ui/Card.svelte';
 	import CardHeader from '$lib/components/ui/CardHeader.svelte';
 	import CardContent from '$lib/components/ui/CardContent.svelte';
@@ -11,19 +13,27 @@
 	import AvatarEditModal from '$lib/components/form/AvatarEditModal.svelte';
 	import ProfileEditModal from '$lib/components/form/ProfileEditModal.svelte';
 	import ReferralCodesModal from '$lib/components/form/ReferralCodesModal.svelte';
-	import VoiAccountImportModal from '$lib/components/form/VoiAccountImportModal.svelte';
-	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
+	import LinkedAccountsManager from '$lib/components/gameAccounts/LinkedAccountsManager.svelte';
 	import TopReferralsSummary from '$lib/components/referrals/TopReferralsSummary.svelte';
 	import ReferralDetailModal from '$lib/components/referrals/ReferralDetailModal.svelte';
 	import type { PageData } from './$types';
 	import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
 	import { formatLargeNumber } from '$lib/referrals/credits';
+	import {
+		getInitializedCdp,
+		verifyOAuth,
+		exportEvmPrivateKey,
+		signOutCdpSession,
+		getCurrentCdpUser
+	} from '$lib/auth/cdpClient';
+	import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
+	import { storeGameAccountKeys, type GameAccountKeys } from '$lib/auth/gameAccountStorage';
 
 	let { data }: { data: PageData } = $props();
 
-    // CDP-derived Voi address from session is the only source of truth
-    // Never fall back to database accounts - they are "connected" accounts only
-    const voiAddress: string | undefined = data.voiAddress ?? undefined;
+	// CDP-derived Voi address from session is the only source of truth
+	// Never fall back to database accounts - they are "connected" accounts only
+	const voiAddress: string | undefined = data.voiAddress ?? undefined;
 
 	// State
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(
@@ -36,12 +46,9 @@
 	let isReferralCodesModalOpen = $state(false);
 	let profile = $state({ ...data.profileData.profile });
 
-  // Import modal state
-  let isImportModalOpen = $state(false);
-  
-  // Remove account modal state
-  let isRemoveModalOpen = $state(false);
-  let accountToRemove = $state<{ chain: string; address: string } | null>(null);
+	// OAuth callback handling state
+	let oauthProcessing = $state(false);
+	let oauthProcessed = $state(false);
 
 	// Referral dashboard data (loaded client-side)
 	let referralDashboardData = $state<ReferralDashboardData | null>(null);
@@ -129,50 +136,6 @@
 			status = null;
 		}, delayMs);
 	}
-
-  async function handleLinked(address: string) {
-    status = { type: 'success', message: 'Voi account linked successfully!' };
-    clearStatusAfter(3000);
-    await invalidateAll();
-  }
-
-  function handleRemoveClick(chain: string, address: string) {
-    accountToRemove = { chain, address };
-    isRemoveModalOpen = true;
-  }
-
-  async function handleRemoveConfirm() {
-    if (!accountToRemove) return;
-
-    try {
-      const response = await fetch('/api/profile/accounts', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chain: accountToRemove.chain,
-          address: accountToRemove.address,
-        }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Failed to remove account');
-      }
-
-      status = { type: 'success', message: 'Account removed successfully!' };
-      clearStatusAfter(3000);
-      await invalidateAll();
-      accountToRemove = null;
-    } catch (err) {
-      console.error('Remove account error:', err);
-      status = {
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Failed to remove account',
-      };
-      clearStatusAfter(5000);
-    }
-  }
 
 	// Copy address to clipboard
 	function copyAddress(address: string) {
@@ -279,6 +242,137 @@
 		fetchReferralStats();
 	}
 
+	/**
+	 * Handle OAuth callback from CDP Google sign-in.
+	 * When user returns from Google OAuth, the URL contains code, flow_id, and provider_type.
+	 * We need to complete the verification, export keys, and register the account.
+	 */
+	async function handleOAuthCallback() {
+		if (!browser || oauthProcessed) return;
+
+		const urlParams = new URLSearchParams(window.location.search);
+		const code = urlParams.get('code');
+		const flowId = urlParams.get('flow_id');
+		const providerType = urlParams.get('provider_type');
+
+		// Check if this is an OAuth callback
+		if (!code || !flowId || providerType !== 'google') {
+			return;
+		}
+
+		oauthProcessed = true;
+		oauthProcessing = true;
+		status = { type: 'success', message: 'Completing Google sign-in...' };
+
+		try {
+			// Initialize CDP - this will automatically process the OAuth params
+			await getInitializedCdp();
+
+			// Get the current user (should be signed in after OAuth)
+			const user = await getCurrentCdpUser();
+
+			if (!user) {
+				throw new Error('Failed to authenticate with Google');
+			}
+
+			// Get EVM address
+			const baseAddress = user.evmAccounts?.[0] || user.evmSmartAccounts?.[0];
+			if (!baseAddress) {
+				throw new Error('No wallet found');
+			}
+
+			// Export private key
+			const formattedAddress = baseAddress.startsWith('0x')
+				? (baseAddress as `0x${string}`)
+				: (`0x${baseAddress}` as `0x${string}`);
+
+			const privateKey = await exportEvmPrivateKey(formattedAddress);
+
+			if (!privateKey) {
+				throw new Error('Unable to access wallet');
+			}
+
+			// Derive Voi address
+			const derivedAccount = deriveAlgorandAccountFromEVM(privateKey);
+			const voiAddr = String(derivedAccount.addr);
+
+			const voiPrivateKey = Array.from(derivedAccount.sk)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+
+			// Store keys
+			const baseAddressLower = (baseAddress as string).toLowerCase();
+			const keys: GameAccountKeys = {
+				basePrivateKey: privateKey,
+				voiPrivateKey,
+				baseAddress: baseAddressLower,
+				voiAddress: voiAddr,
+				storedAt: Date.now()
+			};
+
+			await storeGameAccountKeys(keys);
+			derivedAccount.sk.fill(0);
+
+			// Create recovery hint from Google email
+			const googleEmail = user.authenticationMethods?.google?.email;
+			const recoveryHint = googleEmail ? obfuscateEmail(googleEmail) : 'Google account';
+
+			// Register with backend
+			const response = await fetch('/api/game-accounts', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					cdpUserId: user.userId || (user as any).id,
+					baseAddress: baseAddressLower,
+					voiAddress: voiAddr,
+					cdpRecoveryMethod: 'google',
+					cdpRecoveryHint: recoveryHint
+				})
+			});
+
+			const result = await response.json();
+
+			// Sign out of CDP
+			await signOutCdpSession();
+
+			if (!response.ok || !result.ok) {
+				throw new Error(result.error || 'Failed to register wallet');
+			}
+
+			// Clean up URL params and show success
+			window.history.replaceState({}, '', '/app');
+			status = { type: 'success', message: 'Google account added successfully!' };
+			clearStatusAfter(5000);
+
+			// Refresh data
+			await invalidateAll();
+		} catch (err) {
+			console.error('OAuth callback error:', err);
+			// Sign out CDP on error too
+			await signOutCdpSession().catch(() => {});
+			// Clean up URL params
+			window.history.replaceState({}, '', '/app');
+			status = { type: 'error', message: err instanceof Error ? err.message : 'Failed to add Google account' };
+			clearStatusAfter(8000);
+		} finally {
+			oauthProcessing = false;
+		}
+	}
+
+	function obfuscateEmail(email: string): string {
+		const [local, domain] = email.split('@');
+		if (!domain) return email;
+		const [domainName, ...tld] = domain.split('.');
+		const obfuscatedLocal = local.length > 1 ? local[0] + '***' : local;
+		const obfuscatedDomain = domainName.length > 1 ? domainName[0] + '***' : domainName;
+		return `${obfuscatedLocal}@${obfuscatedDomain}.${tld.join('.')}`;
+	}
+
+	// Handle OAuth callback on mount
+	onMount(() => {
+		handleOAuthCallback();
+	});
+
 	// Fetch referral stats on mount
 	$effect(() => {
 		if (data.profileData.profile.max_referrals > 0) {
@@ -294,6 +388,23 @@
 		}
 	});
 </script>
+
+<!-- OAuth Processing Overlay -->
+{#if oauthProcessing}
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+		<div class="rounded-xl bg-white p-8 text-center shadow-xl dark:bg-neutral-900">
+			<div class="mb-4 flex justify-center">
+				<div class="h-12 w-12 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"></div>
+			</div>
+			<h3 class="text-lg font-semibold text-neutral-800 dark:text-neutral-200">
+				Adding Google Account...
+			</h3>
+			<p class="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+				Please wait while we complete the setup.
+			</p>
+		</div>
+	</div>
+{/if}
 
 <div class="space-y-8 max-w-4xl">
 	<!-- Header -->
@@ -494,55 +605,13 @@
 		<BalancesCard address={voiAddress} />
 	{/if}
 
-	<!-- Linked Accounts List -->
-	<Card>
-		<CardHeader>
-			<div class="flex items-center justify-between">
-				<h2 class="text-xl font-semibold text-neutral-950 dark:text-white">Your Linked Accounts</h2>
-				<Button variant="primary" size="sm" onclick={() => (isImportModalOpen = true)}>Import Voi Account</Button>
-			</div>
-		</CardHeader>
-		<CardContent>
-			{#if voiAddress || (data.profileData.accounts?.some((a: any) => a.chain === 'voi'))}
-				<div class="space-y-3">
-					{#if voiAddress}
-						<div class="flex items-center justify-between gap-3 border border-primary-300 dark:border-primary-800 rounded-lg p-3 bg-primary-50/60 dark:bg-primary-900/20">
-							<div class="flex items-center gap-2 text-neutral-800 dark:text-neutral-200">
-								<span class="px-2 py-0.5 text-xs rounded bg-primary-200 dark:bg-primary-800 text-primary-900 dark:text-primary-200">Primary</span>
-								<a class="font-mono text-sm hover:text-primary-600 dark:hover:text-primary-400" href="https://block.voi.network/explorer/account/{voiAddress}" target="_blank" rel="noopener noreferrer">{voiAddress.slice(0,6)}...{voiAddress.slice(-4)}</a>
-							</div>
-							<button class="p-1 hover:bg-primary-50 dark:hover:bg-primary-950 rounded" onclick={() => copyAddress(voiAddress)} title="Copy address">
-								<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-							</button>
-						</div>
-					{/if}
-					{#each data.profileData.accounts.filter((a: any) => a.chain === 'voi') as acc}
-						<div class="flex items-center justify-between gap-3 border border-neutral-200 dark:border-neutral-800 rounded-lg p-3">
-							<a class="font-mono text-sm text-neutral-700 dark:text-neutral-300 hover:text-primary-600 dark:hover:text-primary-400" href="https://block.voi.network/explorer/account/{acc.address}" target="_blank" rel="noopener noreferrer">{acc.address.slice(0,6)}...{acc.address.slice(-4)}</a>
-							<div class="flex items-center gap-2">
-								<button class="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded" onclick={() => copyAddress(acc.address)} title="Copy address">
-									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-								</button>
-								<button
-									class="p-1 hover:bg-error-50 dark:hover:bg-error-950 rounded text-error-600 dark:text-error-400"
-									onclick={() => handleRemoveClick(acc.chain, acc.address)}
-									title="Remove account"
-								>
-									<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-										<path d="M3 6h18"></path>
-										<path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
-										<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
-									</svg>
-								</button>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{:else}
-				<div class="text-neutral-600 dark:text-neutral-300">No Voi accounts linked yet.</div>
-			{/if}
-		</CardContent>
-	</Card>
+	<!-- Unified Accounts Manager - Game accounts + legacy accounts -->
+	<LinkedAccountsManager
+		gameAccounts={data.gameAccounts}
+		activeAccountId={data.activeGameAccountId}
+		primaryEmail={data.profileData.profile.primary_email}
+		legacyAccounts={data.legacyAccounts}
+	/>
 
 	<!-- Referral Section - Only show if user has referral slots -->
 	{#if data.profileData.profile.max_referrals > 0}
@@ -667,22 +736,6 @@
 			</CardContent>
 		</Card>
 	{/if}
-
-	<VoiAccountImportModal
-		isOpen={isImportModalOpen}
-		onClose={() => (isImportModalOpen = false)}
-		onLinked={handleLinked}
-	/>
-
-	<RemoveAccountModal
-		isOpen={isRemoveModalOpen}
-		address={accountToRemove?.address ?? ''}
-		onClose={() => {
-			isRemoveModalOpen = false;
-			accountToRemove = null;
-		}}
-		onConfirm={handleRemoveConfirm}
-	/>
 
 	<!-- Referral Detail Modal -->
 	{#if selectedReferralProfileId}

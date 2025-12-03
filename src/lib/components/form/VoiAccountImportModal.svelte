@@ -1,7 +1,14 @@
 <script lang="ts">
+  /**
+   * VoiAccountImportModal
+   *
+   * Imports a Voi account via 25-word Algorand mnemonic.
+   * The private key is stored encrypted in localStorage for gameplay.
+   * The account is registered as a full game account (not just proof-of-ownership).
+   */
   import Button from '$lib/components/ui/Button.svelte';
   import algosdk from 'algosdk';
-  import { buildProofOfOwnershipTransaction } from '$lib/chains/algorand-browser';
+  import { storeGameAccountKeys, type GameAccountKeys } from '$lib/auth/gameAccountStorage';
 
   interface Props {
     isOpen: boolean;
@@ -31,48 +38,60 @@
     error = null;
 
     try {
-      const challengeRes = await fetch('/api/auth/algorand/challenge');
-      const challengeJson = await challengeRes.json();
-      if (!challengeRes.ok || !challengeJson.challenge) {
-        throw new Error(challengeJson.error || 'Failed to obtain challenge');
-      }
-
-      const challenge: string = challengeJson.challenge;
-
-      // Derive account strictly client-side
+      // Derive account from mnemonic (client-side only)
       const { addr, sk } = algosdk.mnemonicToSecretKey(mnemonic.trim());
+      // Convert Address type to string for compatibility
+      const voiAddress = String(addr);
 
-      // Build and sign proof transaction
-      const proofTxn = buildProofOfOwnershipTransaction(addr, challenge);
-      const signed = algosdk.signTransaction(proofTxn, sk);
+      // Convert secret key to hex string for storage
+      const voiPrivateKey = Array.from(sk)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
 
-      // Immediately wipe secret key from memory
-      sk.fill(0);
+      // Store keys encrypted in localStorage
+      const keys: GameAccountKeys = {
+        basePrivateKey: '', // Mnemonic accounts don't have a Base/EVM key
+        voiPrivateKey,
+        baseAddress: '', // No Base address
+        voiAddress,
+        storedAt: Date.now()
+      };
 
-      const signedBase64 = algosdk.bytesToBase64(signed.blob);
+      await storeGameAccountKeys(keys);
 
-      const linkRes = await fetch('/api/auth/algorand/link', {
+      // Register as a game account (not the old proof-of-ownership flow)
+      const registerRes = await fetch('/api/game-accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          algorandAddress: addr,
-          signedTransaction: signedBase64,
-          challenge,
-        }),
+          cdpUserId: `mnemonic:${voiAddress}`, // Synthetic CDP ID for mnemonic accounts
+          baseAddress: '', // No Base address for mnemonic accounts
+          voiAddress,
+          cdpRecoveryMethod: 'mnemonic',
+          cdpRecoveryHint: 'Re-import your 25-word mnemonic'
+        })
       });
 
-      const linkJson = await linkRes.json();
-      if (!linkRes.ok || !linkJson.ok) {
-        // Prefer message field for detailed error messages, fallback to error
-        const errorMessage = linkJson.message || linkJson.error || 'Failed to link Voi account';
+      const registerJson = await registerRes.json();
+
+      // Wipe secret key from memory after storing
+      sk.fill(0);
+
+      if (!registerRes.ok || !registerJson.ok) {
+        const errorMessage = registerJson.error || 'Failed to register game account';
         throw new Error(errorMessage);
       }
 
-      onLinked?.(addr);
+      onLinked?.(voiAddress);
       reset();
       onClose();
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to link Voi account';
+      console.error('Import error:', e);
+      if (e instanceof Error && e.message.includes('mnemonic')) {
+        error = 'Invalid mnemonic. Please check your recovery phrase.';
+      } else {
+        error = e instanceof Error ? e.message : 'Failed to import Voi account';
+      }
     } finally {
       isSubmitting = false;
     }
@@ -80,8 +99,8 @@
 </script>
 
 {#if isOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-    <div class="w-full max-w-lg bg-neutral-900 rounded-xl p-6 border border-neutral-700">
+  <div class="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-full max-w-lg bg-neutral-900 rounded-xl p-6 border border-neutral-700 shadow-2xl">
       <div class="flex items-start justify-between">
         <h3 class="text-lg font-semibold text-white">Import Voi Account</h3>
         <button class="text-neutral-400 hover:text-neutral-200" onclick={() => { reset(); onClose(); }}>✕</button>
@@ -115,5 +134,4 @@
     </div>
   </div>
 {/if}
-
 

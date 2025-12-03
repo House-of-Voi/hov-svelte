@@ -1,24 +1,25 @@
 import { redirect } from '@sveltejs/kit';
-import { getProfileWithAccounts, isUserActivated } from '$lib/profile/data';
+import { getProfileAccounts, isUserActivated } from '$lib/profile/data';
 import { REF_FLASH_COOKIE } from '$lib/utils/referral';
 import type { PageServerLoad } from './$types';
 
 type ReferralFlash = { type: 'success' | 'error'; message: string };
 
-export const load: PageServerLoad = async ({ parent, cookies }) => {
-	// Get session from parent layout
-	const { session } = await parent();
+export const load: PageServerLoad = async ({ parent, cookies, locals }) => {
+	// Get profile and game accounts from parent layout
+	const { profile, gameAccounts } = await parent();
 
-	// Get full profile with accounts
-	const profileData = await getProfileWithAccounts(session.profileId);
-
-	// Redirect to auth if not logged in (shouldn't happen due to layout, but safety check)
-	if (!profileData) {
+	// Redirect if no profile (shouldn't happen as layout creates one)
+	if (!profile) {
 		throw redirect(302, '/auth');
 	}
 
+	// Get legacy connected accounts for this profile
+	// These are from the old 'accounts' table - can be upgraded by re-importing mnemonic
+	const legacyAccounts = await getProfileAccounts(profile.id);
+
 	// Check if user is activated (has entered a referral code)
-	const activated = await isUserActivated(profileData.profile.id);
+	const activated = await isUserActivated(profile.id);
 
 	// Read referral flash message if present
 	const flashCookie = cookies.get(REF_FLASH_COOKIE);
@@ -43,10 +44,28 @@ export const load: PageServerLoad = async ({ parent, cookies }) => {
 		}
 	}
 
-    return {
-        profileData,
-        isActivated: activated,
-        referralFlash,
-        voiAddress: session.voiAddress ?? null,
-    };
+	// Get active game account ID
+	const activeGameAccountId = locals.activeGameAccount?.id;
+	const voiAddress = locals.voiAddress;
+
+	return {
+		profileData: {
+			profile,
+			// Keep legacy accounts for backward compatibility + migration
+			accounts: legacyAccounts,
+			primaryAccount: legacyAccounts.find(a => a.is_primary) || null
+		},
+		// Game accounts for the new unified accounts manager
+		gameAccounts: gameAccounts || [],
+		activeGameAccountId,
+		// Legacy accounts filtered to Voi chain for upgrade prompts
+		legacyAccounts: legacyAccounts.filter(a => a.chain === 'voi').map(a => ({
+			chain: a.chain,
+			address: a.address,
+			isPrimary: a.is_primary || false
+		})),
+		isActivated: activated,
+		referralFlash,
+		voiAddress,
+	};
 };

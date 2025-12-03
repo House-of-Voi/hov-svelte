@@ -4,7 +4,6 @@ import { z } from 'zod';
 import algosdk from 'algosdk';
 import { env } from '$lib/utils/env';
 import { SwapClient, type SwapQuote } from '$lib/voi/swap-client';
-import { getServerSessionFromCookies } from '$lib/auth/session';
 
 const USDC_ASSET_ID = 302190;
 const VOI_ASSET_ID = 0; // Network token
@@ -61,7 +60,7 @@ const SwapQuoteRequestSchema = z.object({
  *   poolId: string - Selected pool ID
  * }
  */
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
 	try {
 		const body = await request.json().catch(() => ({}));
 		const parsed = SwapQuoteRequestSchema.safeParse(body);
@@ -78,9 +77,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 		let { address, inputToken, outputToken, amount, slippageTolerance } = parsed.data;
 
-		// If user has CDP session, prefer the session-derived address
+		// If user has session, prefer the session-derived address
 		// This ensures the address matches what CDP will derive when signing
-		const session = await getServerSessionFromCookies(cookies);
+		const session = locals.hovSession;
 		if (session?.voiAddress) {
 			// Use the CDP-derived address from session instead of the passed address
 			// This ensures transactions are built with the correct address that CDP will sign

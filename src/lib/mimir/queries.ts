@@ -165,6 +165,88 @@ export async function getPlatformStatsByDate(
   return getPlatformStatsByRounds(contractId, startRound, endRound);
 }
 
+export async function getPlatformStatsByTimestamp(
+  contractId: number,
+  startDate: Date,
+  endDate: Date
+): Promise<MimirPlatformStats> {
+  const { data, error } = await mimirClient
+    .from('hov_events')
+    .select('amount, payout, net_result, is_win, who, total_bet_amount')
+    .eq('app_id', contractId)
+    .gte('created_at', startDate.toISOString())
+    .lte('created_at', endDate.toISOString());
+
+  if (error) {
+    throw new MimirRpcError('getPlatformStatsByTimestamp', error);
+  }
+
+  if (!data || data.length === 0) {
+    return {
+      total_bets: 0,
+      total_amount_bet: 0,
+      total_amount_paid: 0,
+      total_winning_spins: 0,
+      average_bet_size: 0,
+      average_payout: 0,
+      win_percentage: 0,
+      house_edge: 0,
+      rtp: 0,
+      net_platform_result: 0,
+      unique_players: 0,
+      largest_single_win: 0,
+      largest_single_bet: 0,
+    };
+  }
+
+  const totalBets = data.length;
+  const winningSpins = data.filter((row) => row.is_win).length;
+  const uniquePlayers = new Set(data.map((row) => row.who)).size;
+
+  let totalAmountBet = BigInt(0);
+  let totalAmountPaid = BigInt(0);
+  let largestWin = BigInt(0);
+  let largestBet = BigInt(0);
+
+  for (const row of data) {
+    const betAmount = BigInt(row.total_bet_amount || row.amount || 0);
+    const payout = BigInt(row.payout || 0);
+
+    totalAmountBet += betAmount;
+    totalAmountPaid += payout;
+
+    if (payout > largestWin) {
+      largestWin = payout;
+    }
+    if (betAmount > largestBet) {
+      largestBet = betAmount;
+    }
+  }
+
+  const netPlatformResult = totalAmountBet - totalAmountPaid;
+  const winPercentage = totalBets > 0 ? (winningSpins / totalBets) * 100 : 0;
+  const rtp = totalAmountBet > 0n ? Number((totalAmountPaid * 100n) / totalAmountBet) : 0;
+  const houseEdge = 100 - rtp;
+  const avgBet = totalBets > 0 ? Number(totalAmountBet) / totalBets : 0;
+  const avgPayout = winningSpins > 0 ? Number(totalAmountPaid) / winningSpins : 0;
+
+  return {
+    total_bets: totalBets,
+    total_amount_bet: Number(totalAmountBet),
+    total_amount_paid: Number(totalAmountPaid),
+    total_winning_spins: winningSpins,
+    average_bet_size: avgBet,
+    average_payout: avgPayout,
+    win_percentage: winPercentage,
+    house_edge: houseEdge,
+    rtp,
+    net_platform_result: Number(netPlatformResult),
+    unique_players: uniquePlayers,
+    largest_single_win: Number(largestWin),
+    largest_single_bet: Number(largestBet),
+  };
+}
+
 export type LeaderboardRankBy = 'won' | 'profit' | 'rtp' | 'volume';
 
 export async function getLeaderboard(options: {

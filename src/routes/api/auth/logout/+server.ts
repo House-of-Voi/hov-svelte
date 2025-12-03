@@ -1,28 +1,43 @@
 import { json, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { clearSessionCookie, clearVoiAddressCookie, clearKeyDerivationCookie } from '$lib/auth/cookies';
-import { getServerSessionFromCookies } from '$lib/auth/session';
-import { createAdminClient } from '$lib/db/supabaseAdmin';
+import { clearVoiAddressCookie, clearKeyDerivationCookie } from '$lib/auth/cookies';
 
-async function handleLogout(cookies: import('@sveltejs/kit').Cookies) {
-  const session = await getServerSessionFromCookies(cookies);
-  if (session?.jti) {
-    const supabase = createAdminClient();
-    await supabase.from('sessions').delete().eq('id', session.jti);
+/**
+ * Handles logout by signing out of Supabase and clearing all app-specific cookies.
+ *
+ * IMPORTANT: The client is responsible for:
+ * 1. Clearing stored game account keys from localStorage
+ * 2. Signing out of Supabase (client-side SDK) - this is done before calling this endpoint
+ *
+ * This is by design - we only clear keys on explicit logout, not on session expiry.
+ */
+async function handleLogout(
+  locals: App.Locals,
+  cookies: import('@sveltejs/kit').Cookies
+) {
+  // Sign out from Supabase (server-side)
+  if (locals.supabase) {
+    await locals.supabase.auth.signOut();
   }
-  // Clear session, Voi address, and key derivation cookies
-  clearSessionCookie(cookies);
+
+  // Clear app-specific cookies (Voi address, key derivation)
+  // Supabase handles its own auth cookies automatically
   clearVoiAddressCookie(cookies);
   clearKeyDerivationCookie(cookies);
-  // Note: Client should clear stored keys from localStorage on logout
+
+  // Note: Client must handle:
+  // - Clearing game account keys from localStorage (clearAllGameAccountKeys)
 }
 
-export const POST: RequestHandler = async ({ cookies }) => {
-  await handleLogout(cookies);
-  return json({ ok: true });
+export const POST: RequestHandler = async ({ locals, cookies }) => {
+  await handleLogout(locals, cookies);
+  return json({
+    ok: true,
+    message: 'Logged out successfully. Client should clear localStorage.',
+  });
 };
 
-export const GET: RequestHandler = async ({ cookies }) => {
-  await handleLogout(cookies);
+export const GET: RequestHandler = async ({ locals, cookies }) => {
+  await handleLogout(locals, cookies);
   throw redirect(303, '/auth');
 };
