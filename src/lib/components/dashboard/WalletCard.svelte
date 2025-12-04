@@ -4,6 +4,7 @@
 	 *
 	 * Primary wallet display card for the dashboard.
 	 * USDC is the primary currency, with other tokens (VOI, etc.) as secondary.
+	 * Shows which account the wallet is displaying via activeAccountNickname.
 	 */
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
@@ -35,9 +36,10 @@
 
 	interface Props {
 		address: string;
+		activeAccountNickname?: string;
 	}
 
-	let { address }: Props = $props();
+	let { address, activeAccountNickname }: Props = $props();
 
 	const AUSDC_ASSET_ID = 302190;
 
@@ -247,7 +249,12 @@
 	<CardContent className="p-6">
 		<!-- Header -->
 		<div class="mb-4 flex items-center justify-between">
-			<h2 class="text-lg font-semibold text-neutral-950 dark:text-white">Wallet</h2>
+			<div class="flex flex-col">
+				<h2 class="text-lg font-semibold text-neutral-950 dark:text-white">Active Wallet</h2>
+				<span class="text-xs font-mono text-neutral-500 dark:text-neutral-400">
+					{activeAccountNickname ? `${activeAccountNickname} • ` : ''}{address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'No Account'}
+				</span>
+			</div>
 			<button
 				onclick={handleRefresh}
 				disabled={loading}

@@ -17,8 +17,8 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import UnlockGameAccount from './UnlockGameAccount.svelte';
 	import AddGameAccount from './AddGameAccount.svelte';
-	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
-	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
+	import AccountActionModal from '$lib/components/form/AccountActionModal.svelte';
+	import { getStoredGameAccountAddresses, removeGameAccountKeys } from '$lib/auth/gameAccountStorage';
 	import type { GameAccountInfo, CdpRecoveryMethod } from '$lib/auth/session';
 	import { fetchVoiBalance, formatBalance } from '$lib/voi/balances';
 
@@ -57,7 +57,13 @@
 	// Modal state
 	let showAddModal = $state(false);
 	let unlockingAccount = $state<GameAccountInfo | null>(null);
-	let removingAccount = $state<{ id: string; address: string } | null>(null);
+	let managingAccount = $state<{
+		id: string;
+		address: string;
+		nickname: string | null;
+		recoveryMethod: 'email' | 'sms' | 'google' | 'mnemonic' | null;
+		recoveryHint: string | null;
+	} | null>(null);
 	let removingLegacyAccount = $state<{ address: string } | null>(null);
 
 	// Keep active account at the top while preserving original order for others
@@ -213,18 +219,43 @@
 		unlockingAccount = null;
 	}
 
-	async function handleRemove(account: GameAccountInfo) {
-		removingAccount = { id: account.id, address: account.voiAddress };
+	function handleManageAccount(account: GameAccountInfo) {
+		managingAccount = {
+			id: account.id,
+			address: account.voiAddress,
+			nickname: account.nickname,
+			recoveryMethod: account.cdpRecoveryMethod as 'email' | 'sms' | 'google' | 'mnemonic' | null,
+			recoveryHint: account.cdpRecoveryHint
+		};
 	}
 
-	async function handleRemoveConfirm() {
-		if (!removingAccount) return;
+	async function handleLockConfirm() {
+		if (!managingAccount) return;
+
+		try {
+			await removeGameAccountKeys(managingAccount.address);
+			// Refresh unlocked addresses
+			if (browser) {
+				const stored = getStoredGameAccountAddresses();
+				unlockedAddresses = new Set(stored);
+			}
+			showStatus('success', 'Account locked');
+			managingAccount = null;
+			await invalidateAll();
+			onAccountChange?.();
+		} catch (err) {
+			showStatus('error', err instanceof Error ? err.message : 'Failed to lock account');
+		}
+	}
+
+	async function handleDisconnectConfirm() {
+		if (!managingAccount) return;
 
 		try {
 			const response = await fetch('/api/game-accounts', {
 				method: 'DELETE',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ accountId: removingAccount.id })
+				body: JSON.stringify({ accountId: managingAccount.id })
 			});
 
 			const result = await response.json();
@@ -233,8 +264,21 @@
 				throw new Error(result.error || 'Failed to remove account');
 			}
 
+			// Also remove local keys if they exist
+			try {
+				await removeGameAccountKeys(managingAccount.address);
+			} catch {
+				// Ignore errors - keys may already be removed
+			}
+
+			// Refresh unlocked addresses
+			if (browser) {
+				const stored = getStoredGameAccountAddresses();
+				unlockedAddresses = new Set(stored);
+			}
+
 			showStatus('success', 'Account removed');
-			removingAccount = null;
+			managingAccount = null;
 			await invalidateAll();
 			onAccountChange?.();
 		} catch (err) {
@@ -415,7 +459,7 @@
 
 									<!-- Remove -->
 									<button
-										onclick={() => handleRemove(account)}
+										onclick={() => handleManageAccount(account)}
 										title="Remove account"
 										class="rounded p-2 text-error-500 transition-colors hover:bg-error-50 dark:hover:bg-error-900/20"
 									>
@@ -584,13 +628,17 @@
 	/>
 {/if}
 
-<!-- Remove Account Modal -->
-{#if removingAccount}
-	<RemoveAccountModal
+<!-- Account Action Modal -->
+{#if managingAccount}
+	<AccountActionModal
 		isOpen={true}
-		address={removingAccount.address}
-		onClose={() => (removingAccount = null)}
-		onConfirm={handleRemoveConfirm}
+		address={managingAccount.address}
+		nickname={managingAccount.nickname}
+		recoveryMethod={managingAccount.recoveryMethod}
+		recoveryHint={managingAccount.recoveryHint}
+		onClose={() => (managingAccount = null)}
+		onLock={handleLockConfirm}
+		onDisconnect={handleDisconnectConfirm}
 	/>
 {/if}
 

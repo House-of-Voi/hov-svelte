@@ -2,9 +2,9 @@
 	/**
 	 * AccountsGrid Component
 	 *
-	 * Horizontal scrollable container of AccountCards.
-	 * Single "Add Account" ghost card at the end.
-	 * Shows legacy accounts inline below the cards.
+	 * Displays user's game accounts in a compact card format.
+	 * Cards are NOT clickable to switch - switching is done via navbar.
+	 * Shows add/remove actions and legacy accounts with import option.
 	 */
 	import { browser } from '$app/environment';
 	import { invalidateAll } from '$app/navigation';
@@ -12,12 +12,10 @@
 	import CardHeader from '$lib/components/ui/CardHeader.svelte';
 	import CardContent from '$lib/components/ui/CardContent.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import AccountCard from './AccountCard.svelte';
 	import AddGameAccount from '$lib/components/gameAccounts/AddGameAccount.svelte';
-	import UnlockGameAccount from '$lib/components/gameAccounts/UnlockGameAccount.svelte';
-	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
-	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
+	import AccountActionModal from '$lib/components/form/AccountActionModal.svelte';
 	import { fetchAllBalances, formatBalance } from '$lib/voi/balances';
+	import { removeGameAccountKeys } from '$lib/auth/gameAccountStorage';
 	import type { GameAccountInfo } from '$lib/auth/session';
 
 	interface LegacyAccount {
@@ -43,14 +41,18 @@
 	}: Props = $props();
 
 	// State
-	let unlockedAddresses = $state<Set<string>>(new Set());
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(null);
 	let balances = $state<Map<string, string>>(new Map()); // voiAddress -> USDC balance
 
 	// Modal state
 	let showAddModal = $state(false);
-	let unlockingAccount = $state<GameAccountInfo | null>(null);
-	let removingAccount = $state<{ id: string; address: string } | null>(null);
+	let managingAccount = $state<{
+		id: string;
+		address: string;
+		nickname: string | null;
+		recoveryMethod: 'email' | 'sms' | 'google' | 'mnemonic' | null;
+		recoveryHint: string | null;
+	} | null>(null);
 
 	// Keep active account at the front
 	const orderedGameAccounts = $derived.by(() => {
@@ -70,14 +72,6 @@
 	const filteredLegacyAccounts = $derived.by(() => {
 		const gameAddresses = new Set(gameAccounts.map((a) => a.voiAddress));
 		return legacyAccounts.filter((leg) => leg.chain === 'voi' && !gameAddresses.has(leg.address));
-	});
-
-	// Refresh unlocked status
-	$effect(() => {
-		if (browser) {
-			const stored = getStoredGameAccountAddresses();
-			unlockedAddresses = new Set(stored);
-		}
 	});
 
 	// Fetch USDC balances for all accounts
@@ -114,10 +108,6 @@
 		balances = newBalances;
 	}
 
-	function isUnlocked(account: GameAccountInfo): boolean {
-		return unlockedAddresses.has(account.voiAddress);
-	}
-
 	function showStatus(type: 'success' | 'error', message: string) {
 		status = { type, message };
 		setTimeout(() => (status = null), 3000);
@@ -127,74 +117,53 @@
 		return `${address.slice(0, 6)}...${address.slice(-4)}`;
 	}
 
-	// Handle card click - unlock if needed, then switch
-	async function handleCardClick(account: GameAccountInfo) {
-		if (account.id === activeAccountId) return; // Already active
-
-		if (!isUnlocked(account)) {
-			// Need to unlock first
-			unlockingAccount = account;
-			return;
+	function getAuthMethodIcon(method: string | null): string {
+		switch (method) {
+			case 'email':
+				return '📧';
+			case 'google':
+				return '🔵';
+			case 'sms':
+				return '📱';
+			case 'mnemonic':
+				return '🔑';
+			default:
+				return '🔐';
 		}
-
-		// Already unlocked, switch directly
-		await switchToAccount(account);
 	}
 
-	async function switchToAccount(account: GameAccountInfo) {
+	function handleManageAccount(account: GameAccountInfo) {
+		managingAccount = {
+			id: account.id,
+			address: account.voiAddress,
+			nickname: account.nickname,
+			recoveryMethod: account.cdpRecoveryMethod as 'email' | 'sms' | 'google' | 'mnemonic' | null,
+			recoveryHint: account.cdpRecoveryHint
+		};
+	}
+
+	async function handleLockConfirm() {
+		if (!managingAccount) return;
+
 		try {
-			const response = await fetch('/api/game-accounts/switch', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ accountId: account.id })
-			});
-
-			const result = await response.json();
-
-			if (!response.ok || !result.ok) {
-				throw new Error(result.error || 'Failed to switch account');
-			}
-
-			showStatus('success', 'Switched account');
+			await removeGameAccountKeys(managingAccount.address);
+			showStatus('success', 'Account locked');
+			managingAccount = null;
 			await invalidateAll();
 			onAccountChange?.();
 		} catch (err) {
-			showStatus('error', err instanceof Error ? err.message : 'Failed to switch account');
+			showStatus('error', err instanceof Error ? err.message : 'Failed to lock account');
 		}
 	}
 
-	async function handleUnlockSuccess() {
-		if (browser) {
-			const stored = getStoredGameAccountAddresses();
-			unlockedAddresses = new Set(stored);
-		}
-
-		// After unlocking, switch to that account
-		if (unlockingAccount) {
-			await switchToAccount(unlockingAccount);
-			unlockingAccount = null;
-		}
-
-		await invalidateAll();
-		onAccountChange?.();
-	}
-
-	function handleUnlockClose() {
-		unlockingAccount = null;
-	}
-
-	async function handleRemove(account: GameAccountInfo) {
-		removingAccount = { id: account.id, address: account.voiAddress };
-	}
-
-	async function handleRemoveConfirm() {
-		if (!removingAccount) return;
+	async function handleDisconnectConfirm() {
+		if (!managingAccount) return;
 
 		try {
 			const response = await fetch('/api/game-accounts', {
 				method: 'DELETE',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ accountId: removingAccount.id })
+				body: JSON.stringify({ accountId: managingAccount.id })
 			});
 
 			const result = await response.json();
@@ -203,8 +172,15 @@
 				throw new Error(result.error || 'Failed to remove account');
 			}
 
+			// Also remove local keys if they exist
+			try {
+				await removeGameAccountKeys(managingAccount.address);
+			} catch {
+				// Ignore errors - keys may already be removed
+			}
+
 			showStatus('success', 'Account removed');
-			removingAccount = null;
+			managingAccount = null;
 			await invalidateAll();
 			onAccountChange?.();
 		} catch (err) {
@@ -215,10 +191,6 @@
 	function handleAddSuccess() {
 		showAddModal = false;
 		showStatus('success', 'Account added!');
-		if (browser) {
-			const stored = getStoredGameAccountAddresses();
-			unlockedAddresses = new Set(stored);
-		}
 		invalidateAll();
 		onAccountChange?.();
 	}
@@ -241,6 +213,12 @@
 				<h2 class="text-lg font-semibold text-neutral-950 dark:text-white">Your Accounts</h2>
 				<span class="text-sm text-neutral-500">({gameAccounts.length})</span>
 			</div>
+			<Button variant="secondary" size="sm" onclick={() => (showAddModal = true)}>
+				<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mr-1">
+					<path d="M12 5v14M5 12h14"></path>
+				</svg>
+				Add Account
+			</Button>
 		</div>
 	</CardHeader>
 
@@ -272,52 +250,71 @@
 				</Button>
 			</div>
 		{:else}
-			<!-- Horizontal scrolling account cards -->
-			<div class="relative -mx-2">
-				<div
-					class="flex gap-4 overflow-x-auto overflow-y-visible pt-3 pb-4 px-2 snap-x snap-mandatory scrollbar-thin scrollbar-thumb-neutral-300 dark:scrollbar-thumb-neutral-700"
-				>
-					{#each orderedGameAccounts as account (account.id)}
-						<div class="snap-start">
-							<AccountCard
-								{account}
-								isActive={account.id === activeAccountId}
-								isUnlocked={isUnlocked(account)}
-								balance={balances.get(account.voiAddress)}
-								onCardClick={() => handleCardClick(account)}
-								onRemove={() => handleRemove(account)}
-							/>
-						</div>
-					{/each}
+			<!-- Account list -->
+			<div class="space-y-2">
+				{#each orderedGameAccounts as account (account.id)}
+					{@const isActive = account.id === activeAccountId}
+					{@const balance = balances.get(account.voiAddress) || '0.00'}
+					<div class="flex items-center gap-3 p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700">
+						<!-- Auth icon -->
+						<span class="text-lg flex-shrink-0">{getAuthMethodIcon(account.cdpRecoveryMethod)}</span>
 
-					<!-- Add Account Card (ghost card) -->
-					<button
-						onclick={() => (showAddModal = true)}
-						class="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-neutral-300 dark:border-neutral-700 min-w-[180px] max-w-[220px] flex-shrink-0 hover:border-primary-400 dark:hover:border-primary-600 hover:bg-primary-50 dark:hover:bg-primary-950/20 transition-all group snap-start"
-					>
-						<div
-							class="w-12 h-12 rounded-full bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center mb-2 group-hover:bg-primary-100 dark:group-hover:bg-primary-900/30 transition-colors"
-						>
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="24"
-								height="24"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								class="text-neutral-400 group-hover:text-primary-500 transition-colors"
-							>
-								<path d="M12 5v14M5 12h14"></path>
-							</svg>
+						<!-- Account info -->
+						<div class="flex-1 min-w-0">
+							<div class="flex items-center gap-2">
+								{#if account.nickname}
+									<span class="font-medium text-neutral-900 dark:text-white">{account.nickname}</span>
+								{/if}
+								{#if isActive}
+									<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-300 text-[10px] font-medium">
+										<span class="w-1.5 h-1.5 rounded-full bg-primary-500 animate-pulse"></span>
+										Active
+									</span>
+								{/if}
+							</div>
+							<div class="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+								<span class="font-mono">{shortAddress(account.voiAddress)}</span>
+								<button
+									onclick={() => {
+										navigator.clipboard.writeText(account.voiAddress);
+										showStatus('success', 'Address copied!');
+									}}
+									class="hover:text-primary-500 transition-colors"
+									title="Copy address"
+								>
+									<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+										<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+									</svg>
+								</button>
+								<span class="text-neutral-300 dark:text-neutral-600">•</span>
+								<span class="capitalize">{account.cdpRecoveryMethod || 'Unknown'}</span>
+								{#if account.cdpRecoveryHint}
+									<span class="text-neutral-400 dark:text-neutral-500 truncate">{account.cdpRecoveryHint}</span>
+								{/if}
+							</div>
 						</div>
-						<span
-							class="text-sm font-medium text-neutral-500 group-hover:text-primary-600 dark:group-hover:text-primary-400 transition-colors"
+
+						<!-- Balance -->
+						<div class="text-right flex-shrink-0">
+							<div class="font-mono text-sm font-medium text-neutral-800 dark:text-neutral-200">
+								${balance}
+							</div>
+							<div class="text-xs text-neutral-500">USDC</div>
+						</div>
+
+						<!-- Remove button -->
+						<button
+							onclick={() => handleManageAccount(account)}
+							class="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-error-500 hover:bg-error-100 dark:hover:bg-error-900/30 transition-colors flex-shrink-0"
+							title="Remove account"
 						>
-							Add Account
-						</span>
-					</button>
-				</div>
+							<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M18 6L6 18M6 6l12 12"></path>
+							</svg>
+						</button>
+					</div>
+				{/each}
 			</div>
 
 			<!-- Legacy accounts section -->
@@ -376,25 +373,16 @@
 	onClose={() => (showAddModal = false)}
 />
 
-{#if unlockingAccount}
-	<UnlockGameAccount
-		voiAddress={unlockingAccount.voiAddress}
-		nickname={unlockingAccount.nickname}
-		recoveryMethod={unlockingAccount.cdpRecoveryMethod}
-		recoveryHint={unlockingAccount.cdpRecoveryHint}
-		modal={true}
-		open={true}
-		onSuccess={handleUnlockSuccess}
-		onClose={handleUnlockClose}
-	/>
-{/if}
-
-{#if removingAccount}
-	<RemoveAccountModal
+{#if managingAccount}
+	<AccountActionModal
 		isOpen={true}
-		address={removingAccount.address}
-		onClose={() => (removingAccount = null)}
-		onConfirm={handleRemoveConfirm}
+		address={managingAccount.address}
+		nickname={managingAccount.nickname}
+		recoveryMethod={managingAccount.recoveryMethod}
+		recoveryHint={managingAccount.recoveryHint}
+		onClose={() => (managingAccount = null)}
+		onLock={handleLockConfirm}
+		onDisconnect={handleDisconnectConfirm}
 	/>
 {/if}
 

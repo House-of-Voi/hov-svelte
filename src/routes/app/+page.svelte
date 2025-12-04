@@ -34,8 +34,9 @@
 
 	let { data }: { data: PageData } = $props();
 
-	// CDP-derived Voi address from session
-	const voiAddress: string | undefined = data.voiAddress ?? undefined;
+	// CDP-derived Voi address from session (reactive to account switches)
+	const voiAddress = $derived(data.voiAddress ?? undefined);
+	const activeAccount = $derived(data.gameAccounts.find(a => a.id === data.activeGameAccountId));
 
 	// State
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(
@@ -419,7 +420,10 @@
 	<!-- Two-column: Wallet + Referrals (or QuickStats) -->
 	<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 		{#if voiAddress}
-			<WalletCard address={voiAddress} />
+			<WalletCard
+				address={voiAddress}
+				activeAccountNickname={activeAccount?.nickname}
+			/>
 		{/if}
 
 		{#if hasReferrals}

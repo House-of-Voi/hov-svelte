@@ -17,20 +17,8 @@
 		onEditProfile: () => void;
 	}
 
-	let { avatarUrl, displayName, email, voiAddress, onEditAvatar, onEditProfile }: Props = $props();
+	let { avatarUrl, displayName, email, onEditAvatar, onEditProfile }: Props = $props();
 
-	let copyStatus = $state<string | null>(null);
-
-	function copyAddress() {
-		if (!voiAddress) return;
-		navigator.clipboard.writeText(voiAddress);
-		copyStatus = 'Copied!';
-		setTimeout(() => (copyStatus = null), 2000);
-	}
-
-	function shortAddress(address: string): string {
-		return `${address.slice(0, 6)}...${address.slice(-4)}`;
-	}
 </script>
 
 <div
@@ -62,53 +50,6 @@
 				</span>
 			</div>
 
-			<!-- Address row -->
-			{#if voiAddress}
-				<div class="flex items-center gap-2 mt-1">
-					<a
-						href="https://block.voi.network/explorer/account/{voiAddress}"
-						target="_blank"
-						rel="noopener noreferrer"
-						class="font-mono text-xs text-neutral-500 hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-					>
-						{shortAddress(voiAddress)}
-					</a>
-					<button
-						onclick={copyAddress}
-						class="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
-						title="Copy address"
-					>
-						{#if copyStatus}
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="12"
-								height="12"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								class="text-success-500"
-							>
-								<polyline points="20 6 9 17 4 12"></polyline>
-							</svg>
-						{:else}
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="12"
-								height="12"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								class="text-neutral-400"
-							>
-								<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-								<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-							</svg>
-						{/if}
-					</button>
-				</div>
-			{/if}
 		</div>
 	</div>
 
