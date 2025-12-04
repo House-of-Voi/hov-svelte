@@ -25,8 +25,9 @@
 	} from '$lib/auth/cdpClient';
 	import { deriveAlgorandAccountFromEVM } from '$lib/chains/algorand-derive';
 	import { storeGameAccountKeys, type GameAccountKeys } from '$lib/auth/gameAccountStorage';
+	import algosdk from 'algosdk';
 
-	type AuthMethod = 'email' | 'sms' | 'google';
+	type AuthMethod = 'email' | 'sms' | 'google' | 'mnemonic';
 
 	interface Props {
 		/** Whether the modal is open */
@@ -57,7 +58,7 @@
 	let selectedMethod = $state<AuthMethod>('email');
 
 	// Flow state
-	type Step = 'select' | 'input' | 'sending' | 'sent' | 'verifying' | 'exporting' | 'saving' | 'done';
+	type Step = 'select' | 'input' | 'sending' | 'sent' | 'verifying' | 'exporting' | 'saving' | 'done' | 'mnemonic-input' | 'mnemonic-importing';
 	let step = $state<Step>('select');
 	let error = $state<string | null>(null);
 	let flowId = $state<string | null>(null);
@@ -66,6 +67,7 @@
 	let emailValue = $state('');
 	let phoneValue = $state('');
 	let otpValue = $state('');
+	let mnemonicValue = $state('');
 	let otpInputRef = $state<HTMLInputElement | null>(null);
 
 	// Resend cooldown
@@ -80,7 +82,9 @@
 		verifying: 'Verifying code...',
 		exporting: 'Securing your gaming wallet...',
 		saving: 'Finalizing setup...',
-		done: 'Gaming wallet added!'
+		done: 'Gaming wallet added!',
+		'mnemonic-input': '',
+		'mnemonic-importing': 'Importing wallet...'
 	};
 
 	/**
@@ -375,6 +379,87 @@
 		} else if (step === 'sent') {
 			step = 'input';
 			otpValue = '';
+		} else if (step === 'mnemonic-input') {
+			step = 'select';
+			mnemonicValue = '';
+		}
+	}
+
+	/**
+	 * Handle mnemonic import
+	 */
+	async function handleMnemonicImport() {
+		if (!browser) return;
+
+		const words = mnemonicValue.trim().split(/\s+/);
+		if (words.length < 25) {
+			error = 'Enter a valid 25-word Algorand mnemonic';
+			return;
+		}
+
+		error = null;
+		step = 'mnemonic-importing';
+
+		try {
+			// Derive account from mnemonic (client-side only)
+			const { addr, sk } = algosdk.mnemonicToSecretKey(mnemonicValue.trim());
+			const voiAddress = String(addr);
+
+			// Convert secret key to hex string for storage
+			const voiPrivateKey = Array.from(sk)
+				.map((b) => b.toString(16).padStart(2, '0'))
+				.join('');
+
+			// Store keys encrypted in localStorage
+			const keys: GameAccountKeys = {
+				basePrivateKey: '', // Mnemonic accounts don't have a Base/EVM key
+				voiPrivateKey,
+				baseAddress: '', // No Base address
+				voiAddress,
+				storedAt: Date.now()
+			};
+
+			await storeGameAccountKeys(keys);
+
+			// Register as a game account
+			const response = await fetch('/api/game-accounts', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					cdpUserId: `mnemonic:${voiAddress}`,
+					baseAddress: '',
+					voiAddress,
+					cdpRecoveryMethod: 'mnemonic',
+					cdpRecoveryHint: 'Re-import your 25-word mnemonic'
+				})
+			});
+
+			const result = await response.json();
+
+			// Wipe secret key from memory after storing
+			sk.fill(0);
+
+			if (!response.ok || !result.ok) {
+				throw new Error(result.error || 'Failed to register wallet');
+			}
+
+			step = 'done';
+			await new Promise((resolve) => setTimeout(resolve, 800));
+
+			onSuccess?.({
+				id: result.accountId,
+				baseAddress: '',
+				voiAddress
+			});
+		} catch (err) {
+			console.error('Mnemonic import error:', err);
+			if (err instanceof Error && err.message.includes('mnemonic')) {
+				error = 'Invalid mnemonic. Please check your recovery phrase.';
+			} else {
+				error = err instanceof Error ? err.message : 'Failed to import wallet';
+			}
+			step = 'mnemonic-input';
+			onError?.(error);
 		}
 	}
 
@@ -384,6 +469,7 @@
 		emailValue = '';
 		phoneValue = '';
 		otpValue = '';
+		mnemonicValue = '';
 		flowId = null;
 		error = null;
 		resendCooldown = 0;
@@ -406,7 +492,7 @@
 	});
 
 	const isProcessing = $derived(
-		step === 'sending' || step === 'verifying' || step === 'exporting' || step === 'saving'
+		step === 'sending' || step === 'verifying' || step === 'exporting' || step === 'saving' || step === 'mnemonic-importing'
 	);
 </script>
 
@@ -476,6 +562,22 @@
 						<p class="font-semibold text-neutral-800 dark:text-neutral-200">Google</p>
 						<p class="text-sm text-neutral-500 dark:text-neutral-400">
 							Sign in with Google account
+						</p>
+					</div>
+				</button>
+
+				<button
+					onclick={() => {
+						selectedMethod = 'mnemonic';
+						step = 'mnemonic-input';
+					}}
+					class="flex w-full items-center gap-4 rounded-xl border-2 border-neutral-200 p-4 transition-colors hover:border-warning-500 hover:bg-warning-50 dark:border-neutral-700 dark:hover:border-warning-500 dark:hover:bg-warning-900/20"
+				>
+					<span class="text-2xl">🔑</span>
+					<div class="text-left">
+						<p class="font-semibold text-neutral-800 dark:text-neutral-200">Import Mnemonic</p>
+						<p class="text-sm text-neutral-500 dark:text-neutral-400">
+							25-word recovery phrase
 						</p>
 					</div>
 				</button>
@@ -615,6 +717,56 @@
 				</h3>
 				<p class="text-sm text-neutral-600 dark:text-neutral-400">
 					Your new wallet is ready to use.
+				</p>
+			</div>
+		{:else if step === 'mnemonic-input'}
+			<div class="space-y-4 text-center">
+				<div class="mb-4 text-5xl">🔑</div>
+				<h3 class="text-xl font-bold text-neutral-800 dark:text-neutral-200">
+					Import Mnemonic
+				</h3>
+				<p class="text-sm text-neutral-600 dark:text-neutral-400">
+					Enter your 25-word Algorand mnemonic. Your mnemonic never leaves your device.
+				</p>
+			</div>
+
+			<div>
+				<textarea
+					bind:value={mnemonicValue}
+					rows={4}
+					placeholder="enter 25-word mnemonic here"
+					class="w-full rounded-xl border-2 border-neutral-300 bg-white px-4 py-3 font-mono text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-warning-500 focus:outline-none dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200 dark:focus:border-warning-500"
+				></textarea>
+			</div>
+
+			<div class="space-y-3">
+				<Button
+					variant="primary"
+					size="md"
+					onclick={handleMnemonicImport}
+					disabled={!mnemonicValue.trim() || isProcessing}
+					loading={isProcessing}
+					class="w-full"
+				>
+					Import Wallet
+				</Button>
+
+				<Button variant="ghost" size="md" onclick={handleBack} disabled={isProcessing} class="w-full">
+					Back
+				</Button>
+			</div>
+		{:else if step === 'mnemonic-importing'}
+			<div class="space-y-4 text-center">
+				<div class="flex justify-center">
+					<div
+						class="h-12 w-12 animate-spin rounded-full border-3 border-warning-500 border-t-transparent"
+					></div>
+				</div>
+				<h3 class="text-lg font-semibold text-neutral-800 dark:text-neutral-200">
+					Importing Wallet...
+				</h3>
+				<p class="text-sm text-neutral-600 dark:text-neutral-400">
+					{stepMessages[step]}
 				</p>
 			</div>
 		{/if}

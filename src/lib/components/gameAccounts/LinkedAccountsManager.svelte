@@ -17,7 +17,6 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import UnlockGameAccount from './UnlockGameAccount.svelte';
 	import AddGameAccount from './AddGameAccount.svelte';
-	import VoiAccountImportModal from '$lib/components/form/VoiAccountImportModal.svelte';
 	import RemoveAccountModal from '$lib/components/form/RemoveAccountModal.svelte';
 	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
 	import type { GameAccountInfo, CdpRecoveryMethod } from '$lib/auth/session';
@@ -56,9 +55,7 @@
 	let balances = $state<Map<string, string>>(new Map()); // voiAddress -> formatted balance
 
 	// Modal state
-	let showAddDropdown = $state(false);
-	let showAddCdpModal = $state(false);
-	let showImportMnemonicModal = $state(false);
+	let showAddModal = $state(false);
 	let unlockingAccount = $state<GameAccountInfo | null>(null);
 	let removingAccount = $state<{ id: string; address: string } | null>(null);
 	let removingLegacyAccount = $state<{ address: string } | null>(null);
@@ -246,8 +243,7 @@
 	}
 
 	function handleAddSuccess() {
-		showAddCdpModal = false;
-		showImportMnemonicModal = false;
+		showAddModal = false;
 		showStatus('success', 'Account added successfully!');
 		// Refresh unlocked addresses
 		if (browser) {
@@ -260,20 +256,8 @@
 
 	function handleAddError(message: string) {
 		// Close the modal and show the error in the main UI
-		showAddCdpModal = false;
+		showAddModal = false;
 		showStatus('error', message);
-	}
-
-	function handleImportLinked(address: string) {
-		showImportMnemonicModal = false;
-		showStatus('success', 'Account imported successfully!');
-		// Refresh unlocked addresses
-		if (browser) {
-			const stored = getStoredGameAccountAddresses();
-			unlockedAddresses = new Set(stored);
-		}
-		invalidateAll();
-		onAccountChange?.();
 	}
 
 	async function handleRemoveLegacyConfirm() {
@@ -303,79 +287,21 @@
 			showStatus('error', err instanceof Error ? err.message : 'Failed to remove account');
 		}
 	}
-
-	// Close dropdown when clicking outside
-	function handleClickOutside(event: MouseEvent) {
-		const target = event.target as HTMLElement;
-		if (!target.closest('.add-account-dropdown')) {
-			showAddDropdown = false;
-		}
-	}
 </script>
-
-<svelte:window onclick={handleClickOutside} />
 
 <Card>
 	<CardHeader>
 		<div class="flex items-center justify-between">
 			<h2 class="text-xl font-semibold text-neutral-950 dark:text-white">Your Accounts</h2>
 
-			<!-- Add Account Dropdown -->
-			<div class="add-account-dropdown relative">
-				<Button
-					variant="primary"
-					size="sm"
-					onclick={() => (showAddDropdown = !showAddDropdown)}
-					class="flex items-center gap-2"
-				>
-					<span>Add Account</span>
-					<svg
-						class="h-4 w-4 transition-transform {showAddDropdown ? 'rotate-180' : ''}"
-						fill="none"
-						stroke="currentColor"
-						viewBox="0 0 24 24"
-					>
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-					</svg>
-				</Button>
-
-				{#if showAddDropdown}
-					<div
-						class="absolute right-0 top-full z-50 mt-2 w-56 overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
-					>
-						<button
-							onclick={() => {
-								showAddDropdown = false;
-								showAddCdpModal = true;
-							}}
-							class="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800"
-						>
-							<span class="text-lg">🔐</span>
-							<div>
-								<p class="text-sm font-medium text-neutral-800 dark:text-neutral-200">
-									Via Email/SMS/Google
-								</p>
-								<p class="text-xs text-neutral-500">CDP embedded wallet</p>
-							</div>
-						</button>
-						<button
-							onclick={() => {
-								showAddDropdown = false;
-								showImportMnemonicModal = true;
-							}}
-							class="flex w-full items-center gap-3 border-t border-neutral-200 px-4 py-3 text-left transition-colors hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-						>
-							<span class="text-lg">🔑</span>
-							<div>
-								<p class="text-sm font-medium text-neutral-800 dark:text-neutral-200">
-									Import Mnemonic
-								</p>
-								<p class="text-xs text-neutral-500">25-word recovery phrase</p>
-							</div>
-						</button>
-					</div>
-				{/if}
-			</div>
+			<!-- Add Account Button -->
+			<Button
+				variant="primary"
+				size="sm"
+				onclick={() => (showAddModal = true)}
+			>
+				Add Account
+			</Button>
 		</div>
 	</CardHeader>
 
@@ -635,20 +561,13 @@
 	</CardContent>
 </Card>
 
-<!-- Add CDP Account Modal -->
+<!-- Add Game Account Modal -->
 <AddGameAccount
-	open={showAddCdpModal}
+	open={showAddModal}
 	defaultEmail={primaryEmail}
 	onSuccess={handleAddSuccess}
 	onError={handleAddError}
-	onClose={() => (showAddCdpModal = false)}
-/>
-
-<!-- Import Mnemonic Modal -->
-<VoiAccountImportModal
-	isOpen={showImportMnemonicModal}
-	onClose={() => (showImportMnemonicModal = false)}
-	onLinked={handleImportLinked}
+	onClose={() => (showAddModal = false)}
 />
 
 <!-- Unlock Modal -->
