@@ -1,27 +1,30 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
-	import { invalidateAll, goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { invalidateAll } from '$app/navigation';
 	import Card from '$lib/components/ui/Card.svelte';
-	import CardHeader from '$lib/components/ui/CardHeader.svelte';
 	import CardContent from '$lib/components/ui/CardContent.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
-	import Avatar from '$lib/components/Avatar.svelte';
-	import BalancesCard from '$lib/components/wallet/BalancesCard.svelte';
+
+	// New dashboard components
+	import ProfileBar from '$lib/components/dashboard/ProfileBar.svelte';
+	import WalletCard from '$lib/components/dashboard/WalletCard.svelte';
+	import AccountsGrid from '$lib/components/dashboard/AccountsGrid.svelte';
+	import ReferralDashboard from '$lib/components/dashboard/ReferralDashboard.svelte';
+	import QuickStats from '$lib/components/dashboard/QuickStats.svelte';
+	import DangerZone from '$lib/components/dashboard/DangerZone.svelte';
+
+	// Modals (reused from existing)
 	import AvatarEditModal from '$lib/components/form/AvatarEditModal.svelte';
 	import ProfileEditModal from '$lib/components/form/ProfileEditModal.svelte';
 	import ReferralCodesModal from '$lib/components/form/ReferralCodesModal.svelte';
-	import LinkedAccountsManager from '$lib/components/gameAccounts/LinkedAccountsManager.svelte';
-	import TopReferralsSummary from '$lib/components/referrals/TopReferralsSummary.svelte';
 	import ReferralDetailModal from '$lib/components/referrals/ReferralDetailModal.svelte';
+
 	import type { PageData } from './$types';
 	import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
-	import { formatLargeNumber } from '$lib/referrals/credits';
 	import {
 		getInitializedCdp,
-		verifyOAuth,
 		exportEvmPrivateKey,
 		signOutCdpSession,
 		getCurrentCdpUser
@@ -31,8 +34,7 @@
 
 	let { data }: { data: PageData } = $props();
 
-	// CDP-derived Voi address from session is the only source of truth
-	// Never fall back to database accounts - they are "connected" accounts only
+	// CDP-derived Voi address from session
 	const voiAddress: string | undefined = data.voiAddress ?? undefined;
 
 	// State
@@ -50,63 +52,13 @@
 	let oauthProcessing = $state(false);
 	let oauthProcessed = $state(false);
 
-	// Referral dashboard data (loaded client-side)
+	// Referral data
 	let referralDashboardData = $state<ReferralDashboardData | null>(null);
 	let loadingReferrals = $state(true);
-
-	// Referral detail modal state
 	let isReferralDetailModalOpen = $state(false);
 	let selectedReferralProfileId = $state<string | null>(null);
 
-	// Get top 3 referrals sorted by volume
-	const topReferrals = $derived.by(() => {
-		if (!referralDashboardData?.referrals) return [];
-		
-		const sorted = [...referralDashboardData.referrals].sort((a, b) => {
-			// Get volume for comparison - use mimirStats.totalBet if available, otherwise totalWagered
-			let volumeA: number;
-			let volumeB: number;
-			
-			if (a.mimirStats?.totalBet) {
-				volumeA = parseFloat(a.mimirStats.totalBet);
-			} else {
-				volumeA = a.totalWagered * 1e6; // Convert to micro units
-			}
-			
-			if (b.mimirStats?.totalBet) {
-				volumeB = parseFloat(b.mimirStats.totalBet);
-			} else {
-				volumeB = b.totalWagered * 1e6; // Convert to micro units
-			}
-			
-			return volumeB - volumeA; // Sort descending (highest first)
-		});
-		
-		return sorted.slice(0, 3);
-	});
-
-	// Format volume from aggregate stats
-	const formattedTotalVolume = $derived.by(() => {
-		if (!referralDashboardData?.aggregateStats?.totalVolume) return '0 VOI';
-		const volume = parseFloat(referralDashboardData.aggregateStats.totalVolume) / 1e6;
-		if (volume >= 1000) {
-			return `${formatLargeNumber(volume)} VOI`;
-		}
-		return `${volume.toFixed(2)} VOI`;
-	});
-
-	// Handle referral click
-	function handleReferralClick(referral: ReferralWithStats) {
-		selectedReferralProfileId = referral.referredProfileId;
-		isReferralDetailModalOpen = true;
-	}
-
-	function handleCloseReferralModal() {
-		isReferralDetailModalOpen = false;
-		selectedReferralProfileId = null;
-	}
-
-	// Load referral dashboard data
+	// Fetch referral stats
 	async function fetchReferralStats() {
 		try {
 			const response = await fetch('/api/referrals/dashboard');
@@ -137,14 +89,7 @@
 		}, delayMs);
 	}
 
-	// Copy address to clipboard
-	function copyAddress(address: string) {
-		navigator.clipboard.writeText(address);
-		status = { type: 'success', message: 'Address copied!' };
-		clearStatusAfter(2000);
-	}
-
-	// Link referral code
+	// Link referral code (for activation)
 	async function handleLinkReferralCode() {
 		if (!referralCode || referralCode.length !== 7) {
 			status = { type: 'error', message: 'Please enter a valid 7-character referral code' };
@@ -170,8 +115,6 @@
 			}
 
 			status = { type: 'success', message: 'Referral code activated! Refreshing...' };
-
-			// Refresh the page to show activated state
 			setTimeout(() => {
 				window.location.reload();
 			}, 1500);
@@ -186,16 +129,14 @@
 		const response = await fetch('/api/profile/me', {
 			method: 'PATCH',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				display_name: displayName || null
-			})
+			body: JSON.stringify({ display_name: displayName || null })
 		});
 
 		const result = await response.json();
 
 		if (response.ok && result.success) {
 			profile = result.data.profile;
-			status = { type: 'success', message: 'Profile updated successfully!' };
+			status = { type: 'success', message: 'Profile updated!' };
 			clearStatusAfter(3000);
 			await invalidateAll();
 		} else {
@@ -205,7 +146,7 @@
 
 	function handleAvatarUploadSuccess(url: string) {
 		profile = { ...profile, avatar_url: url };
-		status = { type: 'success', message: 'Avatar uploaded successfully!' };
+		status = { type: 'success', message: 'Avatar updated!' };
 		clearStatusAfter(3000);
 		invalidateAll().catch((err) => console.error('Failed to invalidate after avatar upload', err));
 	}
@@ -222,7 +163,7 @@
 
 			if (response.ok && result.success) {
 				profile = result.data.profile;
-				status = { type: 'success', message: 'Avatar removed successfully!' };
+				status = { type: 'success', message: 'Avatar removed!' };
 				clearStatusAfter(3000);
 				isAvatarModalOpen = false;
 				await invalidateAll();
@@ -232,7 +173,7 @@
 			}
 		} catch (error) {
 			console.error('Failed to delete avatar:', error);
-			status = { type: 'error', message: 'Failed to delete avatar. Please try again.' };
+			status = { type: 'error', message: 'Failed to delete avatar.' };
 			clearStatusAfter(5000);
 		}
 	}
@@ -242,11 +183,17 @@
 		fetchReferralStats();
 	}
 
-	/**
-	 * Handle OAuth callback from CDP Google sign-in.
-	 * When user returns from Google OAuth, the URL contains code, flow_id, and provider_type.
-	 * We need to complete the verification, export keys, and register the account.
-	 */
+	function handleReferralClick(referral: ReferralWithStats) {
+		selectedReferralProfileId = referral.referredProfileId;
+		isReferralDetailModalOpen = true;
+	}
+
+	function handleCloseReferralModal() {
+		isReferralDetailModalOpen = false;
+		selectedReferralProfileId = null;
+	}
+
+	// OAuth callback handling
 	async function handleOAuthCallback() {
 		if (!browser || oauthProcessed) return;
 
@@ -255,7 +202,6 @@
 		const flowId = urlParams.get('flow_id');
 		const providerType = urlParams.get('provider_type');
 
-		// Check if this is an OAuth callback
 		if (!code || !flowId || providerType !== 'google') {
 			return;
 		}
@@ -265,23 +211,18 @@
 		status = { type: 'success', message: 'Completing Google sign-in...' };
 
 		try {
-			// Initialize CDP - this will automatically process the OAuth params
 			await getInitializedCdp();
-
-			// Get the current user (should be signed in after OAuth)
 			const user = await getCurrentCdpUser();
 
 			if (!user) {
 				throw new Error('Failed to authenticate with Google');
 			}
 
-			// Get EVM address
 			const baseAddress = user.evmAccounts?.[0] || user.evmSmartAccounts?.[0];
 			if (!baseAddress) {
 				throw new Error('No wallet found');
 			}
 
-			// Export private key
 			const formattedAddress = baseAddress.startsWith('0x')
 				? (baseAddress as `0x${string}`)
 				: (`0x${baseAddress}` as `0x${string}`);
@@ -292,7 +233,6 @@
 				throw new Error('Unable to access wallet');
 			}
 
-			// Derive Voi address
 			const derivedAccount = deriveAlgorandAccountFromEVM(privateKey);
 			const voiAddr = String(derivedAccount.addr);
 
@@ -300,7 +240,6 @@
 				.map((b) => b.toString(16).padStart(2, '0'))
 				.join('');
 
-			// Store keys
 			const baseAddressLower = (baseAddress as string).toLowerCase();
 			const keys: GameAccountKeys = {
 				basePrivateKey: privateKey,
@@ -313,11 +252,9 @@
 			await storeGameAccountKeys(keys);
 			derivedAccount.sk.fill(0);
 
-			// Create recovery hint from Google email
 			const googleEmail = user.authenticationMethods?.google?.email;
 			const recoveryHint = googleEmail ? obfuscateEmail(googleEmail) : 'Google account';
 
-			// Register with backend
 			const response = await fetch('/api/game-accounts', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -332,27 +269,25 @@
 
 			const result = await response.json();
 
-			// Sign out of CDP
 			await signOutCdpSession();
 
 			if (!response.ok || !result.ok) {
 				throw new Error(result.error || 'Failed to register wallet');
 			}
 
-			// Clean up URL params and show success
 			window.history.replaceState({}, '', '/app');
-			status = { type: 'success', message: 'Google account added successfully!' };
+			status = { type: 'success', message: 'Google account added!' };
 			clearStatusAfter(5000);
 
-			// Refresh data
 			await invalidateAll();
 		} catch (err) {
 			console.error('OAuth callback error:', err);
-			// Sign out CDP on error too
 			await signOutCdpSession().catch(() => {});
-			// Clean up URL params
 			window.history.replaceState({}, '', '/app');
-			status = { type: 'error', message: err instanceof Error ? err.message : 'Failed to add Google account' };
+			status = {
+				type: 'error',
+				message: err instanceof Error ? err.message : 'Failed to add Google account'
+			};
 			clearStatusAfter(8000);
 		} finally {
 			oauthProcessing = false;
@@ -368,19 +303,18 @@
 		return `${obfuscatedLocal}@${obfuscatedDomain}.${tld.join('.')}`;
 	}
 
-	// Handle OAuth callback on mount
+	const hasReferrals = $derived(data.profileData.profile.max_referrals > 0);
+
 	onMount(() => {
 		handleOAuthCallback();
 	});
 
-	// Fetch referral stats on mount
 	$effect(() => {
 		if (data.profileData.profile.max_referrals > 0) {
 			fetchReferralStats();
 		}
 	});
 
-	// Show referral flash message from server when present
 	$effect(() => {
 		if (data.referralFlash) {
 			status = data.referralFlash;
@@ -394,7 +328,9 @@
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
 		<div class="rounded-xl bg-white p-8 text-center shadow-xl dark:bg-neutral-900">
 			<div class="mb-4 flex justify-center">
-				<div class="h-12 w-12 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"></div>
+				<div
+					class="h-12 w-12 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
+				></div>
 			</div>
 			<h3 class="text-lg font-semibold text-neutral-800 dark:text-neutral-200">
 				Adding Google Account...
@@ -406,19 +342,7 @@
 	</div>
 {/if}
 
-<div class="space-y-8 max-w-4xl">
-	<!-- Header -->
-	<div class="flex items-end justify-between gap-4">
-		<div>
-			<h1 class="text-3xl md:text-4xl font-semibold text-neutral-950 dark:text-white">
-				Welcome Back
-			</h1>
-			<p class="text-neutral-700 dark:text-neutral-300 mt-2">
-				Manage your profile, wallets, and referrals.
-			</p>
-		</div>
-	</div>
-
+<div class="space-y-6 max-w-5xl">
 	<!-- Status Message -->
 	{#if status}
 		<div
@@ -430,335 +354,122 @@
 		</div>
 	{/if}
 
-	<!-- Waitlist/Activation Alert - Show if user is not activated -->
+	<!-- Activation Alert - Show if user is not activated -->
 	{#if !data.isActivated}
 		<Card>
 			<CardContent className="p-6">
-				<div class="space-y-4">
-					<div class="flex items-start gap-4">
-						<div
-							class="flex-shrink-0 w-12 h-12 rounded-full bg-warning-100 dark:bg-warning-900/30 flex items-center justify-center"
-						>
-							<span class="text-2xl">⏳</span>
+				<div class="flex items-start gap-4">
+					<div
+						class="flex-shrink-0 w-12 h-12 rounded-full bg-warning-100 dark:bg-warning-900/30 flex items-center justify-center"
+					>
+						<span class="text-2xl">⏳</span>
+					</div>
+					<div class="flex-1">
+						<h3 class="text-lg font-semibold text-neutral-950 dark:text-white mb-2">
+							Activate Your Account
+						</h3>
+						<p class="text-neutral-600 dark:text-neutral-400 text-sm mb-4">
+							Enter a referral code to unlock all features and start playing.
+						</p>
+
+						<div class="flex gap-3">
+							<Input
+								type="text"
+								bind:value={referralCode}
+								placeholder="Enter 7-character code"
+								maxlength={7}
+								onKeyDown={(e) => {
+									if (e.key === 'Enter' && referralCode.length === 7) {
+										handleLinkReferralCode();
+									}
+								}}
+								className="flex-1 font-mono uppercase"
+							/>
+							<Button
+								variant="primary"
+								size="md"
+								onclick={handleLinkReferralCode}
+								disabled={isLinkingReferral || referralCode.length !== 7}
+							>
+								{isLinkingReferral ? 'Activating...' : 'Activate'}
+							</Button>
 						</div>
-						<div class="flex-1">
-							<h3 class="text-lg font-semibold text-neutral-950 dark:text-white mb-2">
-								Account Not Yet Activated
-							</h3>
-							<p class="text-neutral-700 dark:text-neutral-300 mb-4">
-								Enter a referral code to activate your account and access all features.
+
+						{#if referralCode && referralCode.length !== 7}
+							<p class="text-xs text-neutral-500 mt-2">
+								{7 - referralCode.length} more character{7 - referralCode.length !== 1 ? 's' : ''}
 							</p>
-
-							<div class="flex gap-3">
-								<Input
-									type="text"
-									bind:value={referralCode}
-									placeholder="Enter 7-character code"
-									maxlength={7}
-									onKeyDown={(e) => {
-										if (e.key === 'Enter' && referralCode.length === 7) {
-											handleLinkReferralCode();
-										}
-									}}
-									className="flex-1"
-								/>
-								<Button
-									variant="primary"
-									size="md"
-									onclick={handleLinkReferralCode}
-									disabled={isLinkingReferral || referralCode.length !== 7}
-								>
-									{isLinkingReferral ? 'Activating...' : 'Activate'}
-								</Button>
-							</div>
-
-							{#if referralCode && referralCode.length !== 7}
-								<p class="text-sm text-neutral-500 dark:text-neutral-400 mt-2">
-									{7 - referralCode.length} character{7 - referralCode.length !== 1
-										? 's'
-										: ''} remaining
-								</p>
-							{/if}
-						</div>
+						{/if}
 					</div>
 				</div>
 			</CardContent>
 		</Card>
 	{/if}
 
-	<!-- Profile Hero Section -->
-	<Card>
-		<CardContent className="p-8">
-			<div class="flex items-start gap-6">
-				<!-- Avatar -->
-				<div class="relative">
-					<Avatar
-						src={profile.avatar_url}
-						displayName={profile.display_name}
-						alt={profile.display_name || profile.primary_email}
-						size="xl"
-						editable={true}
-						onEditClick={() => {
-							isAvatarModalOpen = true;
-						}}
-					/>
-				</div>
-
-				<!-- Profile Info -->
-				<div class="flex-1 min-w-0">
-					<div class="flex items-start justify-between gap-4">
-						<div class="flex-1 min-w-0">
-							<h2 class="text-2xl font-semibold text-neutral-950 dark:text-white">
-								{profile.display_name || 'Set your name'}
-							</h2>
-							<p class="text-neutral-700 dark:text-neutral-300 text-sm mt-1">
-								{profile.primary_email}
-							</p>
-
-							<!-- Primary Address -->
-                            {#if voiAddress}
-								<div class="mt-3 flex items-center gap-2 text-neutral-700 dark:text-neutral-300">
-									<a
-                                        href="https://block.voi.network/explorer/account/{voiAddress}"
-										target="_blank"
-										rel="noopener noreferrer"
-										class="font-mono text-sm hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-									>
-                                        {voiAddress.slice(0, 6)}...{voiAddress.slice(-4)}
-									</a>
-									<button
-                                        onclick={() => copyAddress(voiAddress)}
-										class="p-1 hover:bg-primary-50 dark:hover:bg-primary-950 rounded transition-colors"
-										title="Copy address"
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											width="14"
-											height="14"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											stroke-width="2"
-											class="text-primary-600 dark:text-primary-400"
-										>
-											<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-											<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-										</svg>
-									</button>
-								</div>
-							{/if}
-						</div>
-
-						<!-- Edit Button -->
-						<Button
-							variant="secondary"
-							size="sm"
-							onclick={() => {
-								isProfileEditModalOpen = true;
-							}}
-							className="flex items-center gap-2"
-						>
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								width="16"
-								height="16"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-							>
-								<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-								<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-							</svg>
-							<span>Edit Profile</span>
-						</Button>
-					</div>
-				</div>
-			</div>
-		</CardContent>
-	</Card>
-
-	<AvatarEditModal
-		isOpen={isAvatarModalOpen}
-		onClose={() => (isAvatarModalOpen = false)}
-		currentAvatarUrl={profile.avatar_url}
-		onUploadSuccess={handleAvatarUploadSuccess}
-		onUploadError={handleAvatarUploadError}
-		onDelete={handleDeleteAvatar}
-	/>
-
-	<ProfileEditModal
-		isOpen={isProfileEditModalOpen}
-		onClose={() => (isProfileEditModalOpen = false)}
-		currentDisplayName={profile.display_name}
+	<!-- Profile Bar (thin hero) -->
+	<ProfileBar
+		avatarUrl={profile.avatar_url}
+		displayName={profile.display_name}
 		email={profile.primary_email}
-		onSave={handleSaveProfile}
+		{voiAddress}
+		onEditAvatar={() => (isAvatarModalOpen = true)}
+		onEditProfile={() => (isProfileEditModalOpen = true)}
 	/>
 
-	<ReferralCodesModal
-		isOpen={isReferralCodesModalOpen}
-		onClose={handleReferralCodesModalClose}
-	/>
+	<!-- Two-column: Wallet + Referrals (or QuickStats) -->
+	<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+		{#if voiAddress}
+			<WalletCard address={voiAddress} />
+		{/if}
 
-	<!-- Unified Balances Card for primary address -->
-	{#if voiAddress}
-		<BalancesCard address={voiAddress} />
-	{/if}
+		{#if hasReferrals}
+			<ReferralDashboard
+				referralData={referralDashboardData}
+				loading={loadingReferrals}
+				onManageCodes={() => (isReferralCodesModalOpen = true)}
+				onReferralClick={handleReferralClick}
+			/>
+		{:else}
+			<QuickStats />
+		{/if}
+	</div>
 
-	<!-- Unified Accounts Manager - Game accounts + legacy accounts -->
-	<LinkedAccountsManager
+	<!-- Game Accounts -->
+	<AccountsGrid
 		gameAccounts={data.gameAccounts}
 		activeAccountId={data.activeGameAccountId}
 		primaryEmail={data.profileData.profile.primary_email}
 		legacyAccounts={data.legacyAccounts}
 	/>
 
-	<!-- Referral Section - Only show if user has referral slots -->
-	{#if data.profileData.profile.max_referrals > 0}
-		<Card id="referrals">
-			<CardHeader>
-				<h2 class="text-xl font-semibold text-neutral-950 dark:text-white">
-					Referral Dashboard Summary
-				</h2>
-			</CardHeader>
-			<CardContent>
-				{#if loadingReferrals}
-					<p class="text-neutral-700 dark:text-neutral-300">Loading referral information...</p>
-				{:else if referralDashboardData}
-					<div class="space-y-6">
-						<!-- Summary Statistics -->
-						<div class="grid grid-cols-2 md:grid-cols-3 gap-4">
-							<div class="text-center p-4 bg-primary-50 dark:bg-primary-950/30 border border-primary-200 dark:border-primary-800 rounded-lg">
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Referrals</p>
-								<p class="text-2xl font-semibold text-primary-700 dark:text-primary-300">
-									{referralDashboardData.totalReferrals}
-								</p>
-							</div>
-							<div class="text-center p-4 bg-accent-50 dark:bg-accent-950/30 border border-accent-200 dark:border-accent-800 rounded-lg">
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Total Volume</p>
-								<p class="text-lg font-semibold text-accent-700 dark:text-accent-300">
-									{formattedTotalVolume}
-								</p>
-							</div>
-							<div class="text-center p-4 bg-warning-50 dark:bg-warning-950/30 border border-warning-200 dark:border-warning-800 rounded-lg">
-								<p class="text-xs text-neutral-700 dark:text-neutral-300 mb-1">Codes</p>
-								<p class="text-2xl font-semibold text-warning-700 dark:text-warning-300">
-									{referralDashboardData.codesGenerated}/{referralDashboardData.maxReferrals}
-								</p>
-							</div>
-						</div>
-
-						<!-- Active/Queued Breakdown -->
-						<div class="flex gap-4 justify-center">
-							<div class="text-center px-4 py-2 bg-success-100 dark:bg-success-900/20 border border-success-300 dark:border-success-700 rounded-lg">
-								<p class="text-xs text-neutral-700 dark:text-neutral-300">Active</p>
-								<p class="text-lg font-semibold text-success-700 dark:text-success-300">
-									{referralDashboardData.activeReferrals}
-								</p>
-							</div>
-							<div class="text-center px-4 py-2 bg-warning-100 dark:bg-warning-900/20 border border-warning-300 dark:border-warning-700 rounded-lg">
-								<p class="text-xs text-neutral-700 dark:text-neutral-300">Queued</p>
-								<p class="text-lg font-semibold text-warning-700 dark:text-warning-300">
-									{referralDashboardData.queuedReferrals}
-								</p>
-							</div>
-						</div>
-
-						<!-- Top 3 Referrals -->
-						{#if topReferrals.length > 0}
-							<div>
-								<h3 class="text-lg font-semibold text-neutral-950 dark:text-white mb-3">
-									Top Referrals
-								</h3>
-								<TopReferralsSummary
-									referrals={topReferrals}
-									totalReferrals={referralDashboardData.totalReferrals}
-									onReferralClick={handleReferralClick}
-								/>
-							</div>
-						{/if}
-
-						<!-- Actions -->
-						<div class="flex justify-center gap-3">
-							<Button
-								variant="primary"
-								size="md"
-								class="px-8"
-								onclick={() => {
-									isReferralCodesModalOpen = true;
-								}}
-							>
-								<div class="flex items-center gap-2 justify-center">
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										width="20"
-										height="20"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2"
-									>
-										<rect x="2" y="7" width="20" height="15" rx="2" ry="2"></rect>
-										<polyline points="17 2 12 7 7 2"></polyline>
-									</svg>
-									<span>Manage Referral Codes</span>
-								</div>
-							</Button>
-							<Button
-								variant="outline"
-								size="md"
-								class="px-8"
-								onclick={() => {
-									window.location.href = '/app/referrals';
-								}}
-							>
-								<div class="flex items-center gap-2 justify-center">
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										width="20"
-										height="20"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2"
-									>
-										<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-										<polyline points="9 22 9 12 15 12 15 22"></polyline>
-									</svg>
-									<span>View Dashboard</span>
-								</div>
-							</Button>
-						</div>
-					</div>
-				{:else}
-					<p class="text-error-600 dark:text-error-400">Failed to load referral information</p>
-				{/if}
-			</CardContent>
-		</Card>
-	{/if}
-
-	<!-- Referral Detail Modal -->
-	{#if selectedReferralProfileId}
-		<ReferralDetailModal
-			isOpen={isReferralDetailModalOpen}
-			onClose={handleCloseReferralModal}
-			referredProfileId={selectedReferralProfileId}
-		/>
-	{/if}
-
-	<!-- Account Actions -->
-	<Card>
-		<CardHeader>
-			<h2 class="text-xl font-semibold text-neutral-950 dark:text-white">Account Actions</h2>
-		</CardHeader>
-		<CardContent>
-			<div class="flex justify-end">
-				<button
-					class="px-6 py-3 border-2 border-error-300 dark:border-error-700 text-error-600 dark:text-error-400 rounded-xl font-medium hover:bg-error-50 dark:hover:bg-error-950 transition-colors"
-				>
-					Delete Account
-				</button>
-			</div>
-		</CardContent>
-	</Card>
+	<!-- Danger Zone -->
+	<DangerZone />
 </div>
+
+<!-- Modals -->
+<AvatarEditModal
+	isOpen={isAvatarModalOpen}
+	onClose={() => (isAvatarModalOpen = false)}
+	currentAvatarUrl={profile.avatar_url}
+	onUploadSuccess={handleAvatarUploadSuccess}
+	onUploadError={handleAvatarUploadError}
+	onDelete={handleDeleteAvatar}
+/>
+
+<ProfileEditModal
+	isOpen={isProfileEditModalOpen}
+	onClose={() => (isProfileEditModalOpen = false)}
+	currentDisplayName={profile.display_name}
+	email={profile.primary_email}
+	onSave={handleSaveProfile}
+/>
+
+<ReferralCodesModal isOpen={isReferralCodesModalOpen} onClose={handleReferralCodesModalClose} />
+
+{#if selectedReferralProfileId}
+	<ReferralDetailModal
+		isOpen={isReferralDetailModalOpen}
+		onClose={handleCloseReferralModal}
+		referredProfileId={selectedReferralProfileId}
+	/>
+{/if}

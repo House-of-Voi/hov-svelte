@@ -16,6 +16,8 @@ export const load: LayoutServerLoad = async ({ cookies, locals }) => {
 		hasGameAccess: hovSession?.gameAccessGranted || false, // For game routes using @layout reset
 		supabaseSession: locals.supabaseSession,
 		isAdminUser,
-		initialProfile: profileData?.profile ?? null
+		initialProfile: profileData?.profile ?? null,
+		gameAccounts: locals.gameAccounts || [],
+		activeGameAccountId: hovSession?.activeGameAccountId || undefined
 	};
 };

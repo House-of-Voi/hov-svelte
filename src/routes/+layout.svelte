@@ -12,7 +12,7 @@
   import NotificationContainer from '$lib/components/ui/NotificationContainer.svelte';
   import NavigationProgress from '$lib/components/ui/NavigationProgress.svelte';
   import VoiAddressProvider from '$lib/auth/VoiAddressProvider.svelte';
-  import type { SessionInfo } from '$lib/auth/session';
+  import type { SessionInfo, GameAccountInfo } from '$lib/auth/session';
   import type { ProfileData } from '$lib/profile/data';
   import type { Snippet } from 'svelte';
   import { supabaseBrowser } from '$lib/db/supabaseClient';
@@ -22,6 +22,8 @@
     isAdminUser: boolean;
     initialProfile: ProfileData | null;
     supabaseSession: import('@supabase/supabase-js').Session | null;
+    gameAccounts: GameAccountInfo[];
+    activeGameAccountId?: string;
   }
 
   let { children, data }: { children: Snippet; data: LayoutData } = $props();
@@ -138,7 +140,12 @@
             {#if isAdminUser}
               <AdminNavLink />
             {/if}
-            <UserNav initialProfile={data.initialProfile} supabaseSession={data.supabaseSession} />
+            <UserNav
+              initialProfile={data.initialProfile}
+              supabaseSession={data.supabaseSession}
+              gameAccounts={data.gameAccounts}
+              activeAccountId={data.activeGameAccountId}
+            />
           </nav>
         </div>
       </div>

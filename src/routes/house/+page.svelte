@@ -1,7 +1,9 @@
 <script lang="ts">
-	import WalletSelector from '$lib/components/house/WalletSelector.svelte';
+	import ExternalWalletConnect from '$lib/components/house/ExternalWalletConnect.svelte';
 	import PoolCard from '$lib/components/house/PoolCard.svelte';
-	import { houseWallet } from '$lib/stores/houseWallet.svelte';
+	import { connectedWallets } from 'avm-wallet-svelte';
+	import { browser } from '$app/environment';
+	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
 	import type { PageData } from './$types';
 	import type { GameAccountInfo } from '$lib/auth/session';
 	import { onMount } from 'svelte';
@@ -11,19 +13,38 @@
 	let portfolio = $state<any>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let unlockedAddresses = $state<Set<string>>(new Set());
 
-	// Track selected wallet source and account
-	let selectedSource = $state<'game' | 'external'>('game');
-	let selectedGameAccount = $state<GameAccountInfo | null>(null);
+	// Refresh unlocked status
+	$effect(() => {
+		if (browser) {
+			const stored = getStoredGameAccountAddresses();
+			unlockedAddresses = new Set(stored);
+		}
+	});
+
+	// Get connected external wallet addresses from avm-wallet-svelte
+	const connectedExternalAddresses = $derived.by(() => {
+		const addresses = new Set<string>();
+		if ($connectedWallets) {
+			for (const wallet of $connectedWallets) {
+				if (wallet.address) {
+					addresses.add(wallet.address);
+				}
+			}
+		}
+		return addresses;
+	});
 
 	// Load portfolio on mount
 	onMount(async () => {
 		await loadPortfolio();
+	});
 
-		// Initialize selected game account to active or first account
-		if (data.gameAccounts.length > 0) {
-			const activeAccount = data.gameAccounts.find(a => a.id === data.activeGameAccountId);
-			selectedGameAccount = activeAccount || data.gameAccounts[0];
+	// Reload portfolio when external wallets change
+	$effect(() => {
+		if (browser && $connectedWallets) {
+			loadPortfolio();
 		}
 	});
 
@@ -32,7 +53,16 @@
 		error = null;
 
 		try {
-			const response = await fetch('/api/house/portfolio');
+			// Include all connected external wallet addresses
+			const externalAddresses = $connectedWallets?.map(w => w.address).filter(Boolean) || [];
+			const params = new URLSearchParams();
+			for (const addr of externalAddresses) {
+				params.append('externalAddress', addr);
+			}
+			const queryString = params.toString();
+			const url = queryString ? `/api/house/portfolio?${queryString}` : '/api/house/portfolio';
+
+			const response = await fetch(url);
 			const result = await response.json();
 
 			if (!response.ok) {
@@ -45,18 +75,6 @@
 			error = err instanceof Error ? err.message : 'Failed to load portfolio';
 		} finally {
 			loading = false;
-		}
-	}
-
-	function handleGameAccountSelect(account: GameAccountInfo) {
-		selectedGameAccount = account;
-		selectedSource = 'game';
-	}
-
-	function handleSourceChange(source: 'game' | 'external', address: string) {
-		selectedSource = source;
-		if (source === 'external') {
-			selectedGameAccount = null;
 		}
 	}
 
@@ -119,14 +137,9 @@
 			</div>
 		</header>
 
-		<!-- Wallet Selector -->
+		<!-- External Wallet Connect -->
 		<section class="mb-8 md:mb-12 relative z-10 animate-slide-in-bottom stagger-1">
-			<WalletSelector
-				gameAccounts={data.gameAccounts}
-				activeGameAccountId={data.activeGameAccountId}
-				onGameAccountSelect={handleGameAccountSelect}
-				onSourceChange={handleSourceChange}
-			/>
+			<ExternalWalletConnect />
 		</section>
 
 		<!-- Main Content -->
@@ -158,8 +171,9 @@
 									{contract}
 									{positions}
 									gameAccounts={data.gameAccounts}
-									{selectedSource}
-									{selectedGameAccount}
+									activeGameAccountId={data.activeGameAccountId}
+									{unlockedAddresses}
+									{connectedExternalAddresses}
 									session={data.session}
 									onRefresh={loadPortfolio}
 								/>

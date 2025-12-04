@@ -2,82 +2,141 @@
 	import type { SlotMachineConfig } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
 	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
-	import { houseWallet } from '$lib/stores/houseWallet.svelte';
+	import { connectedWallets } from 'avm-wallet-svelte';
 	import { ybtService } from '$lib/voi/house/ybt-service';
-	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
 	import { fetchVoiBalance } from '$lib/voi/balances';
-	import UnlockGameAccount from '$lib/components/gameAccounts/UnlockGameAccount.svelte';
 
 	interface Props {
 		contract: SlotMachineConfig;
 		position: HousePositionWithMetadata | null;
 		gameAccounts: GameAccountInfo[];
-		selectedSource: 'game' | 'external';
-		selectedGameAccount: GameAccountInfo | null;
+		activeGameAccountId?: string;
+		unlockedAddresses: Set<string>;
+		connectedExternalAddresses: Set<string>;
 		session: SessionInfo;
 		onClose: () => void;
 		onSuccess: () => Promise<void>;
 	}
 
-	let { contract, position, gameAccounts, selectedSource, selectedGameAccount, session, onClose, onSuccess }: Props = $props();
+	let { contract, position, gameAccounts, activeGameAccountId, unlockedAddresses, connectedExternalAddresses, session, onClose, onSuccess }: Props = $props();
+
+	// Wallet selection state
+	let selectedWalletKey = $state<string>('');
+	let dropdownOpen = $state(false);
 
 	let depositAmount = $state('');
 	let isProcessing = $state(false);
 	let error = $state('');
 	let treasury = $state<any>(null);
-	let unlockingAccount = $state<GameAccountInfo | null>(null);
 
-	// Track unlocked addresses and balance
-	let unlockedAddresses = $state<Set<string>>(new Set());
-	let balance = $state(0);
-	let balanceLoading = $state(true);
+	// Track balances
+	let balances = $state<Map<string, number>>(new Map());
+	let balancesLoading = $state(true);
 
-	// Get selected address
-	const selectedAddress = $derived.by(() => {
-		if (selectedSource === 'game' && selectedGameAccount) {
-			return selectedGameAccount.voiAddress;
-		}
-		if (selectedSource === 'external' && houseWallet.externalWallet) {
-			return houseWallet.externalWallet.address;
-		}
-		return '';
-	});
-
-	// Check if selected account is unlocked
-	const isSelectedUnlocked = $derived.by(() => {
-		if (selectedSource === 'external') return true;
-		if (!selectedGameAccount) return false;
-		return unlockedAddresses.has(selectedGameAccount.voiAddress);
-	});
-
-	onMount(async () => {
-		await Promise.all([loadData(), refreshUnlockedAddresses(), fetchBalance()]);
-	});
-
-	async function refreshUnlockedAddresses() {
-		if (browser) {
-			const stored = getStoredGameAccountAddresses();
-			unlockedAddresses = new Set(stored);
-		}
+	// Build list of available wallets (only unlocked game accounts + connected external wallets)
+	interface WalletOption {
+		key: string;
+		type: 'game' | 'external';
+		address: string;
+		label: string;
+		subLabel: string;
+		icon: string;
 	}
 
-	async function fetchBalance() {
-		balanceLoading = true;
-		try {
-			if (selectedSource === 'game' && selectedGameAccount) {
-				const result = await fetchVoiBalance(selectedGameAccount.voiAddress);
-				balance = result?.balance || 0;
-			} else if (selectedSource === 'external') {
-				balance = Number(houseWallet.externalBalance);
-			}
-		} catch (err) {
-			console.error('Failed to fetch balance:', err);
-			balance = 0;
-		} finally {
-			balanceLoading = false;
+	const availableWallets = $derived.by(() => {
+		const wallets: WalletOption[] = [];
+
+		// Add unlocked game accounts (active account first)
+		const unlockedGameAccounts = gameAccounts
+			.filter(a => unlockedAddresses.has(a.voiAddress))
+			.sort((a, b) => {
+				if (a.id === activeGameAccountId) return -1;
+				if (b.id === activeGameAccountId) return 1;
+				return 0;
+			});
+
+		for (const account of unlockedGameAccounts) {
+			wallets.push({
+				key: `game:${account.id}`,
+				type: 'game',
+				address: account.voiAddress,
+				label: account.nickname || shortAddress(account.voiAddress),
+				subLabel: account.nickname ? shortAddress(account.voiAddress) : getAuthMethodLabel(account),
+				icon: '🎮'
+			});
 		}
+
+		// Add connected external wallets
+		if ($connectedWallets) {
+			for (const wallet of $connectedWallets) {
+				if (wallet.address) {
+					wallets.push({
+						key: `external:${wallet.address}`,
+						type: 'external',
+						address: wallet.address,
+						label: wallet.app || 'External Wallet',
+						subLabel: shortAddress(wallet.address),
+						icon: '🔗'
+					});
+				}
+			}
+		}
+
+		return wallets;
+	});
+
+	const selectedWallet = $derived(availableWallets.find(w => w.key === selectedWalletKey) || null);
+	const selectedAddress = $derived(selectedWallet?.address || '');
+	const selectedBalance = $derived(balances.get(selectedAddress) || 0);
+
+	// Initialize selection
+	onMount(async () => {
+		await loadData();
+		await fetchAllBalances();
+
+		// If a position was provided, try to select that wallet
+		if (position) {
+			const matchingWallet = availableWallets.find(w => w.address === position.address);
+			if (matchingWallet) {
+				selectedWalletKey = matchingWallet.key;
+			} else if (availableWallets.length > 0) {
+				selectedWalletKey = availableWallets[0].key;
+			}
+		} else if (availableWallets.length > 0) {
+			// Default to first available (which is active account if unlocked)
+			selectedWalletKey = availableWallets[0].key;
+		}
+	});
+
+	async function fetchAllBalances() {
+		balancesLoading = true;
+		const newBalances = new Map<string, number>();
+
+		// Fetch all balances in parallel
+		const allAddresses = [
+			...gameAccounts.filter(a => unlockedAddresses.has(a.voiAddress)).map(a => a.voiAddress),
+			...($connectedWallets?.map(w => w.address).filter(Boolean) || [])
+		];
+
+		const results = await Promise.all(
+			allAddresses.map(async (address) => {
+				try {
+					const result = await fetchVoiBalance(address);
+					return { address, balance: result?.balance || 0 };
+				} catch {
+					return { address, balance: 0 };
+				}
+			})
+		);
+
+		for (const result of results) {
+			newBalances.set(result.address, result.balance);
+		}
+
+		balances = newBalances;
+		balancesLoading = false;
 	}
 
 	async function loadData() {
@@ -105,8 +164,14 @@
 		return `${address.slice(0, 6)}...${address.slice(-4)}`;
 	}
 
-	function displayName(account: GameAccountInfo): string {
-		return account.nickname || shortAddress(account.voiAddress);
+	function getAuthMethodLabel(account: GameAccountInfo): string {
+		switch (account.cdpRecoveryMethod) {
+			case 'email': return 'Email';
+			case 'sms': return 'SMS';
+			case 'google': return 'Google';
+			case 'mnemonic': return 'Mnemonic';
+			default: return 'Game Account';
+		}
 	}
 
 	const voiAmount = $derived(parseFloat(depositAmount) || 0);
@@ -117,10 +182,9 @@
 	const totalRequired = $derived(microVoiAmount + BigInt(transactionFee));
 	const canDeposit = $derived(
 		voiAmount >= minDeposit &&
-		balance >= Number(totalRequired) + reserveAmount &&
+		selectedBalance >= Number(totalRequired) + reserveAmount &&
 		!isProcessing &&
-		selectedAddress &&
-		isSelectedUnlocked
+		selectedAddress
 	);
 
 	function formatVOI(microVOI: bigint | number): string {
@@ -130,36 +194,26 @@
 	}
 
 	function setMaxAmount() {
-		const maxVoi = balance / 1_000_000;
+		const maxVoi = selectedBalance / 1_000_000;
 		const feesVoi = transactionFee / 1_000_000;
 		const reserveVoi = reserveAmount / 1_000_000;
 		const availableForDeposit = Math.max(0, maxVoi - feesVoi - reserveVoi);
 		depositAmount = availableForDeposit.toFixed(6);
 	}
 
-	function handleUnlockClick() {
-		if (selectedGameAccount) {
-			unlockingAccount = selectedGameAccount;
-		}
-	}
-
-	async function handleUnlockSuccess() {
-		await refreshUnlockedAddresses();
-		unlockingAccount = null;
-	}
-
-	function handleUnlockClose() {
-		unlockingAccount = null;
+	function selectWallet(wallet: WalletOption) {
+		selectedWalletKey = wallet.key;
+		dropdownOpen = false;
 	}
 
 	async function handleDeposit() {
-		if (!canDeposit) return;
+		if (!canDeposit || !selectedWallet) return;
 
 		// Double-check unlock status for game accounts
-		if (selectedSource === 'game' && selectedGameAccount) {
+		if (selectedWallet.type === 'game') {
 			const currentUnlocked = getStoredGameAccountAddresses();
-			if (!currentUnlocked.includes(selectedGameAccount.voiAddress)) {
-				unlockingAccount = selectedGameAccount;
+			if (!currentUnlocked.includes(selectedWallet.address)) {
+				error = 'Account is locked. Please unlock it first.';
 				return;
 			}
 		}
@@ -174,7 +228,7 @@
 					ybtAppId: contract.ybt_app_id!,
 					amount: microVoiAmount,
 					address: selectedAddress,
-					walletSource: selectedSource === 'game' ? 'cdp' : 'external'
+					walletSource: selectedWallet.type === 'game' ? 'cdp' : 'external'
 				},
 				session
 			);
@@ -199,10 +253,16 @@
 			onClose();
 		}
 	}
+
+	function closeDropdown() {
+		dropdownOpen = false;
+	}
 </script>
 
+<svelte:window onclick={closeDropdown} />
+
 <div class="fixed inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in" onclick={handleBackdropClick}>
-	<div class="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-in-bottom">
+	<div class="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-in-bottom" onclick={(e) => e.stopPropagation()}>
 		<!-- Header -->
 		<div class="flex justify-between items-start p-5 border-b border-neutral-200 dark:border-neutral-700">
 			<div>
@@ -218,37 +278,70 @@
 
 		<!-- Body -->
 		<div class="p-5 flex flex-col gap-5">
-			<!-- Selected Account Info -->
-			<div class="bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-xl p-4">
-				<div class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Depositing from</div>
-				<div class="flex items-center gap-3">
-					{#if selectedSource === 'game' && selectedGameAccount}
-						<span class="text-2xl">{isSelectedUnlocked ? '🔓' : '🔒'}</span>
-						<div class="flex-1 min-w-0">
-							<span class="block font-semibold text-neutral-900 dark:text-white">{displayName(selectedGameAccount)}</span>
-							<span class="block font-mono text-xs text-neutral-500 dark:text-neutral-400">{shortAddress(selectedGameAccount.voiAddress)}</span>
-						</div>
-					{:else if selectedSource === 'external' && houseWallet.externalWallet}
-						<span class="text-2xl">🔗</span>
-						<div class="flex-1 min-w-0">
-							<span class="block font-semibold text-neutral-900 dark:text-white">External Wallet</span>
-							<span class="block font-mono text-xs text-neutral-500 dark:text-neutral-400">{shortAddress(houseWallet.externalWallet.address)}</span>
-						</div>
-					{:else}
-						<span class="text-neutral-500">No wallet selected</span>
-					{/if}
-					<div class="text-lg font-semibold text-success-600 dark:text-success-400">
-						{#if balanceLoading}
-							<span class="text-neutral-400">...</span>
-						{:else}
-							{formatVOI(balance)} <span class="text-xs text-success-500/70">VOI</span>
+			<!-- Wallet Selection Dropdown -->
+			<div>
+				<label class="text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2 block">From Wallet</label>
+
+				{#if availableWallets.length === 0}
+					<div class="bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-800 rounded-xl p-4 text-sm text-warning-700 dark:text-warning-400">
+						No wallets available. Please unlock a game account or connect an external wallet.
+					</div>
+				{:else}
+					<div class="relative">
+						<button
+							type="button"
+							onclick={(e) => { e.stopPropagation(); dropdownOpen = !dropdownOpen; }}
+							class="w-full flex items-center gap-3 p-3 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900/50 hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors text-left"
+						>
+							{#if selectedWallet}
+								<span class="text-lg">{selectedWallet.icon}</span>
+								<div class="flex-1 min-w-0">
+									<span class="block font-medium text-neutral-900 dark:text-white text-sm truncate">{selectedWallet.label}</span>
+									<span class="block text-xs text-neutral-500 dark:text-neutral-400 font-mono">{selectedWallet.subLabel}</span>
+								</div>
+								<div class="text-right mr-2">
+									<span class="block text-sm font-semibold text-success-600 dark:text-success-400">
+										{balancesLoading ? '...' : formatVOI(selectedBalance)}
+									</span>
+									<span class="block text-xs text-neutral-400">VOI</span>
+								</div>
+							{:else}
+								<span class="text-neutral-500">Select a wallet</span>
+							{/if}
+							<svg class="w-5 h-5 text-neutral-400 flex-shrink-0 transition-transform {dropdownOpen ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor">
+								<path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+							</svg>
+						</button>
+
+						{#if dropdownOpen}
+							<div class="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-lg z-10 max-h-48 overflow-y-auto">
+								{#each availableWallets as wallet (wallet.key)}
+									{@const walletBalance = balances.get(wallet.address) || 0}
+									{@const isSelected = wallet.key === selectedWalletKey}
+									<button
+										type="button"
+										onclick={(e) => { e.stopPropagation(); selectWallet(wallet); }}
+										class="w-full flex items-center gap-3 p-3 text-left transition-colors {isSelected ? 'bg-primary-50 dark:bg-primary-900/30' : 'hover:bg-neutral-50 dark:hover:bg-neutral-700/50'}"
+									>
+										<span class="text-lg">{wallet.icon}</span>
+										<div class="flex-1 min-w-0">
+											<span class="block font-medium text-neutral-900 dark:text-white text-sm truncate">{wallet.label}</span>
+											<span class="block text-xs text-neutral-500 dark:text-neutral-400 font-mono">{wallet.subLabel}</span>
+										</div>
+										<div class="text-right">
+											<span class="block text-sm font-semibold text-success-600 dark:text-success-400">
+												{balancesLoading ? '...' : formatVOI(walletBalance)}
+											</span>
+											<span class="block text-xs text-neutral-400">VOI</span>
+										</div>
+										{#if isSelected}
+											<span class="text-primary-500">✓</span>
+										{/if}
+									</button>
+								{/each}
+							</div>
 						{/if}
 					</div>
-				</div>
-				{#if selectedSource === 'game' && selectedGameAccount && !isSelectedUnlocked}
-					<button class="mt-3 w-full bg-warning-100 dark:bg-warning-900/30 border border-warning-300 dark:border-warning-700 text-warning-700 dark:text-warning-400 py-2.5 px-4 rounded-lg text-sm font-semibold hover:bg-warning-200 dark:hover:bg-warning-900/40 transition-colors" onclick={handleUnlockClick}>
-						Unlock to deposit
-					</button>
 				{/if}
 			</div>
 
@@ -264,16 +357,16 @@
 						type="number"
 						step="0.000001"
 						min={minDeposit}
-						max={balance / 1_000_000}
+						max={selectedBalance / 1_000_000}
 						bind:value={depositAmount}
 						placeholder="0.000000"
-						disabled={isProcessing || !isSelectedUnlocked}
+						disabled={isProcessing || !selectedAddress}
 						class="input pr-16"
 					/>
 					<button
 						class="absolute right-3 top-1/2 -translate-y-1/2 bg-primary-100 dark:bg-primary-900/30 border border-primary-300 dark:border-primary-700 rounded px-2 py-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:bg-primary-200 dark:hover:bg-primary-900/50 disabled:opacity-50 transition-colors"
 						onclick={setMaxAmount}
-						disabled={isProcessing || !isSelectedUnlocked}
+						disabled={isProcessing || !selectedAddress}
 					>MAX</button>
 				</div>
 			</div>
@@ -294,12 +387,6 @@
 						<span class="text-neutral-700 dark:text-neutral-300">Total Required:</span>
 						<span class="text-primary-600 dark:text-primary-400">{formatVOI(totalRequired)} VOI</span>
 					</div>
-					{#if treasury}
-						<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
-							<span>Share Price:</span>
-							<span class="text-neutral-900 dark:text-white font-medium">{formatVOI(treasury.sharePrice)} VOI/share</span>
-						</div>
-					{/if}
 				</div>
 			{/if}
 
@@ -337,20 +424,6 @@
 		</div>
 	</div>
 </div>
-
-<!-- Unlock Modal -->
-{#if unlockingAccount}
-	<UnlockGameAccount
-		voiAddress={unlockingAccount.voiAddress}
-		nickname={unlockingAccount.nickname}
-		recoveryMethod={unlockingAccount.cdpRecoveryMethod}
-		recoveryHint={unlockingAccount.cdpRecoveryHint}
-		modal={true}
-		open={true}
-		onSuccess={handleUnlockSuccess}
-		onClose={handleUnlockClose}
-	/>
-{/if}
 
 <style>
 	/* Spinner animation */

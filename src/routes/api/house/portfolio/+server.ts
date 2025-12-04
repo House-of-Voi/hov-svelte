@@ -9,7 +9,7 @@ const supabaseAdmin = createAdminClient();
  * GET /api/house/portfolio
  * Returns aggregated portfolio across all user addresses and contracts
  */
-export const GET: RequestHandler = async ({ locals }) => {
+export const GET: RequestHandler = async ({ locals, url }) => {
 	const session = locals.session;
 
 	if (!session) {
@@ -28,17 +28,32 @@ export const GET: RequestHandler = async ({ locals }) => {
 	}
 
 	try {
-		// Get all Voi addresses linked to this profile
+		// Get external wallet addresses if provided (can be multiple)
+		const externalAddresses = url.searchParams.getAll('externalAddress');
+
+		// Get all Voi addresses linked to this profile (legacy accounts table)
 		const { data: accounts } = await supabaseAdmin
 			.from('accounts')
 			.select('address')
 			.eq('profile_id', session.profileId)
 			.eq('chain', 'voi');
 
+		// Get all game accounts for this profile
+		const { data: gameAccounts } = await supabaseAdmin
+			.from('game_accounts')
+			.select('voi_address')
+			.eq('profile_id', session.profileId);
+
 		const addresses = [
 			...(accounts || []).map((a) => a.address),
-			...(session.voiAddress ? [session.voiAddress] : [])
+			...(gameAccounts || []).map((a) => a.voi_address),
+			...(session.voiAddress ? [session.voiAddress] : []),
+			// Include external wallet addresses if provided
+			...externalAddresses
 		];
+
+		// Deduplicate addresses
+		const uniqueAddresses = [...new Set(addresses)];
 
 		// Get all active slot machine configs with YBT
 		const { data: contracts } = await supabaseAdmin
@@ -48,11 +63,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 			.not('ybt_app_id', 'is', null);
 
 		if (!contracts) {
-			return json({ portfolio: { totalValue: '0', totalShares: '0', positions: [], addresses } });
+			return json({ portfolio: { totalValue: '0', totalShares: '0', positions: [], addresses: uniqueAddresses } });
 		}
 
 		// Get portfolio
-		const portfolio = await portfolioService.getPortfolio(addresses, contracts);
+		const portfolio = await portfolioService.getPortfolio(uniqueAddresses, contracts);
 
 		// Convert bigints to strings for JSON
 		return json({

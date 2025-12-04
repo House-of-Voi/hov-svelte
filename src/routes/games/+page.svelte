@@ -8,7 +8,6 @@
   import SlotMachineIcon from '$lib/components/icons/SlotMachineIcon.svelte';
   import TrendingUpIcon from '$lib/components/icons/TrendingUpIcon.svelte';
   import ChainBadge from '$lib/components/ui/ChainBadge.svelte';
-  import BrowseGamesAccountSelector from '$lib/components/gameAccounts/BrowseGamesAccountSelector.svelte';
   import {
     formatCurrency,
     formatNumber,
@@ -125,15 +124,6 @@
         Pick your favorite and start playing
       </p>
     </div>
-
-    {#if canPlay && data.gameAccounts && data.gameAccounts.length > 0}
-      <div class="flex justify-center md:justify-end">
-        <BrowseGamesAccountSelector
-          gameAccounts={data.gameAccounts}
-          activeAccountId={data.activeGameAccountId}
-        />
-      </div>
-    {/if}
   </div>
 
   <!-- Featured Stats -->

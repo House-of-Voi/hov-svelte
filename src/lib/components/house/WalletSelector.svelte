@@ -287,7 +287,7 @@
 		{#if dropdownOpen}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div class="fixed inset-0 z-40" onclick={closeDropdown}></div>
-			<div class="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-lg z-50 animate-fade-in overflow-hidden">
+			<div class="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-lg z-50 animate-fade-in">
 				<!-- Game Accounts Section (scrollable if many) -->
 				{#if sortedGameAccounts.length > 0}
 					<div class="p-2 border-b border-neutral-200 dark:border-neutral-700">
@@ -327,10 +327,10 @@
 				{/if}
 
 				<!-- External Wallet Section -->
-				<div class="p-2">
+				<div class="p-2 overflow-visible">
 					<div class="text-xs font-semibold text-neutral-400 uppercase tracking-wide px-3 py-1.5">External Wallet</div>
-					<div class="flex items-center gap-3 px-2 py-1">
-						<div class="flex-1 avm-wallet-container">
+					<div class="flex items-center gap-3 px-2 py-1 overflow-visible">
+						<div class="flex-1 avm-wallet-container overflow-visible">
 							<Web3Wallet
 								{algodClient}
 								{availableWallets}
@@ -377,37 +377,97 @@
 
 <style>
 	/* AVM Wallet Container - Styling for avm-wallet-svelte component */
+
+	/* Main connect button - override blue-500 with neutral styling */
 	.avm-wallet-container :global(.wallet-container > div:first-child) {
-		@apply bg-neutral-100 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-lg py-2 px-3;
+		@apply bg-neutral-100 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-lg py-2 px-3 text-neutral-900 dark:text-white;
+		background-color: rgb(245 245 245) !important; /* neutral-100 */
 	}
 
 	.avm-wallet-container :global(.wallet-container > div:first-child:hover) {
 		@apply bg-neutral-200 dark:bg-neutral-600 border-primary-300 dark:border-primary-700;
+		background-color: rgb(229 229 229) !important; /* neutral-200 */
+	}
+
+	/* Override the default blue button text color and alignment */
+	.avm-wallet-container :global(.wallet-container > div:first-child span) {
+		@apply text-neutral-800 dark:text-white;
+		color: rgb(38 38 38) !important; /* neutral-800 */
+		text-align: left !important;
+		margin-left: 0 !important;
+	}
+
+	:global(.dark) .avm-wallet-container :global(.wallet-container > div:first-child) {
+		background-color: rgb(64 64 64) !important; /* neutral-700 */
+	}
+
+	:global(.dark) .avm-wallet-container :global(.wallet-container > div:first-child:hover) {
+		background-color: rgb(82 82 82) !important; /* neutral-600 */
+	}
+
+	:global(.dark) .avm-wallet-container :global(.wallet-container > div:first-child span) {
+		color: rgb(255 255 255) !important;
 	}
 
 	/* Dropdown wallet list box */
 	.avm-wallet-container :global(.walletListBox) {
-		@apply bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl;
+		@apply bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-lg;
 	}
 
-	/* Wallet item rows */
+	/* Connect/Disconnect buttons - keep their colored backgrounds visible */
+	.avm-wallet-container :global(.wallet-item button.bg-blue-500),
+	.avm-wallet-container :global(.wallet-item button.bg-green-500),
+	.avm-wallet-container :global(.wallet-item button.bg-red-500) {
+		color: white !important;
+	}
+
+	/* Wallet item rows - ensure text is visible in light mode */
 	.avm-wallet-container :global(.wallet-item) {
 		@apply text-neutral-900 dark:text-white;
 	}
 
-	.avm-wallet-container :global(.wallet-item span) {
-		@apply text-neutral-700 dark:text-neutral-200;
+	/* Wallet name (has font-medium class) */
+	.avm-wallet-container :global(.wallet-item .font-medium) {
+		color: rgb(23 23 23) !important;
 	}
 
-	.avm-wallet-container :global(.wallet-item button) {
-		@apply text-xs;
+	:global(.dark) .avm-wallet-container :global(.wallet-item .font-medium) {
+		color: rgb(255 255 255) !important;
 	}
 
-	.avm-wallet-container :global(.wallet-item button.truncate) {
-		@apply text-neutral-600 dark:text-neutral-300;
+	/* Connected wallet address buttons */
+	.avm-wallet-container :global(.wallet-item button.truncate),
+	.avm-wallet-container :global(.wallet-item button.flex-grow) {
+		@apply text-neutral-700 dark:text-neutral-300;
+		color: rgb(64 64 64) !important;
 	}
 
-	.avm-wallet-container :global(.wallet-item button.truncate:hover) {
+	:global(.dark) .avm-wallet-container :global(.wallet-item button.truncate),
+	:global(.dark) .avm-wallet-container :global(.wallet-item button.flex-grow) {
+		color: rgb(212 212 212) !important;
+	}
+
+	.avm-wallet-container :global(.wallet-item button.truncate:hover),
+	.avm-wallet-container :global(.wallet-item button.flex-grow:hover) {
 		@apply bg-neutral-100 dark:bg-neutral-700;
 	}
+
+	/* Override gray hover backgrounds in wallet list */
+	.avm-wallet-container :global(.hover\:bg-gray-100:hover) {
+		background-color: rgb(245 245 245) !important;
+	}
+
+	:global(.dark) .avm-wallet-container :global(.dark\:hover\:bg-gray-700:hover) {
+		background-color: rgb(64 64 64) !important;
+	}
+
+	/* Fix text in wallet list that uses dark:text-white without light mode equivalent */
+	.avm-wallet-container :global(.dark\:text-white) {
+		color: rgb(23 23 23);
+	}
+
+	:global(.dark) .avm-wallet-container :global(.dark\:text-white) {
+		color: rgb(255 255 255);
+	}
+
 </style>
