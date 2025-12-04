@@ -52,6 +52,21 @@
 	// Active account
 	const activeAccount = $derived(gameAccounts.find((a) => a.id === activeAccountId) || gameAccounts[0]);
 
+	// Keep active account first while preserving original order for others
+	const orderedGameAccounts = $derived.by(() => {
+		if (!gameAccounts || gameAccounts.length === 0) return gameAccounts || [];
+
+		const indexed = gameAccounts.map((acc, idx) => ({ acc, idx }));
+		indexed.sort((a, b) => {
+			const aActive = a.acc.id === activeAccountId ? 1 : 0;
+			const bActive = b.acc.id === activeAccountId ? 1 : 0;
+			if (aActive !== bActive) return bActive - aActive;
+			return a.idx - b.idx;
+		});
+
+		return indexed.map(({ acc }) => acc);
+	});
+
 	// Check if any account is unlocked
 	const hasUnlockedAccount = $derived(
 		gameAccounts.some((a) => unlockedAddresses.has(a.voiAddress))
@@ -232,7 +247,7 @@
 			</div>
 		{:else}
 			<div class="space-y-3 max-h-[400px] overflow-y-auto">
-				{#each gameAccounts as account (account.id)}
+				{#each orderedGameAccounts as account (account.id)}
 					{@const unlocked = isUnlocked(account)}
 					{@const isActive = account.id === activeAccountId}
 					{@const authMethod = getAuthMethodDisplay(account)}

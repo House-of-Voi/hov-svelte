@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SlotMachineConfig } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
+	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
 	import { onMount } from 'svelte';
 	import DepositModal from './DepositModal.svelte';
 	import WithdrawModal from './WithdrawModal.svelte';
@@ -9,11 +10,14 @@
 	interface Props {
 		contract: SlotMachineConfig;
 		positions: HousePositionWithMetadata[];
-		allAddresses: string[];
+		gameAccounts: GameAccountInfo[];
+		selectedSource: 'game' | 'external';
+		selectedGameAccount: GameAccountInfo | null;
+		session: SessionInfo;
 		onRefresh: () => Promise<void>;
 	}
 
-	let { contract, positions, allAddresses, onRefresh }: Props = $props();
+	let { contract, positions, gameAccounts, selectedSource, selectedGameAccount, session, onRefresh }: Props = $props();
 
 	let treasuryData = $state<any>(null);
 	let loading = $state(true);
@@ -91,63 +95,65 @@
 	}
 </script>
 
-<div class="pool-card">
-	<div class="pool-header">
-		<div class="pool-info">
-			<h3 class="pool-name">{contract.display_name}</h3>
-			<p class="pool-description">{contract.name}</p>
+<div class="card-interactive p-5 md:p-6 relative overflow-hidden group">
+	<div class="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-primary-500 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+
+	<div class="flex justify-between items-start mb-5">
+		<div class="flex-1">
+			<h3 class="text-lg md:text-xl font-bold text-neutral-900 dark:text-white mb-1">{contract.display_name}</h3>
+			<p class="text-sm text-neutral-500 dark:text-neutral-400">{contract.name}</p>
 		</div>
-		<div class="pool-badge">{contract.game_type}</div>
+		<span class="badge-primary">{contract.game_type}</span>
 	</div>
 
 	{#if loading}
-		<div class="pool-loading">
-			<div class="mini-spinner"></div>
+		<div class="flex justify-center py-8">
+			<div class="w-6 h-6 border-2 border-neutral-200 dark:border-neutral-700 border-t-primary-500 rounded-full animate-spin"></div>
 		</div>
 	{:else if treasuryData}
 		<!-- Treasury Stats -->
-		<div class="treasury-stats">
-			<div class="stat">
-				<span class="stat-label">Total Pool</span>
-				<span class="stat-value">{formatVOI(treasuryData.balanceTotal)} VOI</span>
+		<div class="grid grid-cols-3 gap-3 p-3 md:p-4 bg-neutral-50 dark:bg-neutral-800/50 rounded-xl mb-5">
+			<div class="flex flex-col gap-0.5">
+				<span class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide font-medium">Total Pool</span>
+				<span class="text-sm md:text-base font-semibold text-neutral-900 dark:text-white">{formatVOI(treasuryData.balanceTotal)} VOI</span>
 			</div>
-			<div class="stat">
-				<span class="stat-label">Share Price</span>
-				<span class="stat-value">{formatVOI(treasuryData.sharePrice)} VOI</span>
+			<div class="flex flex-col gap-0.5">
+				<span class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide font-medium">Share Price</span>
+				<span class="text-sm md:text-base font-semibold text-neutral-900 dark:text-white">{formatVOI(treasuryData.sharePrice)} VOI</span>
 			</div>
-			<div class="stat">
-				<span class="stat-label">Total Shares</span>
-				<span class="stat-value">{formatShares(Number(treasuryData.totalSupply) / 1e9)}</span>
+			<div class="flex flex-col gap-0.5">
+				<span class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide font-medium">Total Shares</span>
+				<span class="text-sm md:text-base font-semibold text-neutral-900 dark:text-white">{formatShares(Number(treasuryData.totalSupply) / 1e9)}</span>
 			</div>
 		</div>
 
 		<!-- User Positions -->
-		<div class="positions-section">
-			<div class="positions-header">
-				<h4>Your Positions</h4>
+		<div>
+			<div class="flex justify-between items-center mb-3">
+				<h4 class="text-sm font-semibold text-neutral-700 dark:text-neutral-300 uppercase tracking-wide">Your Positions</h4>
 				{#if hasPositions}
-					<div class="total-position">
-						<span class="position-value">{formatVOI(totalPositionValue)} VOI</span>
-						<span class="position-shares">{formatShares(totalPositionShares)} shares</span>
+					<div class="flex flex-col items-end gap-0.5">
+						<span class="text-base md:text-lg font-bold text-primary-600 dark:text-primary-400">{formatVOI(totalPositionValue)} VOI</span>
+						<span class="text-xs text-neutral-500 dark:text-neutral-400">{formatShares(totalPositionShares)} shares</span>
 					</div>
 				{/if}
 			</div>
 
 			{#if hasPositions}
-				<div class="positions-list">
+				<div class="flex flex-col gap-3">
 					{#each positions as position}
-						<div class="position-item">
-							<div class="position-address">
-								<span class="address-label">
+						<div class="bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700 rounded-xl p-3 md:p-4 hover:border-neutral-300 dark:hover:border-neutral-600 transition-colors">
+							<div class="flex justify-between items-center mb-2">
+								<span class="font-mono text-xs text-neutral-600 dark:text-neutral-400">
 									{position.address.slice(0, 8)}...{position.address.slice(-6)}
 								</span>
-								<span class="position-percent">{position.sharePercentage.toFixed(3)}%</span>
+								<span class="text-xs font-semibold text-success-600 dark:text-success-400">{position.sharePercentage.toFixed(3)}%</span>
 							</div>
-							<div class="position-values">
-								<span class="value">{formatVOI(position.voiValue)} VOI</span>
-								<span class="shares">{formatShares(position.formattedShares)} shares</span>
+							<div class="flex justify-between items-center mb-3">
+								<span class="text-sm md:text-base font-semibold text-neutral-900 dark:text-white">{formatVOI(position.voiValue)} VOI</span>
+								<span class="text-sm text-neutral-500 dark:text-neutral-400">{formatShares(position.formattedShares)} shares</span>
 							</div>
-							<div class="position-actions">
+							<div class="grid grid-cols-3 gap-2">
 								<button class="action-btn deposit" onclick={() => handleDeposit(position)}>
 									Deposit
 								</button>
@@ -162,9 +168,9 @@
 					{/each}
 				</div>
 			{:else}
-				<div class="no-positions">
-					<p>No active positions</p>
-					<button class="primary-btn" onclick={() => handleDeposit()}>Make First Deposit</button>
+				<div class="text-center py-6 px-4 bg-neutral-50 dark:bg-neutral-800/30 border border-dashed border-neutral-300 dark:border-neutral-700 rounded-xl">
+					<p class="text-neutral-500 dark:text-neutral-400 text-sm mb-3">No active positions</p>
+					<button class="btn-primary text-sm py-2 px-4" onclick={() => handleDeposit()}>Make First Deposit</button>
 				</div>
 			{/if}
 		</div>
@@ -176,7 +182,10 @@
 	<DepositModal
 		{contract}
 		position={selectedPosition}
-		{allAddresses}
+		{gameAccounts}
+		{selectedSource}
+		{selectedGameAccount}
+		{session}
 		onClose={() => (showDepositModal = false)}
 		onSuccess={handleTransactionComplete}
 	/>
@@ -186,6 +195,8 @@
 	<WithdrawModal
 		{contract}
 		position={selectedPosition}
+		{gameAccounts}
+		{session}
 		onClose={() => (showWithdrawModal = false)}
 		onSuccess={handleTransactionComplete}
 	/>
@@ -202,330 +213,50 @@
 {/if}
 
 <style>
-	.pool-card {
-		background: rgba(255, 255, 255, 0.03);
-		backdrop-filter: blur(20px);
-		border: 1px solid rgba(255, 255, 255, 0.08);
-		border-radius: 20px;
-		padding: 1.5rem;
-		transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-		position: relative;
-		overflow: hidden;
+	/* Action Buttons */
+	.action-btn {
+		@apply py-2 px-3 rounded-lg text-xs md:text-sm font-semibold cursor-pointer transition-all duration-200 border;
 	}
 
-	.pool-card::before {
-		content: '';
-		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
-		height: 2px;
-		background: linear-gradient(90deg, transparent, rgba(212, 175, 55, 0.5), transparent);
-		opacity: 0;
-		transition: opacity 0.4s ease;
+	.action-btn.deposit {
+		@apply bg-success-50 dark:bg-success-900/20 border-success-200 dark:border-success-800 text-success-600 dark:text-success-400;
 	}
 
-	.pool-card:hover {
-		background: rgba(255, 255, 255, 0.05);
-		border-color: rgba(212, 175, 55, 0.3);
-		transform: translateY(-4px);
-		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+	.action-btn.deposit:hover {
+		@apply bg-success-100 dark:bg-success-900/30 border-success-300 dark:border-success-700 -translate-y-0.5;
 	}
 
-	.pool-card:hover::before {
-		opacity: 1;
+	.action-btn.withdraw {
+		@apply bg-neutral-50 dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300;
 	}
 
-	/* Header */
-	.pool-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
-		margin-bottom: 1.5rem;
+	.action-btn.withdraw:hover {
+		@apply bg-neutral-100 dark:bg-neutral-700 border-neutral-300 dark:border-neutral-600 -translate-y-0.5;
 	}
 
-	.pool-info {
-		flex: 1;
+	.action-btn.history {
+		@apply bg-primary-50 dark:bg-primary-900/20 border-primary-200 dark:border-primary-800 text-primary-600 dark:text-primary-400;
 	}
 
-	.pool-name {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.5rem;
-		font-weight: 700;
-		margin: 0 0 0.25rem 0;
-		color: #ffffff;
-		letter-spacing: -0.01em;
+	.action-btn.history:hover {
+		@apply bg-primary-100 dark:bg-primary-900/30 border-primary-300 dark:border-primary-700 -translate-y-0.5;
 	}
 
-	.pool-description {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.5);
-		margin: 0;
-	}
-
-	.pool-badge {
-		padding: 0.375rem 0.875rem;
-		background: rgba(212, 175, 55, 0.1);
-		border: 1px solid rgba(212, 175, 55, 0.3);
-		border-radius: 20px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: #d4af37;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	/* Loading */
-	.pool-loading {
-		display: flex;
-		justify-content: center;
-		padding: 2rem;
-	}
-
-	.mini-spinner {
-		width: 24px;
-		height: 24px;
-		border: 2px solid rgba(255, 255, 255, 0.1);
-		border-top-color: #d4af37;
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-	}
-
+	/* Spinner animation */
 	@keyframes spin {
 		to {
 			transform: rotate(360deg);
 		}
 	}
 
-	/* Treasury Stats */
-	.treasury-stats {
-		display: grid;
-		grid-template-columns: repeat(3, 1fr);
-		gap: 1rem;
-		padding: 1rem;
-		background: rgba(0, 0, 0, 0.2);
-		border-radius: 12px;
-		margin-bottom: 1.5rem;
+	.animate-spin {
+		animation: spin 1s linear infinite;
 	}
 
-	.stat {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.stat-label {
-		font-size: 0.75rem;
-		color: rgba(255, 255, 255, 0.5);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		font-weight: 500;
-	}
-
-	.stat-value {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.125rem;
-		font-weight: 600;
-		color: #ffffff;
-	}
-
-	/* Positions Section */
-	.positions-section {
-		margin-bottom: 1rem;
-	}
-
-	.positions-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 1rem;
-	}
-
-	.positions-header h4 {
-		font-family: 'Syne', sans-serif;
-		font-size: 1rem;
-		font-weight: 600;
-		margin: 0;
-		color: rgba(255, 255, 255, 0.9);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.total-position {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 0.125rem;
-	}
-
-	.position-value {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.125rem;
-		font-weight: 700;
-		color: #d4af37;
-	}
-
-	.position-shares {
-		font-size: 0.75rem;
-		color: rgba(255, 255, 255, 0.5);
-	}
-
-	/* Positions List */
-	.positions-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-
-	.position-item {
-		background: rgba(0, 0, 0, 0.2);
-		border: 1px solid rgba(255, 255, 255, 0.05);
-		border-radius: 12px;
-		padding: 1rem;
-		transition: all 0.3s ease;
-	}
-
-	.position-item:hover {
-		background: rgba(0, 0, 0, 0.3);
-		border-color: rgba(255, 255, 255, 0.1);
-	}
-
-	.position-address {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 0.5rem;
-	}
-
-	.address-label {
-		font-family: 'Monaco', 'Courier New', monospace;
-		font-size: 0.75rem;
-		color: rgba(255, 255, 255, 0.7);
-	}
-
-	.position-percent {
-		font-size: 0.75rem;
-		color: #10b981;
-		font-weight: 600;
-	}
-
-	.position-values {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 0.75rem;
-	}
-
-	.position-values .value {
-		font-family: 'Syne', sans-serif;
-		font-size: 1rem;
-		font-weight: 600;
-		color: #ffffff;
-	}
-
-	.position-values .shares {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.5);
-	}
-
-	.position-actions {
-		display: grid;
-		grid-template-columns: 1fr 1fr 1fr;
-		gap: 0.5rem;
-	}
-
-	.action-btn {
-		padding: 0.5rem 1rem;
-		border-radius: 8px;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-		border: 1px solid;
-	}
-
-	.action-btn.deposit {
-		background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(16, 185, 129, 0.05) 100%);
-		border-color: rgba(16, 185, 129, 0.3);
-		color: #10b981;
-	}
-
-	.action-btn.deposit:hover {
-		background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(16, 185, 129, 0.1) 100%);
-		border-color: rgba(16, 185, 129, 0.5);
-		transform: translateY(-1px);
-	}
-
-	.action-btn.withdraw {
-		background: rgba(255, 255, 255, 0.03);
-		border-color: rgba(255, 255, 255, 0.1);
-		color: rgba(255, 255, 255, 0.9);
-	}
-
-	.action-btn.withdraw:hover {
-		background: rgba(255, 255, 255, 0.05);
-		border-color: rgba(255, 255, 255, 0.2);
-		transform: translateY(-1px);
-	}
-
-	.action-btn.history {
-		background: rgba(212, 175, 55, 0.05);
-		border-color: rgba(212, 175, 55, 0.2);
-		color: #d4af37;
-	}
-
-	.action-btn.history:hover {
-		background: rgba(212, 175, 55, 0.1);
-		border-color: rgba(212, 175, 55, 0.4);
-		transform: translateY(-1px);
-	}
-
-	/* No Positions */
-	.no-positions {
-		text-align: center;
-		padding: 2rem 1rem;
-		background: rgba(0, 0, 0, 0.2);
-		border: 1px dashed rgba(255, 255, 255, 0.1);
-		border-radius: 12px;
-	}
-
-	.no-positions p {
-		color: rgba(255, 255, 255, 0.5);
-		margin: 0 0 1rem 0;
-		font-size: 0.875rem;
-	}
-
-	.primary-btn {
-		background: linear-gradient(135deg, #d4af37 0%, #f4d03f 100%);
-		color: #0a0d1a;
-		border: none;
-		border-radius: 8px;
-		padding: 0.75rem 1.5rem;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-	}
-
-	.primary-btn:hover {
-		transform: translateY(-2px);
-		box-shadow: 0 6px 20px rgba(212, 175, 55, 0.4);
-	}
-
-
-	/* Responsive */
+	/* Responsive adjustments */
 	@media (max-width: 640px) {
-		.treasury-stats {
-			grid-template-columns: 1fr;
-		}
-
-		.pool-header {
-			flex-direction: column;
-			gap: 0.75rem;
-		}
-
-		.pool-badge {
-			align-self: flex-start;
+		.action-btn {
+			@apply py-1.5 px-2;
 		}
 	}
 </style>

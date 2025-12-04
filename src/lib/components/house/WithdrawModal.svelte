@@ -1,29 +1,60 @@
 <script lang="ts">
 	import type { SlotMachineConfig } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
+	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
 	import { signTransactions } from '$lib/voi/wallet-utils';
 	import { getAlgodClient, submitTransaction } from '$lib/voi/asa-utils';
-	import { page } from '$app/stores';
+	import { browser } from '$app/environment';
 	import algosdk from 'algosdk';
 	import { onMount } from 'svelte';
+	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
+	import UnlockGameAccount from '$lib/components/gameAccounts/UnlockGameAccount.svelte';
 
 	interface Props {
 		contract: SlotMachineConfig;
 		position: HousePositionWithMetadata;
+		gameAccounts: GameAccountInfo[];
+		session: SessionInfo;
 		onClose: () => void;
 		onSuccess: () => Promise<void>;
 	}
 
-	let { contract, position, onClose, onSuccess }: Props = $props();
+	let { contract, position, gameAccounts, session, onClose, onSuccess }: Props = $props();
 
 	let withdrawAmount = $state('');
 	let isProcessing = $state(false);
 	let error = $state('');
 	let treasury = $state<any>(null);
+	let unlockedAddresses = $state<Set<string>>(new Set());
+	let unlockStatusChecked = $state(false);
+	let unlockingAccount = $state<GameAccountInfo | null>(null);
+
+	// Find if the position's address belongs to a game account
+	const positionGameAccount = $derived(
+		gameAccounts.find(a => a.voiAddress === position.address) || null
+	);
+
+	// Check if account is unlocked (or if it's an external wallet)
+	// Don't show as locked until we've actually checked
+	const isPositionUnlocked = $derived.by(() => {
+		// If it's not a game account, assume it's an external wallet (always "unlocked")
+		if (!positionGameAccount) return true;
+		// If we haven't checked yet, assume unlocked to avoid flash
+		if (!unlockStatusChecked) return true;
+		return unlockedAddresses.has(position.address);
+	});
 
 	onMount(async () => {
-		await loadTreasuryData();
+		await Promise.all([loadTreasuryData(), refreshUnlockedAddresses()]);
 	});
+
+	async function refreshUnlockedAddresses() {
+		if (browser) {
+			const stored = getStoredGameAccountAddresses();
+			unlockedAddresses = new Set(stored);
+			unlockStatusChecked = true;
+		}
+	}
 
 	async function loadTreasuryData() {
 		try {
@@ -53,7 +84,7 @@
 	const transactionFee = $derived(7000); // 7000 microVOI for withdraw (higher due to inner txn)
 	const maxShares = $derived(position.formattedShares);
 	const canWithdraw = $derived(
-		sharesAmount > 0 && sharesBigInt <= position.shares && !isProcessing
+		sharesAmount > 0 && sharesBigInt <= position.shares && !isProcessing && isPositionUnlocked
 	);
 
 	// Calculate VOI amount user will receive (client-side calculation)
@@ -86,8 +117,32 @@
 		withdrawAmount = ((maxShares * percent) / 100).toFixed(treasury?.decimals || 9);
 	}
 
+	function handleUnlockClick() {
+		if (positionGameAccount) {
+			unlockingAccount = positionGameAccount;
+		}
+	}
+
+	async function handleUnlockSuccess() {
+		await refreshUnlockedAddresses();
+		unlockingAccount = null;
+	}
+
+	function handleUnlockClose() {
+		unlockingAccount = null;
+	}
+
 	async function handleWithdraw() {
 		if (!canWithdraw) return;
+
+		// Double-check unlock status for game accounts
+		if (positionGameAccount) {
+			const currentUnlocked = getStoredGameAccountAddresses();
+			if (!currentUnlocked.includes(position.address)) {
+				unlockingAccount = positionGameAccount;
+				return;
+			}
+		}
 
 		isProcessing = true;
 		error = '';
@@ -108,12 +163,11 @@
 			});
 
 			// Sign with wallet-utils (handles both CDP stored keys and external wallets)
-			const session = $page.data.session;
 			const signedTxns = await signTransactions([withdrawTxn], position.address, session);
 
 			// Submit transaction
 			const txId = await submitTransaction(signedTxns[0]);
-			console.log('✅ Withdrawal successful! TxID:', txId);
+			console.log('Withdrawal successful! TxID:', txId);
 
 			// Wait for confirmation
 			await algosdk.waitForConfirmation(algodClient, txId, 4);
@@ -135,84 +189,61 @@
 	}
 </script>
 
-<div class="modal-backdrop" onclick={handleBackdropClick}>
-	<div class="modal-container">
+<div class="fixed inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in" onclick={handleBackdropClick}>
+	<div class="bg-white dark:bg-neutral-800 border border-error-200 dark:border-error-800 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-in-bottom">
 		<!-- Header -->
-		<div class="modal-header">
+		<div class="flex justify-between items-start p-5 border-b border-neutral-200 dark:border-neutral-700">
 			<div>
-				<h2>Withdraw from Pool</h2>
-				<p class="pool-name">{contract.display_name}</p>
+				<h2 class="text-lg font-bold text-neutral-900 dark:text-white mb-1">Withdraw from Pool</h2>
+				<p class="text-sm text-neutral-500 dark:text-neutral-400">{contract.display_name}</p>
 			</div>
-			<button class="close-button" onclick={onClose}>
+			<button class="text-neutral-400 hover:text-error-500 p-1 transition-colors" onclick={onClose}>
 				<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M6 18L18 6M6 6l12 12"
-					/>
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
 				</svg>
 			</button>
 		</div>
 
 		<!-- Body -->
-		<div class="modal-body">
+		<div class="p-5 flex flex-col gap-5">
 			<!-- Position Info -->
-			<div class="position-card">
-				<div class="position-row">
-					<span class="label">Your Position</span>
-					<span class="value">{formatVOI(position.voiValue)} <span class="unit">VOI</span></span>
+			<div class="bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-xl p-4 flex flex-col gap-3">
+				<div class="flex justify-between items-center">
+					<span class="text-sm text-neutral-500 dark:text-neutral-400">Your Position</span>
+					<span class="text-lg font-semibold text-neutral-900 dark:text-white">{formatVOI(position.voiValue)} <span class="text-sm text-neutral-400">VOI</span></span>
 				</div>
-				<div class="position-row">
-					<span class="label">Available Shares</span>
-					<span class="value shares"
-						>{formatShares(maxShares, treasury?.decimals || 9)} <span class="unit">YBT</span
-						></span
-					>
+				<div class="flex justify-between items-center">
+					<span class="text-sm text-neutral-500 dark:text-neutral-400">Available Shares</span>
+					<span class="text-lg font-semibold text-success-600 dark:text-success-400">{formatShares(maxShares, treasury?.decimals || 9)} <span class="text-sm text-success-500/70">YBT</span></span>
 				</div>
-				<div class="position-row">
-					<span class="label">Address</span>
-					<span class="address"
-						>{position.address.slice(0, 8)}...{position.address.slice(-6)}</span
-					>
+				<div class="flex justify-between items-center">
+					<span class="text-sm text-neutral-500 dark:text-neutral-400">Address</span>
+					<span class="font-mono text-sm text-neutral-600 dark:text-neutral-400">{position.address.slice(0, 8)}...{position.address.slice(-6)}</span>
 				</div>
+				{#if positionGameAccount && !isPositionUnlocked}
+					<div class="mt-2 p-3 bg-warning-50 dark:bg-warning-900/20 border border-warning-200 dark:border-warning-800 rounded-lg flex items-center gap-2 text-sm text-warning-700 dark:text-warning-400">
+						<span>🔒</span>
+						<span>This account is locked.</span>
+						<button type="button" class="ml-auto bg-warning-100 dark:bg-warning-900/30 border border-warning-300 dark:border-warning-700 text-warning-700 dark:text-warning-400 px-3 py-1.5 rounded text-xs font-semibold hover:bg-warning-200 dark:hover:bg-warning-900/50 transition-colors" onclick={handleUnlockClick}>Unlock</button>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Quick Percentage Buttons -->
-			<div class="quick-select">
-				<div class="quick-select-label">Quick Select</div>
-				<div class="quick-buttons">
-					<button
-						class="quick-btn"
-						onclick={() => setPercentage(25)}
-						disabled={isProcessing || maxShares === 0}
-					>
-						25%
-					</button>
-					<button
-						class="quick-btn"
-						onclick={() => setPercentage(50)}
-						disabled={isProcessing || maxShares === 0}
-					>
-						50%
-					</button>
-					<button
-						class="quick-btn"
-						onclick={() => setPercentage(75)}
-						disabled={isProcessing || maxShares === 0}
-					>
-						75%
-					</button>
-					<button class="quick-btn" onclick={setMaxAmount} disabled={isProcessing || maxShares === 0}>
-						MAX
-					</button>
+			<div class="flex flex-col gap-2">
+				<div class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Quick Select</div>
+				<div class="grid grid-cols-4 gap-2">
+					<button class="quick-btn" onclick={() => setPercentage(25)} disabled={isProcessing || maxShares === 0}>25%</button>
+					<button class="quick-btn" onclick={() => setPercentage(50)} disabled={isProcessing || maxShares === 0}>50%</button>
+					<button class="quick-btn" onclick={() => setPercentage(75)} disabled={isProcessing || maxShares === 0}>75%</button>
+					<button class="quick-btn" onclick={setMaxAmount} disabled={isProcessing || maxShares === 0}>MAX</button>
 				</div>
 			</div>
 
 			<!-- Amount Input -->
-			<div class="input-group">
-				<label for="withdraw-amount">Shares to Withdraw</label>
-				<div class="input-wrapper">
+			<div class="flex flex-col gap-2">
+				<label for="withdraw-amount" class="text-sm font-medium text-neutral-700 dark:text-neutral-300">Shares to Withdraw</label>
+				<div class="relative">
 					<input
 						id="withdraw-amount"
 						type="number"
@@ -222,47 +253,44 @@
 						bind:value={withdrawAmount}
 						placeholder={"0." + "0".repeat(treasury?.decimals || 9)}
 						disabled={isProcessing}
+						class="input pr-16"
 					/>
-					<button class="max-button" onclick={setMaxAmount} disabled={isProcessing || maxShares === 0}>
-						MAX
-					</button>
+					<button
+						class="absolute right-3 top-1/2 -translate-y-1/2 bg-error-100 dark:bg-error-900/30 border border-error-300 dark:border-error-700 rounded px-2 py-1 text-xs font-semibold text-error-600 dark:text-error-400 hover:bg-error-200 dark:hover:bg-error-900/50 disabled:opacity-50 transition-colors"
+						onclick={setMaxAmount}
+						disabled={isProcessing || maxShares === 0}
+					>MAX</button>
 				</div>
 			</div>
 
 			<!-- Preview -->
 			{#if sharesAmount > 0}
-				<div class="preview-card">
-					<div class="preview-title">Withdrawal Preview</div>
-					<div class="preview-row">
+				<div class="bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-xl p-4">
+					<div class="text-xs text-neutral-500 dark:text-neutral-400 font-medium mb-3">Withdrawal Preview</div>
+					<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
 						<span>Shares:</span>
-						<span class="preview-value"
-							>{formatShares(sharesAmount, treasury?.decimals || 9)} YBT</span
-						>
+						<span class="text-neutral-900 dark:text-white font-medium">{formatShares(sharesAmount, treasury?.decimals || 9)} YBT</span>
 					</div>
-					<div class="preview-row">
+					<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
 						<span>Percentage:</span>
-						<span class="preview-value percentage">{withdrawPercentage.toFixed(2)}%</span>
+						<span class="text-success-600 dark:text-success-400 font-medium">{withdrawPercentage.toFixed(2)}%</span>
 					</div>
-					<div class="preview-row">
+					<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
 						<span>Transaction Fee:</span>
-						<span class="preview-value">{formatVOI(transactionFee)} VOI</span>
+						<span class="text-neutral-900 dark:text-white font-medium">{formatVOI(transactionFee)} VOI</span>
 					</div>
-					<div class="preview-row total">
-						<span>You'll receive:</span>
-						<span class="preview-value gold">{formatVOI(voiAmount)} VOI</span>
+					<div class="flex justify-between items-center py-2 mt-2 border-t border-neutral-200 dark:border-neutral-700 text-sm font-semibold">
+						<span class="text-neutral-700 dark:text-neutral-300">You'll receive:</span>
+						<span class="text-primary-600 dark:text-primary-400">{formatVOI(voiAmount)} VOI</span>
 					</div>
 				</div>
 			{/if}
 
 			<!-- Error Display -->
 			{#if error}
-				<div class="error-card">
+				<div class="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-xl p-3 flex items-center gap-2.5 text-error-600 dark:text-error-400 text-sm">
 					<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-						<path
-							fill-rule="evenodd"
-							d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-							clip-rule="evenodd"
-						/>
+						<path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
 					</svg>
 					<span>{error}</span>
 				</div>
@@ -270,17 +298,13 @@
 
 			<!-- Warning -->
 			{#if sharesAmount > 0}
-				<div class="warning-card">
-					<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-						<path
-							fill-rule="evenodd"
-							d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-							clip-rule="evenodd"
-						/>
+				<div class="bg-warning-50 dark:bg-warning-900/10 border border-warning-200 dark:border-warning-800 rounded-xl p-4 flex items-start gap-3 text-warning-700 dark:text-warning-400 text-sm">
+					<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" class="flex-shrink-0 mt-0.5">
+						<path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
 					</svg>
 					<div>
-						<div class="warning-title">Withdrawal Notice</div>
-						<p>
+						<div class="font-semibold mb-0.5">Withdrawal Notice</div>
+						<p class="text-warning-600/80 dark:text-warning-500/80">
 							Withdrawing shares will reduce your ownership percentage and future yield earnings.
 						</p>
 					</div>
@@ -288,11 +312,11 @@
 			{/if}
 
 			<!-- Action Buttons -->
-			<div class="action-buttons">
-				<button class="button secondary" onclick={onClose} disabled={isProcessing}>Cancel</button>
-				<button class="button primary withdraw" onclick={handleWithdraw} disabled={!canWithdraw}>
+			<div class="grid grid-cols-2 gap-3">
+				<button class="btn-ghost border border-neutral-200 dark:border-neutral-700" onclick={onClose} disabled={isProcessing}>Cancel</button>
+				<button class="btn bg-error-500 hover:bg-error-600 text-white" onclick={handleWithdraw} disabled={!canWithdraw}>
 					{#if isProcessing}
-						<div class="button-spinner"></div>
+						<div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
 						<span>Withdrawing...</span>
 					{:else}
 						<span>Withdraw</span>
@@ -301,8 +325,8 @@
 			</div>
 
 			<!-- Info -->
-			<div class="info-card">
-				<ul>
+			<div class="bg-neutral-50 dark:bg-neutral-900/30 border border-neutral-200 dark:border-neutral-700 rounded-xl p-4 text-sm">
+				<ul class="list-disc list-inside text-neutral-600 dark:text-neutral-400 space-y-1">
 					<li>Withdrawal amounts are converted back to VOI</li>
 					<li>Transaction fees apply to all withdrawals</li>
 					<li>Withdrawals are processed immediately</li>
@@ -312,433 +336,50 @@
 	</div>
 </div>
 
+<!-- Unlock Modal -->
+{#if unlockingAccount}
+	<UnlockGameAccount
+		voiAddress={unlockingAccount.voiAddress}
+		nickname={unlockingAccount.nickname}
+		recoveryMethod={unlockingAccount.cdpRecoveryMethod}
+		recoveryHint={unlockingAccount.cdpRecoveryHint}
+		modal={true}
+		open={true}
+		onSuccess={handleUnlockSuccess}
+		onClose={handleUnlockClose}
+	/>
+{/if}
+
 <style>
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.8);
-		backdrop-filter: blur(8px);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 1rem;
-		z-index: 100;
-		animation: fade-in 0.2s ease-out;
-	}
-
-	@keyframes fade-in {
-		from {
-			opacity: 0;
-		}
-		to {
-			opacity: 1;
-		}
-	}
-
-	.modal-container {
-		background: #121728;
-		border: 1px solid rgba(239, 68, 68, 0.2);
-		border-radius: 24px;
-		max-width: 500px;
-		width: 100%;
-		max-height: 90vh;
-		overflow-y: auto;
-		box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
-		animation: slide-up 0.3s ease-out;
-	}
-
-	@keyframes slide-up {
-		from {
-			opacity: 0;
-			transform: translateY(20px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-
-	.modal-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
-		padding: 2rem;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-	}
-
-	.modal-header h2 {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.5rem;
-		font-weight: 700;
-		margin: 0 0 0.25rem 0;
-		color: #ffffff;
-	}
-
-	.pool-name {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.5);
-		margin: 0;
-	}
-
-	.close-button {
-		background: none;
-		border: none;
-		color: rgba(255, 255, 255, 0.5);
-		cursor: pointer;
-		padding: 0.5rem;
-		transition: color 0.3s ease;
-	}
-
-	.close-button:hover {
-		color: #ef4444;
-	}
-
-	.modal-body {
-		padding: 2rem;
-		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-	}
-
-	/* Position Card */
-	.position-card {
-		background: rgba(255, 255, 255, 0.03);
-		border: 1px solid rgba(255, 255, 255, 0.08);
-		border-radius: 12px;
-		padding: 1.25rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-
-	.position-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-
-	.position-row .label {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.6);
-	}
-
-	.position-row .value {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.125rem;
-		font-weight: 600;
-		color: #ffffff;
-	}
-
-	.position-row .value.shares {
-		color: #10b981;
-	}
-
-	.position-row .unit {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.5);
-		margin-left: 0.25rem;
-	}
-
-	.position-row .address {
-		font-family: 'Monaco', 'Courier New', monospace;
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.7);
-	}
-
-	/* Quick Select */
-	.quick-select {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-
-	.quick-select-label {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.9);
-		font-weight: 500;
-	}
-
-	.quick-buttons {
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 0.5rem;
-	}
-
+	/* Quick select buttons */
 	.quick-btn {
-		background: rgba(255, 255, 255, 0.05);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 8px;
-		padding: 0.625rem;
-		color: rgba(255, 255, 255, 0.9);
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
+		@apply bg-neutral-100 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-lg py-2.5 text-neutral-700 dark:text-neutral-300 text-sm font-semibold cursor-pointer transition-all;
 	}
 
 	.quick-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.08);
-		border-color: rgba(255, 255, 255, 0.2);
+		@apply bg-neutral-200 dark:bg-neutral-600 border-neutral-300 dark:border-neutral-500;
 	}
 
 	.quick-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+		@apply opacity-50 cursor-not-allowed;
 	}
 
-	/* Input Groups */
-	.input-group {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-
-	.input-group label {
-		font-size: 0.875rem;
-		font-weight: 500;
-		color: rgba(255, 255, 255, 0.9);
-	}
-
-	.input-wrapper {
-		position: relative;
-	}
-
-	input {
-		width: 100%;
-		background: rgba(255, 255, 255, 0.05);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 12px;
-		padding: 1rem;
-		color: #ffffff;
-		font-size: 1rem;
-		transition: all 0.3s ease;
-	}
-
-	input:focus {
-		outline: none;
-		border-color: rgba(239, 68, 68, 0.5);
-		background: rgba(255, 255, 255, 0.08);
-	}
-
-	input:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.max-button {
-		position: absolute;
-		right: 0.75rem;
-		top: 50%;
-		transform: translateY(-50%);
-		background: rgba(239, 68, 68, 0.15);
-		border: 1px solid rgba(239, 68, 68, 0.3);
-		border-radius: 6px;
-		padding: 0.375rem 0.875rem;
-		color: #ef4444;
-		font-size: 0.75rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-	}
-
-	.max-button:hover:not(:disabled) {
-		background: rgba(239, 68, 68, 0.25);
-		border-color: rgba(239, 68, 68, 0.5);
-	}
-
-	.max-button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	/* Preview Card */
-	.preview-card {
-		background: rgba(0, 0, 0, 0.3);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 12px;
-		padding: 1.25rem;
-	}
-
-	.preview-title {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.6);
-		margin-bottom: 1rem;
-		font-weight: 500;
-	}
-
-	.preview-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 0.5rem 0;
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.7);
-	}
-
-	.preview-row.total {
-		border-top: 1px solid rgba(255, 255, 255, 0.1);
-		margin-top: 0.5rem;
-		padding-top: 1rem;
-		font-weight: 600;
-	}
-
-	.preview-value {
-		color: #ffffff;
-		font-weight: 500;
-	}
-
-	.preview-value.gold {
-		color: #d4af37;
-	}
-
-	.preview-value.percentage {
-		color: #10b981;
-	}
-
-	/* Error Card */
-	.error-card {
-		background: rgba(239, 68, 68, 0.1);
-		border: 1px solid rgba(239, 68, 68, 0.3);
-		border-radius: 12px;
-		padding: 1rem;
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		color: #ef4444;
-		font-size: 0.875rem;
-	}
-
-	/* Warning Card */
-	.warning-card {
-		background: rgba(251, 191, 36, 0.1);
-		border: 1px solid rgba(251, 191, 36, 0.3);
-		border-radius: 12px;
-		padding: 1rem;
-		display: flex;
-		align-items: flex-start;
-		gap: 0.75rem;
-		color: #fbbf24;
-		font-size: 0.875rem;
-	}
-
-	.warning-title {
-		font-weight: 600;
-		margin-bottom: 0.25rem;
-	}
-
-	.warning-card p {
-		margin: 0;
-		color: rgba(251, 191, 36, 0.9);
-	}
-
-	/* Action Buttons */
-	.action-buttons {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 1rem;
-		margin-top: 0.5rem;
-	}
-
-	.button {
-		padding: 1rem 1.5rem;
-		border-radius: 12px;
-		font-size: 1rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-		border: none;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
-	}
-
-	.button.secondary {
-		background: rgba(255, 255, 255, 0.05);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		color: rgba(255, 255, 255, 0.9);
-	}
-
-	.button.secondary:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.08);
-		border-color: rgba(255, 255, 255, 0.2);
-	}
-
-	.button.primary.withdraw {
-		background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-		color: #ffffff;
-	}
-
-	.button.primary.withdraw:hover:not(:disabled) {
-		transform: translateY(-2px);
-		box-shadow: 0 8px 24px rgba(239, 68, 68, 0.4);
-	}
-
-	.button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-		transform: none !important;
-	}
-
-	.button-spinner {
-		width: 16px;
-		height: 16px;
-		border: 2px solid rgba(255, 255, 255, 0.3);
-		border-top-color: #ffffff;
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
-
+	/* Spinner animation */
 	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
+		to { transform: rotate(360deg); }
 	}
 
-	/* Info Card */
-	.info-card {
-		background: rgba(255, 255, 255, 0.02);
-		border: 1px solid rgba(255, 255, 255, 0.05);
-		border-radius: 12px;
-		padding: 1rem;
-		font-size: 0.8125rem;
-		line-height: 1.5;
+	.animate-spin {
+		animation: spin 1s linear infinite;
 	}
 
-	.info-card ul {
-		margin: 0;
-		padding-left: 1.25rem;
-		color: rgba(255, 255, 255, 0.6);
-	}
-
-	.info-card li {
-		margin-bottom: 0.375rem;
-	}
-
-	.info-card li:last-child {
-		margin-bottom: 0;
-	}
-
-	/* Responsive */
+	/* Mobile responsive */
 	@media (max-width: 640px) {
-		.modal-container {
-			margin: 0;
-			border-radius: 20px 20px 0 0;
-			align-self: flex-end;
-			max-height: 95vh;
-		}
-
-		.modal-header,
-		.modal-body {
-			padding: 1.5rem;
-		}
-
-		.action-buttons {
-			grid-template-columns: 1fr;
-		}
-
-		.quick-buttons {
+		.grid-cols-4 {
 			grid-template-columns: repeat(2, 1fr);
+		}
+		.grid-cols-2 {
+			grid-template-columns: 1fr;
 		}
 	}
 </style>

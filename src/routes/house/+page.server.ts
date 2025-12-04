@@ -1,18 +1,14 @@
 import type { PageServerLoad } from './$types';
 import { createAdminClient } from '$lib/db/supabaseAdmin';
+import { getGameAccountsForProfile } from '$lib/auth/session';
 
 const supabaseAdmin = createAdminClient();
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const session = locals.session!; // Guaranteed by layout
 
-	// Get all Voi addresses linked to this profile
-	const { data: accounts } = await supabaseAdmin
-		.from('accounts')
-		.select('address, wallet_provider, created_at')
-		.eq('profile_id', session.profileId)
-		.eq('chain', 'voi')
-		.order('created_at', { ascending: false });
+	// Get all game accounts for this profile (CDP-managed accounts)
+	const gameAccounts = await getGameAccountsForProfile(session.profileId);
 
 	// Get all active slot machine configs with YBT
 	const { data: contracts } = await supabaseAdmin
@@ -23,8 +19,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.order('created_at', { ascending: false });
 
 	return {
-		linkedAddresses: accounts || [],
+		gameAccounts,
+		activeGameAccountId: session.activeGameAccountId,
 		contracts: contracts || [],
-		cdpAddress: session.voiAddress
+		session // Pass session for external wallet support
 	};
 };

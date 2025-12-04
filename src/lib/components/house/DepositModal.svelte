@@ -1,60 +1,93 @@
 <script lang="ts">
 	import type { SlotMachineConfig } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
+	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
 	import { houseWallet } from '$lib/stores/houseWallet.svelte';
 	import { ybtService } from '$lib/voi/house/ybt-service';
-	import { page } from '$app/stores';
+	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
+	import { fetchVoiBalance } from '$lib/voi/balances';
+	import UnlockGameAccount from '$lib/components/gameAccounts/UnlockGameAccount.svelte';
 
 	interface Props {
 		contract: SlotMachineConfig;
 		position: HousePositionWithMetadata | null;
-		allAddresses: string[];
+		gameAccounts: GameAccountInfo[];
+		selectedSource: 'game' | 'external';
+		selectedGameAccount: GameAccountInfo | null;
+		session: SessionInfo;
 		onClose: () => void;
 		onSuccess: () => Promise<void>;
 	}
 
-	let { contract, position, allAddresses, onClose, onSuccess }: Props = $props();
+	let { contract, position, gameAccounts, selectedSource, selectedGameAccount, session, onClose, onSuccess }: Props = $props();
 
 	let depositAmount = $state('');
 	let isProcessing = $state(false);
 	let error = $state('');
 	let treasury = $state<any>(null);
-	let selectedAddress = $state(position?.address || allAddresses[0] || '');
+	let unlockingAccount = $state<GameAccountInfo | null>(null);
 
-	// Get balance from houseWallet store based on selected address
-	const balance = $derived.by(() => {
-		// Check if selected address is the CDP wallet
-		if (selectedAddress === houseWallet.cdpAddress) {
-			return Number(houseWallet.cdpBalance);
+	// Track unlocked addresses and balance
+	let unlockedAddresses = $state<Set<string>>(new Set());
+	let balance = $state(0);
+	let balanceLoading = $state(true);
+
+	// Get selected address
+	const selectedAddress = $derived.by(() => {
+		if (selectedSource === 'game' && selectedGameAccount) {
+			return selectedGameAccount.voiAddress;
 		}
-		// Check if it's the external wallet
-		if (
-			selectedAddress === houseWallet.externalWallet?.address &&
-			houseWallet.isExternalConnected
-		) {
-			return Number(houseWallet.externalBalance);
+		if (selectedSource === 'external' && houseWallet.externalWallet) {
+			return houseWallet.externalWallet.address;
 		}
-		// Default to 0 if address not found
-		return 0;
+		return '';
+	});
+
+	// Check if selected account is unlocked
+	const isSelectedUnlocked = $derived.by(() => {
+		if (selectedSource === 'external') return true;
+		if (!selectedGameAccount) return false;
+		return unlockedAddresses.has(selectedGameAccount.voiAddress);
 	});
 
 	onMount(async () => {
-		await loadData();
-		// Refresh balances when modal opens
-		await refreshBalances();
+		await Promise.all([loadData(), refreshUnlockedAddresses(), fetchBalance()]);
 	});
+
+	async function refreshUnlockedAddresses() {
+		if (browser) {
+			const stored = getStoredGameAccountAddresses();
+			unlockedAddresses = new Set(stored);
+		}
+	}
+
+	async function fetchBalance() {
+		balanceLoading = true;
+		try {
+			if (selectedSource === 'game' && selectedGameAccount) {
+				const result = await fetchVoiBalance(selectedGameAccount.voiAddress);
+				balance = result?.balance || 0;
+			} else if (selectedSource === 'external') {
+				balance = Number(houseWallet.externalBalance);
+			}
+		} catch (err) {
+			console.error('Failed to fetch balance:', err);
+			balance = 0;
+		} finally {
+			balanceLoading = false;
+		}
+	}
 
 	async function loadData() {
 		try {
-			// Load treasury data from API
 			const response = await fetch(`/api/house/treasury/${contract.contract_id}`);
 			if (!response.ok) throw new Error('Failed to load treasury data');
 
 			const data = await response.json();
 			treasury = {
 				...data.treasury,
-				// Convert string values back to BigInt
 				balanceTotal: BigInt(data.treasury.balanceTotal),
 				balanceAvailable: BigInt(data.treasury.balanceAvailable),
 				balanceLocked: BigInt(data.treasury.balanceLocked),
@@ -67,32 +100,27 @@
 		}
 	}
 
-	async function refreshBalances() {
-		try {
-			// Refresh both CDP and external wallet balances
-			await houseWallet.refreshBalances();
-			console.log('[DepositModal] Balances refreshed', {
-				cdpBalance: houseWallet.cdpBalance.toString(),
-				externalBalance: houseWallet.externalBalance.toString(),
-				selectedAddress,
-				derivedBalance: balance
-			});
-		} catch (err) {
-			console.error('[DepositModal] Error refreshing balances:', err);
-		}
+	// Helpers
+	function shortAddress(address: string): string {
+		return `${address.slice(0, 6)}...${address.slice(-4)}`;
+	}
+
+	function displayName(account: GameAccountInfo): string {
+		return account.nickname || shortAddress(account.voiAddress);
 	}
 
 	const voiAmount = $derived(parseFloat(depositAmount) || 0);
 	const microVoiAmount = $derived(BigInt(Math.floor(voiAmount * 1_000_000)));
-	const minDeposit = $derived(0.1); // 0.1 VOI minimum
-	const transactionFee = $derived(4000); // 4000 microVOI
-	const reserveAmount = $derived(1_000_000); // 1 VOI reserve
+	const minDeposit = 0.1;
+	const transactionFee = 4000;
+	const reserveAmount = 1_000_000;
 	const totalRequired = $derived(microVoiAmount + BigInt(transactionFee));
 	const canDeposit = $derived(
 		voiAmount >= minDeposit &&
-			balance >= Number(totalRequired) + reserveAmount &&
-			!isProcessing &&
-			selectedAddress
+		balance >= Number(totalRequired) + reserveAmount &&
+		!isProcessing &&
+		selectedAddress &&
+		isSelectedUnlocked
 	);
 
 	function formatVOI(microVOI: bigint | number): string {
@@ -109,23 +137,44 @@
 		depositAmount = availableForDeposit.toFixed(6);
 	}
 
+	function handleUnlockClick() {
+		if (selectedGameAccount) {
+			unlockingAccount = selectedGameAccount;
+		}
+	}
+
+	async function handleUnlockSuccess() {
+		await refreshUnlockedAddresses();
+		unlockingAccount = null;
+	}
+
+	function handleUnlockClose() {
+		unlockingAccount = null;
+	}
+
 	async function handleDeposit() {
 		if (!canDeposit) return;
+
+		// Double-check unlock status for game accounts
+		if (selectedSource === 'game' && selectedGameAccount) {
+			const currentUnlocked = getStoredGameAccountAddresses();
+			if (!currentUnlocked.includes(selectedGameAccount.voiAddress)) {
+				unlockingAccount = selectedGameAccount;
+				return;
+			}
+		}
 
 		isProcessing = true;
 		error = '';
 
 		try {
-			const session = $page.data.session;
-
-			// Use ybtService to handle deposit via ulujs ABI
 			const result = await ybtService.deposit(
 				{
 					contractId: contract.contract_id,
 					ybtAppId: contract.ybt_app_id!,
 					amount: microVoiAmount,
 					address: selectedAddress,
-					walletSource: 'cdp' // Default to CDP, could be made dynamic
+					walletSource: selectedSource === 'game' ? 'cdp' : 'external'
 				},
 				session
 			);
@@ -134,9 +183,7 @@
 				throw new Error(result.error || 'Deposit failed');
 			}
 
-			console.log('✅ Deposit successful! TxID:', result.txHash);
-			console.log('Shares received:', result.shares.toString());
-
+			console.log('Deposit successful! TxID:', result.txHash);
 			await onSuccess();
 			onClose();
 		} catch (err) {
@@ -154,55 +201,64 @@
 	}
 </script>
 
-<div class="modal-backdrop" onclick={handleBackdropClick}>
-	<div class="modal-container">
+<div class="fixed inset-0 bg-black/60 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in" onclick={handleBackdropClick}>
+	<div class="bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-slide-in-bottom">
 		<!-- Header -->
-		<div class="modal-header">
+		<div class="flex justify-between items-start p-5 border-b border-neutral-200 dark:border-neutral-700">
 			<div>
-				<h2>Deposit to Pool</h2>
-				<p class="pool-name">{contract.display_name}</p>
+				<h2 class="text-lg font-bold text-neutral-900 dark:text-white mb-1">Deposit to Pool</h2>
+				<p class="text-sm text-neutral-500 dark:text-neutral-400">{contract.display_name}</p>
 			</div>
-			<button class="close-button" onclick={onClose}>
+			<button class="text-neutral-400 hover:text-primary-500 p-1 transition-colors" onclick={onClose}>
 				<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M6 18L18 6M6 6l12 12"
-					/>
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
 				</svg>
 			</button>
 		</div>
 
 		<!-- Body -->
-		<div class="modal-body">
-			<!-- Balance Display -->
-			<div class="balance-card">
-				<div class="label">Available Balance</div>
-				<div class="value">{formatVOI(balance)} <span class="unit">VOI</span></div>
+		<div class="p-5 flex flex-col gap-5">
+			<!-- Selected Account Info -->
+			<div class="bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-xl p-4">
+				<div class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Depositing from</div>
+				<div class="flex items-center gap-3">
+					{#if selectedSource === 'game' && selectedGameAccount}
+						<span class="text-2xl">{isSelectedUnlocked ? '🔓' : '🔒'}</span>
+						<div class="flex-1 min-w-0">
+							<span class="block font-semibold text-neutral-900 dark:text-white">{displayName(selectedGameAccount)}</span>
+							<span class="block font-mono text-xs text-neutral-500 dark:text-neutral-400">{shortAddress(selectedGameAccount.voiAddress)}</span>
+						</div>
+					{:else if selectedSource === 'external' && houseWallet.externalWallet}
+						<span class="text-2xl">🔗</span>
+						<div class="flex-1 min-w-0">
+							<span class="block font-semibold text-neutral-900 dark:text-white">External Wallet</span>
+							<span class="block font-mono text-xs text-neutral-500 dark:text-neutral-400">{shortAddress(houseWallet.externalWallet.address)}</span>
+						</div>
+					{:else}
+						<span class="text-neutral-500">No wallet selected</span>
+					{/if}
+					<div class="text-lg font-semibold text-success-600 dark:text-success-400">
+						{#if balanceLoading}
+							<span class="text-neutral-400">...</span>
+						{:else}
+							{formatVOI(balance)} <span class="text-xs text-success-500/70">VOI</span>
+						{/if}
+					</div>
+				</div>
+				{#if selectedSource === 'game' && selectedGameAccount && !isSelectedUnlocked}
+					<button class="mt-3 w-full bg-warning-100 dark:bg-warning-900/30 border border-warning-300 dark:border-warning-700 text-warning-700 dark:text-warning-400 py-2.5 px-4 rounded-lg text-sm font-semibold hover:bg-warning-200 dark:hover:bg-warning-900/40 transition-colors" onclick={handleUnlockClick}>
+						Unlock to deposit
+					</button>
+				{/if}
 			</div>
 
-			<!-- Address Selector (if multiple addresses) -->
-			{#if allAddresses.length > 1}
-				<div class="input-group">
-					<label for="address-select">Deposit From</label>
-					<select id="address-select" bind:value={selectedAddress} disabled={isProcessing}>
-						{#each allAddresses as addr}
-							<option value={addr}>
-								{addr.slice(0, 8)}...{addr.slice(-6)}
-							</option>
-						{/each}
-					</select>
-				</div>
-			{/if}
-
 			<!-- Amount Input -->
-			<div class="input-group">
-				<label for="deposit-amount">
+			<div class="flex flex-col gap-2">
+				<label for="deposit-amount" class="text-sm font-medium text-neutral-700 dark:text-neutral-300 flex justify-between items-center">
 					Deposit Amount (VOI)
-					<span class="min-label">Min: {minDeposit} VOI</span>
+					<span class="text-xs text-neutral-500 dark:text-neutral-400 font-normal">Min: {minDeposit} VOI</span>
 				</label>
-				<div class="input-wrapper">
+				<div class="relative">
 					<input
 						id="deposit-amount"
 						type="number"
@@ -211,36 +267,37 @@
 						max={balance / 1_000_000}
 						bind:value={depositAmount}
 						placeholder="0.000000"
-						disabled={isProcessing}
+						disabled={isProcessing || !isSelectedUnlocked}
+						class="input pr-16"
 					/>
-					<button class="max-button" onclick={setMaxAmount} disabled={isProcessing}>MAX</button>
+					<button
+						class="absolute right-3 top-1/2 -translate-y-1/2 bg-primary-100 dark:bg-primary-900/30 border border-primary-300 dark:border-primary-700 rounded px-2 py-1 text-xs font-semibold text-primary-600 dark:text-primary-400 hover:bg-primary-200 dark:hover:bg-primary-900/50 disabled:opacity-50 transition-colors"
+						onclick={setMaxAmount}
+						disabled={isProcessing || !isSelectedUnlocked}
+					>MAX</button>
 				</div>
 			</div>
 
 			<!-- Preview -->
 			{#if voiAmount > 0}
-				<div class="preview-card">
-					<div class="preview-title">Transaction Preview</div>
-					<div class="preview-row">
+				<div class="bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-xl p-4">
+					<div class="text-xs text-neutral-500 dark:text-neutral-400 font-medium mb-3">Transaction Preview</div>
+					<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
 						<span>Deposit Amount:</span>
-						<span class="preview-value">{formatVOI(microVoiAmount)} VOI</span>
+						<span class="text-neutral-900 dark:text-white font-medium">{formatVOI(microVoiAmount)} VOI</span>
 					</div>
-					<div class="preview-row">
+					<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
 						<span>Transaction Fee:</span>
-						<span class="preview-value">{formatVOI(transactionFee)} VOI</span>
+						<span class="text-neutral-900 dark:text-white font-medium">{formatVOI(transactionFee)} VOI</span>
 					</div>
-					<div class="preview-row total">
-						<span>Total Required:</span>
-						<span class="preview-value gold">{formatVOI(totalRequired)} VOI</span>
-					</div>
-					<div class="preview-row">
-						<span>You'll receive:</span>
-						<span class="preview-value green">YBT Shares</span>
+					<div class="flex justify-between items-center py-2 mt-2 border-t border-neutral-200 dark:border-neutral-700 text-sm font-semibold">
+						<span class="text-neutral-700 dark:text-neutral-300">Total Required:</span>
+						<span class="text-primary-600 dark:text-primary-400">{formatVOI(totalRequired)} VOI</span>
 					</div>
 					{#if treasury}
-						<div class="preview-row">
+						<div class="flex justify-between items-center py-1 text-sm text-neutral-600 dark:text-neutral-400">
 							<span>Share Price:</span>
-							<span class="preview-value">{formatVOI(treasury.sharePrice)} VOI/share</span>
+							<span class="text-neutral-900 dark:text-white font-medium">{formatVOI(treasury.sharePrice)} VOI/share</span>
 						</div>
 					{/if}
 				</div>
@@ -248,24 +305,20 @@
 
 			<!-- Error Display -->
 			{#if error}
-				<div class="error-card">
+				<div class="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-xl p-3 flex items-center gap-2.5 text-error-600 dark:text-error-400 text-sm">
 					<svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-						<path
-							fill-rule="evenodd"
-							d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-							clip-rule="evenodd"
-						/>
+						<path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
 					</svg>
 					<span>{error}</span>
 				</div>
 			{/if}
 
 			<!-- Action Buttons -->
-			<div class="action-buttons">
-				<button class="button secondary" onclick={onClose} disabled={isProcessing}>Cancel</button>
-				<button class="button primary" onclick={handleDeposit} disabled={!canDeposit}>
+			<div class="grid grid-cols-2 gap-3">
+				<button class="btn-ghost border border-neutral-200 dark:border-neutral-700" onclick={onClose} disabled={isProcessing}>Cancel</button>
+				<button class="btn-primary" onclick={handleDeposit} disabled={!canDeposit}>
 					{#if isProcessing}
-						<div class="button-spinner"></div>
+						<div class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
 						<span>Depositing...</span>
 					{:else}
 						<span>Deposit</span>
@@ -273,406 +326,45 @@
 				</button>
 			</div>
 
-			<!-- Info Cards -->
-			<div class="info-section">
-				<div class="info-card benefits">
-					<div class="info-title">Benefits</div>
-					<ul>
-						<li>YBT shares represent your portion of the house funds</li>
-						<li>Earn yield based on your share percentage</li>
-						<li>Withdraw your position at any time</li>
-					</ul>
-				</div>
-
-				<div class="info-card risk">
-					<div class="info-title">⚠ Risk Disclaimer</div>
-					<p>
-						As a house contributor, you share in both profits and losses. You earn when the house
-						wins, but can lose funds when players win. Only invest what you can afford to lose.
-					</p>
-				</div>
+			<!-- Risk Warning -->
+			<div class="bg-warning-50 dark:bg-warning-900/10 border border-warning-200 dark:border-warning-800 rounded-xl p-4 text-sm">
+				<div class="font-semibold text-warning-700 dark:text-warning-400 mb-1">Risk Disclaimer</div>
+				<p class="text-warning-600/80 dark:text-warning-500/80 leading-relaxed">
+					As a house contributor, you share in both profits and losses. You earn when the house
+					wins, but can lose funds when players win. Only invest what you can afford to lose.
+				</p>
 			</div>
 		</div>
 	</div>
 </div>
 
+<!-- Unlock Modal -->
+{#if unlockingAccount}
+	<UnlockGameAccount
+		voiAddress={unlockingAccount.voiAddress}
+		nickname={unlockingAccount.nickname}
+		recoveryMethod={unlockingAccount.cdpRecoveryMethod}
+		recoveryHint={unlockingAccount.cdpRecoveryHint}
+		modal={true}
+		open={true}
+		onSuccess={handleUnlockSuccess}
+		onClose={handleUnlockClose}
+	/>
+{/if}
+
 <style>
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.8);
-		backdrop-filter: blur(8px);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 1rem;
-		z-index: 100;
-		animation: fade-in 0.2s ease-out;
-	}
-
-	@keyframes fade-in {
-		from {
-			opacity: 0;
-		}
-		to {
-			opacity: 1;
-		}
-	}
-
-	.modal-container {
-		background: #121728;
-		border: 1px solid rgba(212, 175, 55, 0.2);
-		border-radius: 24px;
-		max-width: 500px;
-		width: 100%;
-		max-height: 90vh;
-		overflow-y: auto;
-		box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5);
-		animation: slide-up 0.3s ease-out;
-	}
-
-	@keyframes slide-up {
-		from {
-			opacity: 0;
-			transform: translateY(20px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-
-	.modal-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
-		padding: 2rem;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-	}
-
-	.modal-header h2 {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.5rem;
-		font-weight: 700;
-		margin: 0 0 0.25rem 0;
-		color: #ffffff;
-	}
-
-	.pool-name {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.5);
-		margin: 0;
-	}
-
-	.close-button {
-		background: none;
-		border: none;
-		color: rgba(255, 255, 255, 0.5);
-		cursor: pointer;
-		padding: 0.5rem;
-		transition: color 0.3s ease;
-	}
-
-	.close-button:hover {
-		color: #d4af37;
-	}
-
-	.modal-body {
-		padding: 2rem;
-		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-	}
-
-	/* Balance Card */
-	.balance-card {
-		background: rgba(212, 175, 55, 0.1);
-		border: 1px solid rgba(212, 175, 55, 0.3);
-		border-radius: 12px;
-		padding: 1.25rem;
-	}
-
-	.balance-card .label {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.6);
-		margin-bottom: 0.5rem;
-	}
-
-	.balance-card .value {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.75rem;
-		font-weight: 700;
-		color: #d4af37;
-	}
-
-	.balance-card .unit {
-		font-size: 1.125rem;
-		color: rgba(212, 175, 55, 0.6);
-		margin-left: 0.25rem;
-	}
-
-	/* Input Groups */
-	.input-group {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-
-	.input-group label {
-		font-size: 0.875rem;
-		font-weight: 500;
-		color: rgba(255, 255, 255, 0.9);
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-
-	.min-label {
-		font-size: 0.75rem;
-		color: rgba(255, 255, 255, 0.5);
-		font-weight: 400;
-	}
-
-	.input-wrapper {
-		position: relative;
-	}
-
-	input,
-	select {
-		width: 100%;
-		background: rgba(255, 255, 255, 0.05);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 12px;
-		padding: 1rem;
-		color: #ffffff;
-		font-size: 1rem;
-		transition: all 0.3s ease;
-	}
-
-	input:focus,
-	select:focus {
-		outline: none;
-		border-color: rgba(212, 175, 55, 0.5);
-		background: rgba(255, 255, 255, 0.08);
-	}
-
-	input:disabled,
-	select:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.max-button {
-		position: absolute;
-		right: 0.75rem;
-		top: 50%;
-		transform: translateY(-50%);
-		background: rgba(212, 175, 55, 0.15);
-		border: 1px solid rgba(212, 175, 55, 0.3);
-		border-radius: 6px;
-		padding: 0.375rem 0.875rem;
-		color: #d4af37;
-		font-size: 0.75rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-	}
-
-	.max-button:hover:not(:disabled) {
-		background: rgba(212, 175, 55, 0.25);
-		border-color: rgba(212, 175, 55, 0.5);
-	}
-
-	.max-button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	/* Preview Card */
-	.preview-card {
-		background: rgba(0, 0, 0, 0.3);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		border-radius: 12px;
-		padding: 1.25rem;
-	}
-
-	.preview-title {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.6);
-		margin-bottom: 1rem;
-		font-weight: 500;
-	}
-
-	.preview-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 0.5rem 0;
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.7);
-	}
-
-	.preview-row.total {
-		border-top: 1px solid rgba(255, 255, 255, 0.1);
-		margin-top: 0.5rem;
-		padding-top: 1rem;
-		font-weight: 600;
-	}
-
-	.preview-value {
-		color: #ffffff;
-		font-weight: 500;
-	}
-
-	.preview-value.gold {
-		color: #d4af37;
-	}
-
-	.preview-value.green {
-		color: #10b981;
-	}
-
-	/* Error Card */
-	.error-card {
-		background: rgba(239, 68, 68, 0.1);
-		border: 1px solid rgba(239, 68, 68, 0.3);
-		border-radius: 12px;
-		padding: 1rem;
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		color: #ef4444;
-		font-size: 0.875rem;
-	}
-
-	/* Action Buttons */
-	.action-buttons {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 1rem;
-		margin-top: 0.5rem;
-	}
-
-	.button {
-		padding: 1rem 1.5rem;
-		border-radius: 12px;
-		font-size: 1rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-		border: none;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
-	}
-
-	.button.secondary {
-		background: rgba(255, 255, 255, 0.05);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		color: rgba(255, 255, 255, 0.9);
-	}
-
-	.button.secondary:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.08);
-		border-color: rgba(255, 255, 255, 0.2);
-	}
-
-	.button.primary {
-		background: linear-gradient(135deg, #d4af37 0%, #f4d03f 100%);
-		color: #0a0d1a;
-	}
-
-	.button.primary:hover:not(:disabled) {
-		transform: translateY(-2px);
-		box-shadow: 0 8px 24px rgba(212, 175, 55, 0.4);
-	}
-
-	.button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-		transform: none !important;
-	}
-
-	.button-spinner {
-		width: 16px;
-		height: 16px;
-		border: 2px solid rgba(10, 13, 26, 0.3);
-		border-top-color: #0a0d1a;
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
-
+	/* Spinner animation */
 	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
+		to { transform: rotate(360deg); }
 	}
 
-	/* Info Section */
-	.info-section {
-		display: flex;
-		flex-direction: column;
-		gap: 1rem;
+	.animate-spin {
+		animation: spin 1s linear infinite;
 	}
 
-	.info-card {
-		background: rgba(255, 255, 255, 0.02);
-		border-radius: 12px;
-		padding: 1rem;
-		font-size: 0.8125rem;
-		line-height: 1.5;
-	}
-
-	.info-card.benefits {
-		border: 1px solid rgba(16, 185, 129, 0.2);
-	}
-
-	.info-card.risk {
-		border: 1px solid rgba(251, 191, 36, 0.3);
-		background: rgba(251, 191, 36, 0.05);
-	}
-
-	.info-title {
-		font-weight: 600;
-		margin-bottom: 0.5rem;
-		color: rgba(255, 255, 255, 0.9);
-	}
-
-	.info-card.risk .info-title {
-		color: #fbbf24;
-	}
-
-	.info-card ul {
-		margin: 0;
-		padding-left: 1.25rem;
-		color: rgba(255, 255, 255, 0.6);
-	}
-
-	.info-card p {
-		margin: 0;
-		color: rgba(255, 255, 255, 0.6);
-	}
-
-	.info-card.risk p {
-		color: rgba(251, 191, 36, 0.9);
-	}
-
-	/* Responsive */
+	/* Mobile responsive */
 	@media (max-width: 640px) {
-		.modal-container {
-			margin: 0;
-			border-radius: 20px 20px 0 0;
-			align-self: flex-end;
-			max-height: 95vh;
-		}
-
-		.modal-header,
-		.modal-body {
-			padding: 1.5rem;
-		}
-
-		.action-buttons {
+		.grid-cols-2 {
 			grid-template-columns: 1fr;
 		}
 	}

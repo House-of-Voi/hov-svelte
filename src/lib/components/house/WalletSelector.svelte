@@ -5,13 +5,19 @@
 	import { browser } from '$app/environment';
 	import { formatCurrency, truncateAddress } from '$lib/utils/format';
 	import { PUBLIC_WALLETCONNECT_PROJECT_ID, PUBLIC_VOI_NODE_URL } from '$env/static/public';
+	import { getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
+	import { fetchVoiBalance } from '$lib/voi/balances';
+	import UnlockGameAccount from '$lib/components/gameAccounts/UnlockGameAccount.svelte';
+	import type { GameAccountInfo } from '$lib/auth/session';
 
 	interface Props {
-		voiAddress?: string | null; // CDP-derived Voi address from session
-		onSourceChange?: (source: 'cdp' | 'external', address: string) => void;
+		gameAccounts: GameAccountInfo[];
+		activeGameAccountId?: string;
+		onGameAccountSelect?: (account: GameAccountInfo) => void;
+		onSourceChange?: (source: 'game' | 'external', address: string) => void;
 	}
 
-	let { voiAddress = null, onSourceChange }: Props = $props();
+	let { gameAccounts, activeGameAccountId, onGameAccountSelect, onSourceChange }: Props = $props();
 
 	// Algorand client configuration for avm-wallet-svelte
 	const algodClient = new algosdk.Algodv2(
@@ -32,546 +38,376 @@
 		projectIcons: ['https://houseofvoi.com/icon.png']
 	};
 
-	// Initialize CDP wallet when component mounts
-	$effect(() => {
-		if (voiAddress) {
-			houseWallet.initializeCdpWallet(voiAddress);
-		}
-	});
+	// Persistence key
+	const STORAGE_KEY = 'hov_house_wallet_selection';
 
-	// Check linked status when external wallet connects
-	$effect(() => {
-		if (houseWallet.isExternalConnected && houseWallet.externalWallet) {
-			houseWallet.checkExternalWalletLinked('').catch(console.error);
-		}
-	});
-
-	// Handle source selection
-	function handleSourceSelect(source: 'cdp' | 'external') {
-		houseWallet.setActiveSource(source);
-
-		const address =
-			source === 'cdp' ? houseWallet.cdpAddress : houseWallet.externalWallet?.address;
-		if (address && onSourceChange) {
-			onSourceChange(source, address);
-		}
-	}
-
-	// Handle wallet linking
-	let isLinking = $state(false);
-	let linkSuccess = $state(false);
-
-	async function handleLinkWallet() {
-		isLinking = true;
-		linkSuccess = false;
+	// Load persisted selection
+	function loadPersistedSelection(): { source: 'game' | 'external'; gameAccountId: string | null } | null {
+		if (!browser) return null;
 		try {
-			const success = await houseWallet.linkExternalWallet();
-			if (success) {
-				linkSuccess = true;
-				// Refresh the linked status
-				await houseWallet.checkExternalWalletLinked('');
+			const stored = localStorage.getItem(STORAGE_KEY);
+			if (stored) return JSON.parse(stored);
+		} catch (e) {
+			console.warn('Failed to load persisted wallet selection:', e);
+		}
+		return null;
+	}
 
-				// Clear success message after 3 seconds
-				setTimeout(() => {
-					linkSuccess = false;
-				}, 3000);
-			}
-		} catch (error) {
-			console.error('Error linking wallet:', error);
-		} finally {
-			isLinking = false;
+	// Save selection to localStorage
+	function persistSelection(source: 'game' | 'external', gameAccountId: string | null) {
+		if (!browser) return;
+		try {
+			localStorage.setItem(STORAGE_KEY, JSON.stringify({ source, gameAccountId }));
+		} catch (e) {
+			console.warn('Failed to persist wallet selection:', e);
 		}
 	}
+
+	// State - initialize from persisted or defaults
+	const persisted = loadPersistedSelection();
+	let selectedSource = $state<'game' | 'external'>(persisted?.source || 'game');
+	let selectedGameAccountId = $state<string | null>(persisted?.gameAccountId || activeGameAccountId || null);
+	let unlockedAddresses = $state<Set<string>>(new Set());
+	let balances = $state<Map<string, number>>(new Map());
+	let balancesLoading = $state(false);
+	let unlockingAccount = $state<GameAccountInfo | null>(null);
+	let dropdownOpen = $state(false);
+
+	// Refresh unlocked status on mount and when accounts change
+	$effect(() => {
+		if (browser) {
+			const stored = getStoredGameAccountAddresses();
+			unlockedAddresses = new Set(stored);
+		}
+	});
+
+	// Fetch balances on mount
+	$effect(() => {
+		if (browser && gameAccounts.length > 0) {
+			fetchBalances();
+		}
+	});
+
+	// Initialize selected game account - validate persisted selection exists
+	$effect(() => {
+		if (browser && gameAccounts.length > 0) {
+			// If we have a persisted game account ID, verify it still exists
+			if (selectedGameAccountId) {
+				const exists = gameAccounts.find(a => a.id === selectedGameAccountId);
+				if (!exists) {
+					// Persisted account no longer exists, fall back to active or first
+					const defaultAccount = gameAccounts.find(a => a.id === activeGameAccountId) || gameAccounts[0];
+					selectedGameAccountId = defaultAccount.id;
+					selectedSource = 'game';
+					persistSelection('game', defaultAccount.id);
+				}
+			} else if (selectedSource === 'game') {
+				// No game account selected but source is game, pick default
+				const defaultAccount = gameAccounts.find(a => a.id === activeGameAccountId) || gameAccounts[0];
+				selectedGameAccountId = defaultAccount.id;
+				persistSelection('game', defaultAccount.id);
+			}
+		}
+	});
+
+
+	// Get selected game account
+	const selectedGameAccount = $derived(
+		gameAccounts.find(a => a.id === selectedGameAccountId) || null
+	);
+
+	// Sort game accounts with active account first
+	const sortedGameAccounts = $derived(
+		[...gameAccounts].sort((a, b) => {
+			if (a.id === activeGameAccountId) return -1;
+			if (b.id === activeGameAccountId) return 1;
+			return 0;
+		})
+	);
+
+	// Helpers
+	function shortAddress(address: string): string {
+		return `${address.slice(0, 6)}...${address.slice(-4)}`;
+	}
+
+	function isUnlocked(account: GameAccountInfo): boolean {
+		return unlockedAddresses.has(account.voiAddress);
+	}
+
+	function displayName(account: GameAccountInfo): string {
+		return account.nickname || shortAddress(account.voiAddress);
+	}
+
+	function getAuthMethodIcon(account: GameAccountInfo): string {
+		switch (account.cdpRecoveryMethod) {
+			case 'email': return '📧';
+			case 'sms': return '📱';
+			case 'google': return '🔵';
+			case 'mnemonic': return '🔑';
+			default: return '🔐';
+		}
+	}
+
+	async function fetchBalances() {
+		balancesLoading = true;
+		const newBalances = new Map<string, number>();
+
+		const results = await Promise.all(
+			gameAccounts.map(async (account) => {
+				try {
+					const balance = await fetchVoiBalance(account.voiAddress);
+					if (balance) {
+						return { address: account.voiAddress, balance: balance.balance };
+					}
+				} catch (err) {
+					console.error('Failed to fetch balance for', account.voiAddress, err);
+				}
+				return { address: account.voiAddress, balance: 0 };
+			})
+		);
+
+		for (const result of results) {
+			newBalances.set(result.address, result.balance);
+		}
+
+		balances = newBalances;
+		balancesLoading = false;
+	}
+
+	function handleGameAccountClick(account: GameAccountInfo) {
+		if (!isUnlocked(account)) {
+			unlockingAccount = account;
+			return;
+		}
+
+		selectedGameAccountId = account.id;
+		selectedSource = 'game';
+		dropdownOpen = false;
+		persistSelection('game', account.id);
+		onGameAccountSelect?.(account);
+		onSourceChange?.('game', account.voiAddress);
+	}
+
+	function handleExternalWalletSelect() {
+		if (!houseWallet.isExternalConnected) return;
+
+		selectedSource = 'external';
+		selectedGameAccountId = null;
+		dropdownOpen = false;
+		persistSelection('external', null);
+		if (houseWallet.externalWallet?.address) {
+			onSourceChange?.('external', houseWallet.externalWallet.address);
+		}
+	}
+
+	async function handleUnlockSuccess() {
+		if (browser) {
+			const stored = getStoredGameAccountAddresses();
+			unlockedAddresses = new Set(stored);
+		}
+
+		if (unlockingAccount) {
+			selectedGameAccountId = unlockingAccount.id;
+			selectedSource = 'game';
+			persistSelection('game', unlockingAccount.id);
+			onGameAccountSelect?.(unlockingAccount);
+			onSourceChange?.('game', unlockingAccount.voiAddress);
+			unlockingAccount = null;
+		}
+	}
+
+	function handleUnlockClose() {
+		unlockingAccount = null;
+	}
+
+	function toggleDropdown() {
+		dropdownOpen = !dropdownOpen;
+	}
+
+	function closeDropdown() {
+		dropdownOpen = false;
+	}
+
+
+	// Get display info for current selection
+	const currentSelectionDisplay = $derived.by(() => {
+		if (selectedSource === 'external' && houseWallet.externalWallet) {
+			return {
+				icon: '🔗',
+				name: 'External Wallet',
+				address: shortAddress(houseWallet.externalWallet.address),
+				balance: Number(houseWallet.externalBalance),
+				isUnlocked: true
+			};
+		}
+		if (selectedGameAccount) {
+			return {
+				icon: isUnlocked(selectedGameAccount) ? '🔓' : '🔒',
+				name: displayName(selectedGameAccount),
+				address: selectedGameAccount.nickname ? shortAddress(selectedGameAccount.voiAddress) : null,
+				balance: balances.get(selectedGameAccount.voiAddress) || 0,
+				isUnlocked: isUnlocked(selectedGameAccount)
+			};
+		}
+		return null;
+	});
 </script>
 
-<div class="wallet-selector">
-	<div class="selector-header">
-		<h3>Select Wallet</h3>
-		<p>Choose which wallet to use for deposits and withdrawals</p>
-	</div>
+<div class="card p-4 md:p-5">
+	<h3 class="text-sm font-semibold text-neutral-600 dark:text-neutral-400 mb-3">Deposit Wallet</h3>
 
-	<div class="wallet-options">
-		<!-- CDP Wallet Option -->
-		<button
-			onclick={() => handleSourceSelect('cdp')}
-			disabled={!houseWallet.isCdpAvailable}
-			class="wallet-card {houseWallet.activeSource === 'cdp' ? 'active' : ''} {!houseWallet.isCdpAvailable
-				? 'disabled'
-				: ''}"
-		>
-			<div class="wallet-card-header">
-				<div class="wallet-icon">
-					<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"
-						/>
-					</svg>
-					<span class="wallet-name">CDP Wallet</span>
-				</div>
-				{#if houseWallet.activeSource === 'cdp'}
-					<div class="selected-badge">
-						<svg width="12" height="12" fill="currentColor" viewBox="0 0 20 20">
-							<path
-								fill-rule="evenodd"
-								d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-					</div>
-				{/if}
-			</div>
-
-			{#if houseWallet.isCdpAvailable && houseWallet.cdpAddress}
-				<div class="wallet-details">
-					<div class="wallet-address">{truncateAddress(houseWallet.cdpAddress)}</div>
-					<div class="wallet-balance">
-						{formatCurrency(Number(houseWallet.cdpBalance))} <span>VOI</span>
-					</div>
-				</div>
-			{:else}
-				<div class="wallet-unavailable">Not available</div>
-			{/if}
-		</button>
-
-		<!-- External Wallet Option -->
-		<button
-			onclick={() => handleSourceSelect('external')}
-			disabled={!houseWallet.isExternalConnected}
-			class="wallet-card {houseWallet.activeSource === 'external' ? 'active' : ''} {!houseWallet.isExternalConnected
-				? 'disabled'
-				: ''}"
-		>
-			<div class="wallet-card-header">
-				<div class="wallet-icon">
-					<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-						/>
-					</svg>
-					<span class="wallet-name">External Wallet</span>
-				</div>
-				{#if houseWallet.activeSource === 'external'}
-					<div class="selected-badge">
-						<svg width="12" height="12" fill="currentColor" viewBox="0 0 20 20">
-							<path
-								fill-rule="evenodd"
-								d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-					</div>
-				{/if}
-			</div>
-
-			{#if houseWallet.isExternalConnected && houseWallet.externalWallet}
-				<div class="wallet-details">
-					<div class="avm-wallet-container">
-						<Web3Wallet
-							{algodClient}
-							{availableWallets}
-							allowWatchAccounts={false}
-							{wcProject}
-						/>
-					</div>
-					<div class="wallet-provider">
-						{houseWallet.externalWallet.provider}
-						{#if !houseWallet.externalWallet.isLinked}
-							<span class="unlinked-badge">⚠ Not linked</span>
+	<!-- Compact Dropdown Selector -->
+	<div class="relative">
+		<button class="w-full bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-xl py-3 px-4 flex items-center justify-between cursor-pointer transition-all hover:border-primary-300 dark:hover:border-primary-700 text-left" onclick={toggleDropdown} type="button">
+			{#if currentSelectionDisplay}
+				<div class="flex items-center gap-3 flex-1 min-w-0">
+					<span class="text-xl flex-shrink-0">{currentSelectionDisplay.icon}</span>
+					<div class="flex flex-col gap-0.5 min-w-0 flex-1">
+						<span class="font-semibold text-neutral-900 dark:text-white text-sm truncate">{currentSelectionDisplay.name}</span>
+						{#if currentSelectionDisplay.address}
+							<span class="font-mono text-xs text-neutral-500 dark:text-neutral-400">{currentSelectionDisplay.address}</span>
 						{/if}
 					</div>
-					<div class="wallet-balance">
-						{formatCurrency(Number(houseWallet.externalBalance))} <span>VOI</span>
+					<div class="text-base font-semibold text-success-600 dark:text-success-400 flex-shrink-0">
+						{#if balancesLoading}
+							<span class="text-neutral-400">...</span>
+						{:else}
+							{formatCurrency(currentSelectionDisplay.balance)} <span class="text-xs text-success-500/70">VOI</span>
+						{/if}
 					</div>
 				</div>
 			{:else}
-				<div class="wallet-unavailable">Not connected</div>
+				<span class="text-neutral-500">Select a wallet</span>
 			{/if}
+			<svg class="w-5 h-5 text-neutral-400 flex-shrink-0 transition-transform {dropdownOpen ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor">
+				<path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+			</svg>
 		</button>
+
+		{#if dropdownOpen}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="fixed inset-0 z-40" onclick={closeDropdown}></div>
+			<div class="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl shadow-lg z-50 animate-fade-in overflow-hidden">
+				<!-- Game Accounts Section (scrollable if many) -->
+				{#if sortedGameAccounts.length > 0}
+					<div class="p-2 border-b border-neutral-200 dark:border-neutral-700">
+						<div class="text-xs font-semibold text-neutral-400 uppercase tracking-wide px-3 py-1.5">Game Accounts ({sortedGameAccounts.length})</div>
+						<div class="max-h-48 overflow-y-auto">
+							{#each sortedGameAccounts as account (account.id)}
+								{@const unlocked = isUnlocked(account)}
+								{@const isSelected = selectedSource === 'game' && selectedGameAccountId === account.id}
+								{@const accountBalance = balances.get(account.voiAddress)}
+
+								<button
+									type="button"
+									onclick={() => handleGameAccountClick(account)}
+									class="w-full flex items-center gap-2.5 py-2.5 px-3 rounded-lg text-left transition-colors {isSelected ? 'bg-primary-50 dark:bg-primary-900/30' : 'hover:bg-neutral-100 dark:hover:bg-neutral-700'}"
+								>
+									<span class="text-base flex-shrink-0">{unlocked ? '🔓' : '🔒'}</span>
+									<div class="flex flex-col gap-0.5 flex-1 min-w-0">
+										<span class="font-medium text-neutral-900 dark:text-white text-sm truncate">{displayName(account)}</span>
+										<span class="text-xs text-neutral-500 dark:text-neutral-400">
+											{getAuthMethodIcon(account)}
+											{#if balancesLoading}
+												...
+											{:else}
+												{formatCurrency(accountBalance || 0)} VOI
+											{/if}
+										</span>
+									</div>
+									{#if isSelected}
+										<span class="text-primary-500 font-bold flex-shrink-0">✓</span>
+									{:else if !unlocked}
+										<span class="text-xs font-semibold text-warning-600 dark:text-warning-400 bg-warning-100 dark:bg-warning-900/30 px-2 py-0.5 rounded flex-shrink-0">Unlock</span>
+									{/if}
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<!-- External Wallet Section -->
+				<div class="p-2">
+					<div class="text-xs font-semibold text-neutral-400 uppercase tracking-wide px-3 py-1.5">External Wallet</div>
+					<div class="flex items-center gap-3 px-2 py-1">
+						<div class="flex-1 avm-wallet-container">
+							<Web3Wallet
+								{algodClient}
+								{availableWallets}
+								allowWatchAccounts={false}
+								{wcProject}
+							/>
+						</div>
+						{#if houseWallet.isExternalConnected && houseWallet.externalWallet}
+							<button
+								type="button"
+								onclick={handleExternalWalletSelect}
+								class="px-3 py-2 rounded-lg text-sm font-medium transition-colors {selectedSource === 'external' ? 'bg-primary-100 dark:bg-primary-900/30 border border-primary-300 dark:border-primary-700 text-primary-600 dark:text-primary-400' : 'bg-neutral-100 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 hover:border-primary-300 dark:hover:border-primary-700'}"
+							>
+								{selectedSource === 'external' ? '✓ Selected' : 'Use'}
+							</button>
+						{/if}
+					</div>
+				</div>
+			</div>
+		{/if}
 	</div>
 
-	<!-- Link Wallet Prompt -->
-	{#if houseWallet.isExternalConnected && houseWallet.externalWallet && !houseWallet.externalWallet.isLinked && !linkSuccess}
-		<div class="link-prompt">
-			<div class="prompt-icon">
-				<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-					/>
-				</svg>
-			</div>
-			<div class="prompt-content">
-				<h4>Link Wallet to Profile</h4>
-				<p>
-					To use this wallet for deposits and withdrawals, you need to link it to your profile by
-					signing a proof-of-ownership message.
-				</p>
-				<button onclick={handleLinkWallet} disabled={isLinking} class="link-button">
-					{#if isLinking}
-						<div class="button-spinner"></div>
-						<span>Linking...</span>
-					{:else}
-						<span>Sign & Link Wallet</span>
-					{/if}
-				</button>
-			</div>
-		</div>
-	{/if}
-
-	<!-- Link Success Message -->
-	{#if linkSuccess}
-		<div class="success-message">
-			<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-				<path
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					stroke-width="2"
-					d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-				/>
-			</svg>
-			<div>
-				<h4>Wallet Linked Successfully!</h4>
-				<p>Your external wallet is now linked to your profile and can be used for house pool operations.</p>
-			</div>
-		</div>
-	{/if}
-
-	<!-- Error Display -->
 	{#if houseWallet.error}
-		<div class="error-message">
-			<div>{houseWallet.error}</div>
-			<button onclick={() => houseWallet.clearError()} class="dismiss-button">Dismiss</button>
+		<div class="mt-3 bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg py-2.5 px-3.5 text-sm text-error-600 dark:text-error-400 flex items-center justify-between">
+			{houseWallet.error}
+			<button onclick={() => houseWallet.clearError()} class="text-error-500 text-lg leading-none hover:text-error-700">×</button>
 		</div>
 	{/if}
 </div>
 
+<!-- Unlock Modal -->
+{#if unlockingAccount}
+	<UnlockGameAccount
+		voiAddress={unlockingAccount.voiAddress}
+		nickname={unlockingAccount.nickname}
+		recoveryMethod={unlockingAccount.cdpRecoveryMethod}
+		recoveryHint={unlockingAccount.cdpRecoveryHint}
+		modal={true}
+		open={true}
+		onSuccess={handleUnlockSuccess}
+		onClose={handleUnlockClose}
+	/>
+{/if}
+
 <style>
-	.wallet-selector {
-		background: rgba(255, 255, 255, 0.03);
-		backdrop-filter: blur(20px);
-		border: 1px solid rgba(255, 255, 255, 0.08);
-		border-radius: 20px;
-		padding: 2rem;
-		margin-bottom: 2rem;
+	/* AVM Wallet Container - Styling for avm-wallet-svelte component */
+	.avm-wallet-container :global(.wallet-container > div:first-child) {
+		@apply bg-neutral-100 dark:bg-neutral-700 border border-neutral-200 dark:border-neutral-600 rounded-lg py-2 px-3;
 	}
 
-	.selector-header {
-		margin-bottom: 1.5rem;
+	.avm-wallet-container :global(.wallet-container > div:first-child:hover) {
+		@apply bg-neutral-200 dark:bg-neutral-600 border-primary-300 dark:border-primary-700;
 	}
 
-	.selector-header h3 {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.25rem;
-		font-weight: 700;
-		margin: 0 0 0.5rem 0;
-		color: #ffffff;
-		letter-spacing: -0.01em;
+	/* Dropdown wallet list box */
+	.avm-wallet-container :global(.walletListBox) {
+		@apply bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-xl;
 	}
 
-	.selector-header p {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.6);
-		margin: 0;
+	/* Wallet item rows */
+	.avm-wallet-container :global(.wallet-item) {
+		@apply text-neutral-900 dark:text-white;
 	}
 
-	/* Wallet Options */
-	.wallet-options {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-		gap: 1rem;
-		margin-bottom: 1.5rem;
+	.avm-wallet-container :global(.wallet-item span) {
+		@apply text-neutral-700 dark:text-neutral-200;
 	}
 
-	.wallet-card {
-		background: rgba(0, 0, 0, 0.2);
-		border: 2px solid rgba(255, 255, 255, 0.08);
-		border-radius: 16px;
-		padding: 1.25rem;
-		text-align: left;
-		cursor: pointer;
-		transition: all 0.3s ease;
+	.avm-wallet-container :global(.wallet-item button) {
+		@apply text-xs;
 	}
 
-	.wallet-card:hover:not(.disabled) {
-		background: rgba(0, 0, 0, 0.3);
-		border-color: rgba(212, 175, 55, 0.3);
-		transform: translateY(-2px);
+	.avm-wallet-container :global(.wallet-item button.truncate) {
+		@apply text-neutral-600 dark:text-neutral-300;
 	}
 
-	.wallet-card.active {
-		background: linear-gradient(135deg, rgba(212, 175, 55, 0.15) 0%, rgba(212, 175, 55, 0.05) 100%);
-		border-color: rgba(212, 175, 55, 0.5);
-	}
-
-	.wallet-card.disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.wallet-card-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 1rem;
-	}
-
-	.wallet-icon {
-		display: flex;
-		align-items: center;
-		gap: 0.625rem;
-		color: rgba(255, 255, 255, 0.9);
-	}
-
-	.wallet-icon svg {
-		color: #d4af37;
-	}
-
-	.wallet-name {
-		font-weight: 600;
-		font-size: 0.9375rem;
-	}
-
-	.selected-badge {
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		background: #d4af37;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: #0a0d1a;
-	}
-
-	.wallet-details {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-
-	.wallet-address {
-		font-family: 'Monaco', 'Courier New', monospace;
-		font-size: 0.8125rem;
-		color: rgba(255, 255, 255, 0.7);
-	}
-
-	.wallet-balance {
-		font-family: 'Syne', sans-serif;
-		font-size: 1.125rem;
-		font-weight: 600;
-		color: #10b981;
-	}
-
-	.wallet-balance span {
-		font-size: 0.875rem;
-		color: rgba(16, 185, 129, 0.7);
-		margin-left: 0.25rem;
-	}
-
-	.wallet-provider {
-		font-size: 0.8125rem;
-		color: rgba(255, 255, 255, 0.6);
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-
-	.unlinked-badge {
-		font-size: 0.75rem;
-		color: #fbbf24;
-		background: rgba(251, 191, 36, 0.15);
-		padding: 0.125rem 0.5rem;
-		border-radius: 6px;
-	}
-
-	.wallet-unavailable {
-		font-size: 0.875rem;
-		color: rgba(255, 255, 255, 0.4);
-	}
-
-	/* Link Prompt */
-	.link-prompt {
-		background: rgba(251, 191, 36, 0.1);
-		border: 1px solid rgba(251, 191, 36, 0.3);
-		border-radius: 16px;
-		padding: 1.25rem;
-		display: flex;
-		gap: 1rem;
-		margin-bottom: 1rem;
-	}
-
-	.prompt-icon {
-		color: #fbbf24;
-		flex-shrink: 0;
-	}
-
-	.prompt-content h4 {
-		font-family: 'Syne', sans-serif;
-		font-size: 1rem;
-		font-weight: 600;
-		margin: 0 0 0.5rem 0;
-		color: #fbbf24;
-	}
-
-	.prompt-content p {
-		font-size: 0.875rem;
-		color: rgba(251, 191, 36, 0.9);
-		margin: 0 0 1rem 0;
-		line-height: 1.5;
-	}
-
-	.link-button {
-		background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-		color: #0a0d1a;
-		border: none;
-		border-radius: 10px;
-		padding: 0.75rem 1.5rem;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.3s ease;
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-
-	.link-button:hover:not(:disabled) {
-		transform: translateY(-2px);
-		box-shadow: 0 6px 20px rgba(251, 191, 36, 0.4);
-	}
-
-	.link-button:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-
-	.button-spinner {
-		width: 14px;
-		height: 14px;
-		border: 2px solid rgba(10, 13, 26, 0.3);
-		border-top-color: #0a0d1a;
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
-
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-
-	/* Success Message */
-	.success-message {
-		background: rgba(16, 185, 129, 0.1);
-		border: 1px solid rgba(16, 185, 129, 0.3);
-		border-radius: 16px;
-		padding: 1.25rem;
-		display: flex;
-		gap: 1rem;
-		color: #10b981;
-		margin-bottom: 1rem;
-	}
-
-	.success-message h4 {
-		font-family: 'Syne', sans-serif;
-		font-size: 1rem;
-		font-weight: 600;
-		margin: 0 0 0.5rem 0;
-	}
-
-	.success-message p {
-		font-size: 0.875rem;
-		color: rgba(16, 185, 129, 0.9);
-		margin: 0;
-	}
-
-	/* Error Message */
-	.error-message {
-		background: rgba(239, 68, 68, 0.1);
-		border: 1px solid rgba(239, 68, 68, 0.3);
-		border-radius: 16px;
-		padding: 1.25rem;
-		color: #ef4444;
-		font-size: 0.875rem;
-	}
-
-	.dismiss-button {
-		background: none;
-		border: none;
-		color: #ef4444;
-		text-decoration: underline;
-		cursor: pointer;
-		margin-top: 0.5rem;
-		font-size: 0.875rem;
-	}
-
-	.dismiss-button:hover {
-		color: #dc2626;
-	}
-
-	/* AVM Wallet Styling */
-	:global(.avm-wallet-container) {
-		margin: 0.5rem 0;
-	}
-
-	:global(.avm-wallet-container button),
-	:global(.avm-wallet-container [role='button']) {
-		background: rgba(255, 255, 255, 0.05) !important;
-		color: rgba(255, 255, 255, 0.9) !important;
-		border: 1px solid rgba(255, 255, 255, 0.1) !important;
-		border-radius: 8px !important;
-		padding: 0.5rem 1rem !important;
-		font-size: 0.8125rem !important;
-		font-weight: 500 !important;
-		transition: all 0.3s ease !important;
-	}
-
-	:global(.avm-wallet-container button:hover),
-	:global(.avm-wallet-container [role='button']:hover) {
-		background: rgba(255, 255, 255, 0.08) !important;
-		border-color: rgba(212, 175, 55, 0.3) !important;
-		transform: translateY(-1px) !important;
-	}
-
-	:global(.avm-wallet-container div[class*='modal']),
-	:global(.avm-wallet-container div[class*='dropdown']),
-	:global(.avm-wallet-container div[class*='menu']) {
-		background: #121728 !important;
-		border: 1px solid rgba(255, 255, 255, 0.1) !important;
-		border-radius: 12px !important;
-		box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5) !important;
-	}
-
-	:global(.avm-wallet-container div[class*='wallet']),
-	:global(.avm-wallet-container [role='menuitem']),
-	:global(.avm-wallet-container [role='option']) {
-		background: rgba(255, 255, 255, 0.03) !important;
-		color: rgba(255, 255, 255, 0.9) !important;
-		border-radius: 8px !important;
-		margin: 0.25rem !important;
-	}
-
-	:global(.avm-wallet-container div[class*='wallet']:hover),
-	:global(.avm-wallet-container [role='menuitem']:hover),
-	:global(.avm-wallet-container [role='option']:hover) {
-		background: rgba(255, 255, 255, 0.05) !important;
-	}
-
-	/* Responsive */
-	@media (max-width: 640px) {
-		.wallet-selector {
-			padding: 1.5rem;
-		}
-
-		.wallet-options {
-			grid-template-columns: 1fr;
-		}
+	.avm-wallet-container :global(.wallet-item button.truncate:hover) {
+		@apply bg-neutral-100 dark:bg-neutral-700;
 	}
 </style>

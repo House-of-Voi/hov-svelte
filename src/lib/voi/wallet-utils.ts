@@ -71,26 +71,26 @@ export async function signTransactions(
 	// This ensures CDP derivation matches the transaction sender
 	const signerAddress = actualAddress || address;
 
-	// Check if the address is a CDP address (stored keys) or external wallet
-	// We need to check if the address matches the CDP address from session/storage
-	// If it's a CDP address and we have stored keys, use StoredKeySigner
-	// Otherwise, use the external wallet
-	let isCdpAddress = false;
-	if (session?.cdpUserId) {
-		// Check if the address has stored game account keys
-		try {
-			const { getGameAccountKeys } = await import('$lib/auth/gameAccountStorage');
-			const storedKeys = await getGameAccountKeys(signerAddress);
-			if (storedKeys) {
-				isCdpAddress = true;
-			}
-		} catch (error) {
-			// If we can't check, assume it's not a game account
-			console.warn('Could not check if address is game account:', error);
+	// Check if the address has stored game account keys
+	// This works for ANY game account the user has unlocked, not just the "active" one
+	// If stored keys exist for this address, use StoredKeySigner
+	// Otherwise, fall back to external wallet
+	let hasStoredKeys = false;
+	try {
+		const { getGameAccountKeys } = await import('$lib/auth/gameAccountStorage');
+		const storedKeys = await getGameAccountKeys(signerAddress);
+		if (storedKeys) {
+			hasStoredKeys = true;
+			console.log('Found stored keys for address:', signerAddress.slice(0, 8) + '...');
+		} else {
+			console.log('No stored keys found for address:', signerAddress.slice(0, 8) + '..., will use external wallet');
 		}
+	} catch (error) {
+		// If we can't check, assume it's not a game account
+		console.warn('Could not check if address has stored keys:', error);
 	}
 
-	if (isCdpAddress && session?.cdpUserId) {
+	if (hasStoredKeys) {
 		// Use stored keys for signing (CDP address with stored keys)
 		const signer = new StoredKeySigner(signerAddress);
 		return await signer.signTransactions(txns);
@@ -103,7 +103,11 @@ export async function signTransactions(
 			// Fallback to VoiWalletService if avm-wallet-svelte fails
 			const walletService = getWalletService();
 			if (!walletService.isConnected()) {
-				throw new Error('External wallet not connected. Please connect your wallet first.');
+				throw new Error(
+					'No signing method available for this address. ' +
+					'If this is a game account, please unlock it first. ' +
+					'If this is an external wallet, please connect it.'
+				);
 			}
 			const signedTxns = await walletService.signTransactions(txns);
 			return signedTxns.map((s) => s.blob);
