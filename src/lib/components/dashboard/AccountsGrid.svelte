@@ -15,8 +15,10 @@
 	import AddGameAccount from '$lib/components/gameAccounts/AddGameAccount.svelte';
 	import AccountActionModal from '$lib/components/form/AccountActionModal.svelte';
 	import { fetchAllBalances, formatBalance } from '$lib/voi/balances';
-	import { removeGameAccountKeys } from '$lib/auth/gameAccountStorage';
+	import { removeGameAccountKeys, getStoredGameAccountAddresses } from '$lib/auth/gameAccountStorage';
 	import type { GameAccountInfo } from '$lib/auth/session';
+	import { flip } from 'svelte/animate';
+	import { quintOut } from 'svelte/easing';
 
 	interface LegacyAccount {
 		chain: string;
@@ -43,6 +45,20 @@
 	// State
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(null);
 	let balances = $state<Map<string, string>>(new Map()); // voiAddress -> USDC balance
+	let unlockedAddresses = $state<Set<string>>(new Set());
+	let switchingAccountId = $state<string | null>(null);
+
+	// Refresh unlocked status
+	$effect(() => {
+		if (browser) {
+			const stored = getStoredGameAccountAddresses();
+			unlockedAddresses = new Set(stored);
+		}
+	});
+
+	function isUnlocked(account: GameAccountInfo): boolean {
+		return unlockedAddresses.has(account.voiAddress);
+	}
 
 	// Modal state
 	let showAddModal = $state(false);
@@ -142,11 +158,42 @@
 		};
 	}
 
+	async function handleSwitchAccount(account: GameAccountInfo) {
+		switchingAccountId = account.id;
+
+		try {
+			const response = await fetch('/api/game-accounts/switch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ accountId: account.id })
+			});
+
+			const result = await response.json();
+
+			if (!response.ok || !result.ok) {
+				throw new Error(result.error || 'Failed to switch account');
+			}
+
+			// Successfully switched
+			await invalidateAll();
+			onAccountChange?.();
+		} catch (err) {
+			showStatus('error', err instanceof Error ? err.message : 'Failed to switch account');
+		} finally {
+			switchingAccountId = null;
+		}
+	}
+
 	async function handleLockConfirm() {
 		if (!managingAccount) return;
 
 		try {
 			await removeGameAccountKeys(managingAccount.address);
+			// Refresh unlocked addresses
+			if (browser) {
+				const stored = getStoredGameAccountAddresses();
+				unlockedAddresses = new Set(stored);
+			}
 			showStatus('success', 'Account locked');
 			managingAccount = null;
 			await invalidateAll();
@@ -177,6 +224,12 @@
 				await removeGameAccountKeys(managingAccount.address);
 			} catch {
 				// Ignore errors - keys may already be removed
+			}
+
+			// Refresh unlocked addresses
+			if (browser) {
+				const stored = getStoredGameAccountAddresses();
+				unlockedAddresses = new Set(stored);
 			}
 
 			showStatus('success', 'Account removed');
@@ -254,8 +307,16 @@
 			<div class="space-y-2">
 				{#each orderedGameAccounts as account (account.id)}
 					{@const isActive = account.id === activeAccountId}
+					{@const unlocked = isUnlocked(account)}
 					{@const balance = balances.get(account.voiAddress) || '0.00'}
-					<div class="flex items-center gap-3 p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700">
+					{@const isSwitching = switchingAccountId === account.id}
+					<div
+						animate:flip={{ duration: 300, easing: quintOut }}
+						class="flex items-center gap-3 p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900 border transition-all duration-200
+							{isActive
+								? 'border-primary-300 dark:border-primary-700 bg-primary-50/50 dark:bg-primary-900/20'
+								: 'border-neutral-200 dark:border-neutral-700'}"
+					>
 						<!-- Auth icon -->
 						<span class="text-lg flex-shrink-0">{getAuthMethodIcon(account.cdpRecoveryMethod)}</span>
 
@@ -269,6 +330,11 @@
 									<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-primary-100 dark:bg-primary-900/50 text-primary-700 dark:text-primary-300 text-[10px] font-medium">
 										<span class="w-1.5 h-1.5 rounded-full bg-primary-500 animate-pulse"></span>
 										Active
+									</span>
+								{/if}
+								{#if !unlocked}
+									<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-400 text-[10px] font-medium">
+										🔒 Locked
 									</span>
 								{/if}
 							</div>
@@ -295,22 +361,40 @@
 							</div>
 						</div>
 
+						<!-- Switch button column (fixed width for alignment) -->
+						<div class="w-20 flex-shrink-0">
+							{#if unlocked && !isActive}
+								<Button
+									variant="secondary"
+									size="sm"
+									onclick={() => handleSwitchAccount(account)}
+									disabled={isSwitching}
+									loading={isSwitching}
+									class="w-full"
+								>
+									Switch
+								</Button>
+							{/if}
+						</div>
+
 						<!-- Balance -->
-						<div class="text-right flex-shrink-0">
+						<div class="text-right flex-shrink-0 w-20">
 							<div class="font-mono text-sm font-medium text-neutral-800 dark:text-neutral-200">
 								${balance}
 							</div>
 							<div class="text-xs text-neutral-500">USDC</div>
 						</div>
 
-						<!-- Remove button -->
+						<!-- Manage button -->
 						<button
 							onclick={() => handleManageAccount(account)}
-							class="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-error-500 hover:bg-error-100 dark:hover:bg-error-900/30 transition-colors flex-shrink-0"
-							title="Remove account"
+							class="w-8 h-8 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-600 hover:bg-neutral-200 dark:hover:bg-neutral-700 dark:hover:text-neutral-300 transition-colors flex-shrink-0"
+							title="Manage account"
 						>
 							<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-								<path d="M18 6L6 18M6 6l12 12"></path>
+								<circle cx="12" cy="12" r="1"></circle>
+								<circle cx="19" cy="12" r="1"></circle>
+								<circle cx="5" cy="12" r="1"></circle>
 							</svg>
 						</button>
 					</div>
