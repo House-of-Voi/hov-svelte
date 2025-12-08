@@ -12,7 +12,7 @@
 	import W2WSpinQueue from './W2WSpinQueue.svelte';
 	import W2WSpinDetailModal from './W2WSpinDetailModal.svelte';
 	import W2WBonusSpinOverlay from './W2WBonusSpinOverlay.svelte';
-	import GameAccountLockedOverlay from './GameAccountLockedOverlay.svelte';
+	import GameAccountLockedBanner from './GameAccountLockedBanner.svelte';
 
 	// PostMessage types
 	import type {
@@ -1216,6 +1216,17 @@
 		</button>
 	</div>
 
+	<!-- Account Locked Banner -->
+	{#if isAccountLocked}
+		<div class="px-4 md:px-6 pt-4">
+			<GameAccountLockedBanner
+				voiAddress={lockedVoiAddress}
+				recoveryMethod={undefined}
+				recoveryHint={undefined}
+			/>
+		</div>
+	{/if}
+
 	<div class="slot-machine-container">
 		<!-- Main Game Area -->
 		<div class="game-main">
@@ -1428,14 +1439,6 @@
 		onExit={exitBonusSpinMode}
 	/>
 
-	<!-- Account Locked Overlay -->
-	{#if isAccountLocked}
-		<GameAccountLockedOverlay
-			voiAddress={lockedVoiAddress}
-			reason={lockReason}
-			onRequestUnlock={requestUnlock}
-		/>
-	{/if}
 </div>
 
 <style>
