@@ -7,7 +7,7 @@ import {
   type SessionInfo,
   type GameAccountInfo,
 } from '$lib/auth/session';
-import { getVoiAddressFromCookie, setKeyDerivationCookie, getKeyDerivationCookie } from '$lib/auth/cookies';
+import { getVoiAddressFromCookie, setKeyDerivationCookie } from '$lib/auth/cookies';
 
 /**
  * Supabase Auth handler
@@ -100,17 +100,13 @@ const hovSessionHandler: Handle = async ({ event, resolve }) => {
     event.locals.gameAccounts = gameAccounts;
     event.locals.activeGameAccount = activeGameAccount;
 
-    // Ensure key derivation cookie exists for client-side key encryption
+    // Refresh key derivation cookie for client-side key encryption
     // This cookie is needed by gameAccountStorage.ts to encrypt/decrypt stored keys
     // IMPORTANT: The derivation value MUST be deterministic based on profile ID only
     // If it changes, all stored encrypted keys become undecryptable
-    const existingDerivation = getKeyDerivationCookie(event.cookies);
-    if (!existingDerivation) {
-      // Use profile ID as the stable derivation value
-      // This ensures keys can always be decrypted as long as the user is logged in
-      const derivationValue = `hov-keys-${profile.id}`;
-      setKeyDerivationCookie(event.cookies, derivationValue, 7 * 24 * 60 * 60); // 7 days
-    }
+    // We refresh on every request to prevent expiration during active use
+    const derivationValue = `hov-keys-${profile.id}`;
+    setKeyDerivationCookie(event.cookies, derivationValue, 7 * 24 * 60 * 60); // 7 days
   } catch (error) {
     console.error('Error loading HoV session:', error);
   }

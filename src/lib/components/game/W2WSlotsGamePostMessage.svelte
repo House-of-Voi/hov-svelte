@@ -12,6 +12,7 @@
 	import W2WSpinQueue from './W2WSpinQueue.svelte';
 	import W2WSpinDetailModal from './W2WSpinDetailModal.svelte';
 	import W2WBonusSpinOverlay from './W2WBonusSpinOverlay.svelte';
+	import GameAccountLockedOverlay from './GameAccountLockedOverlay.svelte';
 
 	// PostMessage types
 	import type {
@@ -22,6 +23,7 @@
 		ErrorMessage,
 		ConfigMessage,
 		CreditBalanceMessage,
+		AccountLockedMessage,
 	} from '$lib/game-engine/bridge/types';
 	// Use MESSAGE_NAMESPACE constant directly to avoid import issues
 	const MESSAGE_NAMESPACE = 'com.houseofvoi';
@@ -66,6 +68,11 @@
 	let voiAddress = $state<string | null>(null);
 	let configContractId = $state<string | null>(null);
 	let isArc200Machine = $state(false);
+
+	// Account lock state
+	let isAccountLocked = $state(false);
+	let lockReason = $state<'no_keys' | 'cannot_decrypt' | 'cookie_expired' | undefined>(undefined);
+	let lockedVoiAddress = $state<string | undefined>(undefined);
 	let arc200ContractId = $state<number | null>(null);
 	let arc200TokenSymbol = $state('ARC200');
 	let arc200TokenName = $state('ARC200 Token');
@@ -168,6 +175,9 @@
 					break;
 				case 'SPIN_SUBMITTED':
 					handleSpinSubmitted(message);
+					break;
+				case 'ACCOUNT_LOCKED':
+					handleAccountLocked(message as AccountLockedMessage);
 					break;
 			}
 		};
@@ -770,6 +780,29 @@
 	}
 
 	/**
+	 * Handle account locked message
+	 */
+	function handleAccountLocked(message: AccountLockedMessage): void {
+		const payload = message.payload;
+		isAccountLocked = payload.locked;
+		lockReason = payload.reason;
+		lockedVoiAddress = payload.voiAddress;
+
+		if (payload.locked) {
+			console.log('🔒 Account locked:', { voiAddress: payload.voiAddress, reason: payload.reason });
+		} else {
+			console.log('🔓 Account unlocked:', { voiAddress: payload.voiAddress });
+		}
+	}
+
+	/**
+	 * Request account unlock (sends message to parent/bridge)
+	 */
+	function requestUnlock(): void {
+		sendMessage({ type: 'REQUEST_UNLOCK' } as any);
+	}
+
+	/**
 	 * Handle spin button click
 	 * Allows rapid queueing with balance-based limiting
 	 */
@@ -1219,7 +1252,7 @@
 						betAmount={betAmount}
 						{mode}
 						tokenLabel={arc200DisplayLabel}
-						disabled={false}
+						disabled={isAccountLocked}
 						isSpinning={pendingSpins > 0}
 						onBetChange={handleBetChange}
 						onSpin={handleSpin}
@@ -1238,7 +1271,7 @@
 					tokenLabel={arc200DisplayLabel}
 					{credits}
 					{bonusSpins}
-					disabled={pendingSpins > 0}
+					disabled={pendingSpins > 0 || isAccountLocked}
 					onModeChange={handleModeChange}
 				/>
 			</div>
@@ -1394,6 +1427,15 @@
 		isAutoMode={isAutoBonusMode}
 		onExit={exitBonusSpinMode}
 	/>
+
+	<!-- Account Locked Overlay -->
+	{#if isAccountLocked}
+		<GameAccountLockedOverlay
+			voiAddress={lockedVoiAddress}
+			reason={lockReason}
+			onRequestUnlock={requestUnlock}
+		/>
+	{/if}
 </div>
 
 <style>

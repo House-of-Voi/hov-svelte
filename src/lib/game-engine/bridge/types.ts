@@ -73,13 +73,22 @@ export interface ExitRequest {
   type: 'EXIT';
 }
 
+/**
+ * Request unlock - game requests the unlock modal to be shown
+ */
+export interface RequestUnlockRequest {
+  namespace: string;
+  type: 'REQUEST_UNLOCK';
+}
+
 export type GameRequest =
   | SpinRequest
   | GetBalanceRequest
   | GetCreditBalanceRequest
   | GetConfigRequest
   | InitRequest
-  | ExitRequest;
+  | ExitRequest
+  | RequestUnlockRequest;
 
 // ============================================================================
 // RESPONSE MESSAGES (Bridge → Game)
@@ -215,6 +224,19 @@ export interface SpinSubmittedMessage {
   };
 }
 
+/**
+ * Account locked message - sent when account lock status is detected or changes
+ */
+export interface AccountLockedMessage {
+  namespace: string;
+  type: 'ACCOUNT_LOCKED';
+  payload: {
+    locked: boolean;
+    voiAddress: string;
+    reason?: 'no_keys' | 'cannot_decrypt' | 'cookie_expired';
+  };
+}
+
 export type GameResponse =
   | OutcomeMessage
   | BalanceUpdateMessage
@@ -222,7 +244,8 @@ export type GameResponse =
   | ConfigMessage
   | BalanceResponse
   | CreditBalanceMessage
-  | SpinSubmittedMessage;
+  | SpinSubmittedMessage
+  | AccountLockedMessage;
 
 // ============================================================================
 // MESSAGE VALIDATION
@@ -245,7 +268,8 @@ export function isGameRequest(message: unknown): message is GameRequest {
     msg.type === 'GET_CREDIT_BALANCE' ||
     msg.type === 'GET_CONFIG' ||
     msg.type === 'INIT' ||
-    msg.type === 'EXIT'
+    msg.type === 'EXIT' ||
+    msg.type === 'REQUEST_UNLOCK'
   );
 }
 

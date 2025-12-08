@@ -41,7 +41,12 @@
 {:else if contractId && algorandAddress}
 	<!-- Normal mode: Use GameBridge for blockchain communication -->
 	{#key `${contractId}-${algorandAddress}`}
-		<GameBridgeWrapper contractId={contractId} walletAddress={algorandAddress}>
+		<GameBridgeWrapper
+			contractId={contractId}
+			walletAddress={algorandAddress}
+			recoveryMethod={data.recoveryMethod}
+			recoveryHint={data.recoveryHint}
+		>
 			<W2WSlotsGamePostMessage />
 		</GameBridgeWrapper>
 	{/key}
