@@ -31,9 +31,9 @@
 		onSpin
 	}: Props = $props();
 
-	// For queueing system, button should always be enabled
-	// The disabled prop is kept for API compatibility but not used for queueing
-	const buttonDisabled = $derived(false);
+	// For queueing system, button is usually enabled to allow rapid spins
+	// But we still respect the disabled prop for cases like account locked
+	const buttonDisabled = $derived(disabled);
 
 	const BASE_BET = 40;
 	const KICKER_AMOUNT = 20;
