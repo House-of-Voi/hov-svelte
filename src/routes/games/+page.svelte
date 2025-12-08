@@ -8,6 +8,7 @@
   import SlotMachineIcon from '$lib/components/icons/SlotMachineIcon.svelte';
   import TrendingUpIcon from '$lib/components/icons/TrendingUpIcon.svelte';
   import ChainBadge from '$lib/components/ui/ChainBadge.svelte';
+  import GameAccountLockedBanner from '$lib/components/game/GameAccountLockedBanner.svelte';
   import {
     formatCurrency,
     formatNumber,
@@ -125,6 +126,15 @@
       </p>
     </div>
   </div>
+
+  <!-- Account Locked Banner (only show if user has game access but account is locked) -->
+  {#if canPlay && data.voiAddress}
+    <GameAccountLockedBanner
+      voiAddress={data.voiAddress}
+      recoveryMethod={data.recoveryMethod}
+      recoveryHint={data.recoveryHint}
+    />
+  {/if}
 
   <!-- Featured Stats -->
   <Card elevated={true}>

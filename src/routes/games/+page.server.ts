@@ -185,8 +185,8 @@ async function fetchProfileStats(fetch: typeof globalThis.fetch): Promise<any | 
   }
 }
 
-export const load: PageServerLoad = async ({ fetch, parent }) => {
-  const { session } = await parent();
+export const load: PageServerLoad = async ({ fetch, parent, locals }) => {
+  const { session, gameAccounts, activeGameAccountId } = await parent();
 
   // Fetch slot configs
   const games = await fetchSlotConfigs(fetch);
@@ -238,11 +238,20 @@ export const load: PageServerLoad = async ({ fetch, parent }) => {
     profileStats = await fetchProfileStats(fetch);
   }
 
+  // Get voiAddress and recovery info for lock banner
+  const voiAddress = locals.voiAddress;
+  const activeGameAccount = gameAccounts?.find((acc: any) => acc.id === activeGameAccountId) ||
+                           gameAccounts?.find((acc: any) => acc.voiAddress === voiAddress);
+
   return {
     games,
     platformStats: aggregatedStats,
     statsScope,
     defaultContractId,
     profileStats,
+    // Lock detection data
+    voiAddress,
+    recoveryMethod: activeGameAccount?.cdpRecoveryMethod ?? null,
+    recoveryHint: activeGameAccount?.cdpRecoveryHint ?? null,
   };
 };
