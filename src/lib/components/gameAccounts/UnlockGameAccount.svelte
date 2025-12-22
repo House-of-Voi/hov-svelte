@@ -649,7 +649,7 @@
 		onClose={onClose}
 	/>
 {:else if modal}
-	<Modal isOpen={open} onClose={handleClose} title="">
+	<Modal isOpen={open} onClose={handleClose} title="" usePortal={true} zIndex={120}>
 		{@render innerContent()}
 	</Modal>
 {:else}

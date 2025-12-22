@@ -352,6 +352,230 @@ export async function getPlayerStatsSafe(
   }
 }
 
+export interface BiggestWinResult {
+  date: string;
+  amount: string;
+  betAmount: string;
+  lines: number;
+}
+
+export async function getPlayerBiggestWins(
+  address: string,
+  limit = 3,
+  startDate?: Date,
+  endDate?: Date
+): Promise<BiggestWinResult[]> {
+  const trimmedAddress = address.trim();
+
+  let query = mimirClient
+    .from('hov_events')
+    .select('payout, total_bet_amount, max_payline_index, created_at')
+    .eq('who', trimmedAddress)
+    .gt('payout', 0)
+    .order('payout', { ascending: false })
+    .limit(limit);
+
+  if (startDate) {
+    query = query.gte('created_at', startDate.toISOString());
+  }
+  if (endDate) {
+    query = query.lte('created_at', endDate.toISOString());
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw new MimirRpcError('getPlayerBiggestWins', error);
+  }
+
+  if (!data || data.length === 0) {
+    return [];
+  }
+
+  return data.map((row) => ({
+    date: row.created_at,
+    amount: (row.payout || 0).toString(),
+    betAmount: (row.total_bet_amount || 0).toString(),
+    lines: row.max_payline_index ? Number(row.max_payline_index) + 1 : 20,
+  }));
+}
+
+export async function getPlayerStatsByDate(
+  address: string,
+  date: Date
+): Promise<MimirPlayerStats> {
+  const trimmedAddress = address.trim();
+
+  // Get start and end of the day in UTC
+  const startOfDay = new Date(date);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(date);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+
+  const { data, error } = await mimirClient
+    .from('hov_events')
+    .select('amount, max_payline_index, payout, total_bet_amount, net_result, is_win, round, created_at')
+    .eq('who', trimmedAddress)
+    .gte('created_at', startOfDay.toISOString())
+    .lte('created_at', endOfDay.toISOString());
+
+  if (error) {
+    throw new MimirRpcError('getPlayerStatsByDate', error);
+  }
+
+  if (!data || data.length === 0) {
+    return {
+      player_address: address,
+      total_spins: 0,
+      winning_spins: 0,
+      losing_spins: 0,
+      total_bet: '0',
+      total_won: '0',
+      net_result: '0',
+      rtp: 0,
+      win_rate: 0,
+      largest_win: '0',
+      largest_bet: '0',
+      avg_bet: '0',
+      avg_payout: '0',
+      first_spin: null,
+      last_spin: null,
+    };
+  }
+
+  const totalSpins = data.length;
+  const winningSpins = data.filter((row) => row.is_win).length;
+  const losingSpins = totalSpins - winningSpins;
+  let totalBet = BigInt(0);
+  let totalWon = BigInt(0);
+  let largestWin = BigInt(0);
+  let largestBet = BigInt(0);
+  let firstSpin: string | null = null;
+  let lastSpin: string | null = null;
+
+  for (const row of data) {
+    const betAmount = BigInt(row.total_bet_amount || 0);
+    const payout = BigInt(row.payout || 0);
+
+    totalBet += betAmount;
+    totalWon += payout;
+
+    if (payout > largestWin) {
+      largestWin = payout;
+    }
+    if (betAmount > largestBet) {
+      largestBet = betAmount;
+    }
+
+    const createdAt = row.created_at;
+    if (!firstSpin || createdAt < firstSpin) {
+      firstSpin = createdAt;
+    }
+    if (!lastSpin || createdAt > lastSpin) {
+      lastSpin = createdAt;
+    }
+  }
+
+  const netResult = totalWon - totalBet;
+  const winRate = totalSpins > 0 ? (winningSpins / totalSpins) * 100 : 0;
+  const rtp = totalBet > 0 ? Number((totalWon * BigInt(100)) / totalBet) : 0;
+  const avgBet = totalSpins > 0 ? Number(totalBet) / totalSpins : 0;
+  const avgPayout = winningSpins > 0 ? Number(totalWon) / winningSpins : 0;
+
+  return {
+    player_address: address,
+    total_spins: totalSpins,
+    winning_spins: winningSpins,
+    losing_spins: losingSpins,
+    total_bet: totalBet.toString(),
+    total_won: totalWon.toString(),
+    net_result: netResult.toString(),
+    rtp,
+    win_rate: winRate,
+    largest_win: largestWin.toString(),
+    largest_bet: largestBet.toString(),
+    avg_bet: avgBet.toFixed(2),
+    avg_payout: avgPayout.toFixed(2),
+    first_spin: firstSpin,
+    last_spin: lastSpin,
+  };
+}
+
+export interface PlayerStreaks {
+  longestWinStreak: number;
+  longestLosingStreak: number;
+  totalPaylines: number;
+}
+
+export async function getPlayerStreaks(
+  address: string,
+  startDate?: Date,
+  endDate?: Date
+): Promise<PlayerStreaks> {
+  const trimmedAddress = address.trim();
+
+  let query = mimirClient
+    .from('hov_events')
+    .select('is_win, max_payline_index, created_at')
+    .eq('who', trimmedAddress)
+    .order('created_at', { ascending: true });
+
+  if (startDate) {
+    query = query.gte('created_at', startDate.toISOString());
+  }
+  if (endDate) {
+    query = query.lte('created_at', endDate.toISOString());
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    throw new MimirRpcError('getPlayerStreaks', error);
+  }
+
+  if (!data || data.length === 0) {
+    return {
+      longestWinStreak: 0,
+      longestLosingStreak: 0,
+      totalPaylines: 0,
+    };
+  }
+
+  let longestWinStreak = 0;
+  let longestLosingStreak = 0;
+  let currentWinStreak = 0;
+  let currentLosingStreak = 0;
+  let totalPaylines = 0;
+
+  for (const row of data) {
+    // Count paylines (max_payline_index + 1 is the number of paylines played)
+    if (row.max_payline_index !== null && row.max_payline_index !== undefined) {
+      totalPaylines += Number(row.max_payline_index) + 1;
+    }
+
+    // Calculate streaks
+    if (row.is_win) {
+      currentWinStreak++;
+      currentLosingStreak = 0;
+      if (currentWinStreak > longestWinStreak) {
+        longestWinStreak = currentWinStreak;
+      }
+    } else {
+      currentLosingStreak++;
+      currentWinStreak = 0;
+      if (currentLosingStreak > longestLosingStreak) {
+        longestLosingStreak = currentLosingStreak;
+      }
+    }
+  }
+
+  return {
+    longestWinStreak,
+    longestLosingStreak,
+    totalPaylines,
+  };
+}
+
 export async function getTournamentLeaderboard(options: {
   contractId: number;
   startDate: Date;

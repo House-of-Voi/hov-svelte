@@ -1,9 +1,70 @@
 import { redirect } from '@sveltejs/kit';
 import { getProfileAccounts, isUserActivated } from '$lib/profile/data';
 import { REF_FLASH_COOKIE } from '$lib/utils/referral';
+import { getPlayerStatsSafe } from '$lib/mimir/queries';
+import { mimirClient } from '$lib/mimir/client';
 import type { PageServerLoad } from './$types';
+import type { PlayerStats } from '$lib/types/profile';
 
 type ReferralFlash = { type: 'success' | 'error'; message: string };
+
+/**
+ * Calculate consecutive days playing streak for a user
+ */
+async function calculateStreak(voiAddress: string): Promise<number> {
+	try {
+		const { data, error } = await mimirClient
+			.from('hov_events')
+			.select('created_at')
+			.eq('who', voiAddress.trim())
+			.order('created_at', { ascending: false });
+
+		if (error || !data || data.length === 0) {
+			return 0;
+		}
+
+		// Extract unique dates (UTC)
+		const playDates = new Set<string>();
+		for (const row of data) {
+			const date = new Date(row.created_at);
+			const dateStr = date.toISOString().split('T')[0];
+			playDates.add(dateStr);
+		}
+
+		// Calculate streak from today backward
+		const today = new Date();
+		today.setUTCHours(0, 0, 0, 0);
+		const todayStr = today.toISOString().split('T')[0];
+
+		let currentStreak = 0;
+		const checkDate = new Date(today);
+
+		// If no play today, check yesterday to start streak
+		if (!playDates.has(todayStr)) {
+			checkDate.setUTCDate(checkDate.getUTCDate() - 1);
+			const yesterdayStr = checkDate.toISOString().split('T')[0];
+			if (!playDates.has(yesterdayStr)) {
+				return 0;
+			}
+		}
+
+		// Count consecutive days
+		while (true) {
+			const dateStr = checkDate.toISOString().split('T')[0];
+			if (playDates.has(dateStr)) {
+				currentStreak++;
+				checkDate.setUTCDate(checkDate.getUTCDate() - 1);
+			} else {
+				break;
+			}
+		}
+
+		return currentStreak;
+	} catch (err) {
+		console.error('Failed to calculate streak:', err);
+		return 0;
+	}
+}
 
 export const load: PageServerLoad = async ({ parent, cookies, locals }) => {
 	// Get profile and game accounts from parent layout
@@ -48,6 +109,32 @@ export const load: PageServerLoad = async ({ parent, cookies, locals }) => {
 	const activeGameAccountId = locals.activeGameAccount?.id;
 	const voiAddress = locals.voiAddress;
 
+	// Fetch player stats and streak in parallel
+	let playerStats: PlayerStats = {
+		totalSpins: 0,
+		winRate: 0,
+		currentStreak: 0,
+		lastPlayed: null
+	};
+
+	if (voiAddress) {
+		try {
+			const [stats, streak] = await Promise.all([
+				getPlayerStatsSafe(voiAddress),
+				calculateStreak(voiAddress)
+			]);
+
+			playerStats = {
+				totalSpins: stats?.total_spins || 0,
+				winRate: stats?.win_rate || 0,
+				currentStreak: streak,
+				lastPlayed: stats?.last_spin || null
+			};
+		} catch (err) {
+			console.error('Failed to fetch player stats:', err);
+		}
+	}
+
 	return {
 		profileData: {
 			profile,
@@ -67,5 +154,6 @@ export const load: PageServerLoad = async ({ parent, cookies, locals }) => {
 		isActivated: activated,
 		referralFlash,
 		voiAddress,
+		playerStats,
 	};
 };

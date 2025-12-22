@@ -496,7 +496,7 @@
 	);
 </script>
 
-<Modal isOpen={open} onClose={handleClose} title="">
+<Modal isOpen={open} onClose={handleClose} title="" usePortal={true} zIndex={120}>
 	<div class="space-y-6">
 		{#if error}
 			<div

@@ -7,13 +7,14 @@
 	import Button from '$lib/components/ui/Button.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
 
-	// New dashboard components
-	import ProfileBar from '$lib/components/dashboard/ProfileBar.svelte';
-	import WalletCard from '$lib/components/dashboard/WalletCard.svelte';
-	import AccountsGrid from '$lib/components/dashboard/AccountsGrid.svelte';
-	import ReferralDashboard from '$lib/components/dashboard/ReferralDashboard.svelte';
-	import QuickStats from '$lib/components/dashboard/QuickStats.svelte';
-	import DangerZone from '$lib/components/dashboard/DangerZone.svelte';
+	// New profile components
+	import ProfileHeroSection from '$lib/components/profile/ProfileHeroSection.svelte';
+	import PlayerStatsBar from '$lib/components/profile/PlayerStatsBar.svelte';
+	import ProfileTabs from '$lib/components/profile/ProfileTabs.svelte';
+	import PortfolioTab from '$lib/components/profile/tabs/PortfolioTab.svelte';
+	import StatisticsTab from '$lib/components/profile/tabs/StatisticsTab.svelte';
+	import ReferralsTab from '$lib/components/profile/tabs/ReferralsTab.svelte';
+	import FavoriteGamesTab from '$lib/components/profile/tabs/FavoriteGamesTab.svelte';
 
 	// Modals (reused from existing)
 	import AvatarEditModal from '$lib/components/form/AvatarEditModal.svelte';
@@ -22,7 +23,8 @@
 	import ReferralDetailModal from '$lib/components/referrals/ReferralDetailModal.svelte';
 
 	import type { PageData } from './$types';
-	import type { ReferralDashboardData, ReferralWithStats } from '$lib/referrals/credits';
+	import type { ProfileTab } from '$lib/types/profile';
+	import type { ReferralWithStats } from '$lib/referrals/credits';
 	import {
 		getInitializedCdp,
 		exportEvmPrivateKey,
@@ -38,51 +40,31 @@
 	const voiAddress = $derived(data.voiAddress ?? undefined);
 	const activeAccount = $derived(data.gameAccounts.find(a => a.id === data.activeGameAccountId));
 
-	// State
+	// Tab state
+	let activeTab = $state<ProfileTab>('portfolio');
+
+	// Status messages
 	let status = $state<{ type: 'success' | 'error'; message: string } | null>(
 		data.referralFlash ?? null
 	);
+
+	// Referral code activation state
 	let referralCode = $state('');
 	let isLinkingReferral = $state(false);
+
+	// Modal states
 	let isAvatarModalOpen = $state(false);
 	let isProfileEditModalOpen = $state(false);
 	let isReferralCodesModalOpen = $state(false);
+	let isReferralDetailModalOpen = $state(false);
+	let selectedReferralProfileId = $state<string | null>(null);
+
+	// Profile state
 	let profile = $state({ ...data.profileData.profile });
 
 	// OAuth callback handling state
 	let oauthProcessing = $state(false);
 	let oauthProcessed = $state(false);
-
-	// Referral data
-	let referralDashboardData = $state<ReferralDashboardData | null>(null);
-	let loadingReferrals = $state(true);
-	let isReferralDetailModalOpen = $state(false);
-	let selectedReferralProfileId = $state<string | null>(null);
-
-	// Fetch referral stats
-	async function fetchReferralStats() {
-		try {
-			const response = await fetch('/api/referrals/dashboard');
-			const result = await response.json();
-
-			if (result.ok) {
-				referralDashboardData = {
-					codesGenerated: result.codesGenerated,
-					codesAvailable: result.codesAvailable,
-					maxReferrals: result.maxReferrals,
-					activeReferrals: result.activeReferrals,
-					queuedReferrals: result.queuedReferrals,
-					totalReferrals: result.totalReferrals,
-					referrals: result.referrals || [],
-					aggregateStats: result.aggregateStats
-				};
-			}
-		} catch (error) {
-			console.error('Failed to fetch referral dashboard:', error);
-		} finally {
-			loadingReferrals = false;
-		}
-	}
 
 	function clearStatusAfter(delayMs: number) {
 		setTimeout(() => {
@@ -181,7 +163,6 @@
 
 	function handleReferralCodesModalClose() {
 		isReferralCodesModalOpen = false;
-		fetchReferralStats();
 	}
 
 	function handleReferralClick(referral: ReferralWithStats) {
@@ -192,6 +173,10 @@
 	function handleCloseReferralModal() {
 		isReferralDetailModalOpen = false;
 		selectedReferralProfileId = null;
+	}
+
+	function handleTabChange(tab: ProfileTab) {
+		activeTab = tab;
 	}
 
 	// OAuth callback handling
@@ -304,16 +289,8 @@
 		return `${obfuscatedLocal}@${obfuscatedDomain}.${tld.join('.')}`;
 	}
 
-	const hasReferrals = $derived(data.profileData.profile.max_referrals > 0);
-
 	onMount(() => {
 		handleOAuthCallback();
-	});
-
-	$effect(() => {
-		if (data.profileData.profile.max_referrals > 0) {
-			fetchReferralStats();
-		}
 	});
 
 	$effect(() => {
@@ -327,29 +304,29 @@
 <!-- OAuth Processing Overlay -->
 {#if oauthProcessing}
 	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-		<div class="rounded-xl bg-white p-8 text-center shadow-xl dark:bg-neutral-900">
+		<div class="rounded-xl bg-[#4c4c4c] p-8 text-center shadow-xl">
 			<div class="mb-4 flex justify-center">
 				<div
-					class="h-12 w-12 animate-spin rounded-full border-4 border-primary-500 border-t-transparent"
+					class="h-12 w-12 animate-spin rounded-full border-4 border-white border-t-transparent"
 				></div>
 			</div>
-			<h3 class="text-lg font-semibold text-neutral-800 dark:text-neutral-200">
+			<h3 class="text-lg font-semibold text-white">
 				Adding Google Account...
 			</h3>
-			<p class="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+			<p class="mt-2 text-sm text-white/70">
 				Please wait while we complete the setup.
 			</p>
 		</div>
 	</div>
 {/if}
 
-<div class="space-y-6 max-w-5xl">
+<div class="flex flex-col gap-6 px-4 py-0 w-full max-w-5xl">
 	<!-- Status Message -->
 	{#if status}
 		<div
 			class="p-4 rounded-xl text-center font-medium {status.type === 'success'
-				? 'bg-success-100 dark:bg-success-900/30 text-success-700 dark:text-success-300 border border-success-300 dark:border-success-700'
-				: 'bg-error-100 dark:bg-error-900/30 text-error-700 dark:text-error-300 border border-error-300 dark:border-error-700'}"
+				? 'bg-green-500/20 text-green-300 border border-green-500/30'
+				: 'bg-red-500/20 text-red-300 border border-red-500/30'}"
 		>
 			{status.message}
 		</div>
@@ -358,18 +335,18 @@
 	<!-- Activation Alert - Show if user is not activated -->
 	{#if !data.isActivated}
 		<Card>
-			<CardContent className="p-6">
+			<CardContent class="p-6 bg-[#4c4c4c]">
 				<div class="flex items-start gap-4">
 					<div
-						class="flex-shrink-0 w-12 h-12 rounded-full bg-warning-100 dark:bg-warning-900/30 flex items-center justify-center"
+						class="flex-shrink-0 w-12 h-12 rounded-full bg-yellow-500/20 flex items-center justify-center"
 					>
 						<span class="text-2xl">⏳</span>
 					</div>
 					<div class="flex-1">
-						<h3 class="text-lg font-semibold text-neutral-950 dark:text-white mb-2">
+						<h3 class="text-lg font-semibold text-white mb-2">
 							Activate Your Account
 						</h3>
-						<p class="text-neutral-600 dark:text-neutral-400 text-sm mb-4">
+						<p class="text-white/70 text-sm mb-4">
 							Enter a referral code to unlock all features and start playing.
 						</p>
 
@@ -379,12 +356,12 @@
 								bind:value={referralCode}
 								placeholder="Enter 7-character code"
 								maxlength={7}
-								onKeyDown={(e) => {
+								onkeydown={(e: KeyboardEvent) => {
 									if (e.key === 'Enter' && referralCode.length === 7) {
 										handleLinkReferralCode();
 									}
 								}}
-								className="flex-1 font-mono uppercase"
+								class="flex-1 font-mono uppercase bg-[#333] border-[#808080] text-white"
 							/>
 							<Button
 								variant="primary"
@@ -397,7 +374,7 @@
 						</div>
 
 						{#if referralCode && referralCode.length !== 7}
-							<p class="text-xs text-neutral-500 mt-2">
+							<p class="text-xs text-white/50 mt-2">
 								{7 - referralCode.length} more character{7 - referralCode.length !== 1 ? 's' : ''}
 							</p>
 						{/if}
@@ -407,47 +384,44 @@
 		</Card>
 	{/if}
 
-	<!-- Profile Bar (thin hero) -->
-	<ProfileBar
+	<!-- Profile Hero Section -->
+	<ProfileHeroSection
 		avatarUrl={profile.avatar_url}
 		displayName={profile.display_name}
-		email={profile.primary_email}
 		{voiAddress}
 		onEditAvatar={() => (isAvatarModalOpen = true)}
 		onEditProfile={() => (isProfileEditModalOpen = true)}
 	/>
 
-	<!-- Two-column: Wallet + Referrals (or QuickStats) -->
-	<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-		{#if voiAddress}
-			<WalletCard
-				address={voiAddress}
-				activeAccountNickname={activeAccount?.nickname}
-			/>
-		{/if}
-
-		{#if hasReferrals}
-			<ReferralDashboard
-				referralData={referralDashboardData}
-				loading={loadingReferrals}
-				onManageCodes={() => (isReferralCodesModalOpen = true)}
-				onReferralClick={handleReferralClick}
-			/>
-		{:else}
-			<QuickStats />
-		{/if}
-	</div>
-
-	<!-- Game Accounts -->
-	<AccountsGrid
-		gameAccounts={data.gameAccounts}
-		activeAccountId={data.activeGameAccountId}
-		primaryEmail={data.profileData.profile.primary_email}
-		legacyAccounts={data.legacyAccounts}
+	<!-- Player Stats Bar -->
+	<PlayerStatsBar
+		spins={data.playerStats.totalSpins}
+		winRate={data.playerStats.winRate}
+		streak={data.playerStats.currentStreak}
 	/>
 
-	<!-- Danger Zone -->
-	<DangerZone />
+	<!-- Tab Navigation -->
+	<ProfileTabs
+		{activeTab}
+		onTabChange={handleTabChange}
+	/>
+
+	<!-- Tab Content -->
+	<div class="w-full">
+		{#if activeTab === 'portfolio'}
+			<PortfolioTab
+				{voiAddress}
+				gameAccounts={data.gameAccounts}
+				activeAccountId={data.activeGameAccountId || ''}
+			/>
+		{:else if activeTab === 'statistics'}
+			<StatisticsTab />
+		{:else if activeTab === 'referrals'}
+			<ReferralsTab />
+		{:else if activeTab === 'favorites'}
+			<FavoriteGamesTab />
+		{/if}
+	</div>
 </div>
 
 <!-- Modals -->

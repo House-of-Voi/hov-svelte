@@ -8,6 +8,10 @@
     size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
     hideCloseButton?: boolean;
     children?: import('svelte').Snippet;
+    /** Z-index level for the modal (default: 100) */
+    zIndex?: number;
+    /** Use portal to render at document.body (useful for nested modals) */
+    usePortal?: boolean;
   }
 
   let {
@@ -16,7 +20,9 @@
     title,
     size = 'lg',
     hideCloseButton = false,
-    children
+    children,
+    zIndex = 100,
+    usePortal = false
   }: Props = $props();
 
   let modalRef: HTMLDivElement;
@@ -28,6 +34,19 @@
     xl: 'max-w-6xl',
     full: 'max-w-[95vw]',
   };
+
+  // Portal action to teleport element to document.body
+  function portal(node: HTMLElement) {
+    if (!usePortal) return;
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (node.parentNode) {
+          node.parentNode.removeChild(node);
+        }
+      }
+    };
+  }
 
   $effect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -49,7 +68,7 @@
 </script>
 
 {#if isOpen}
-  <div class="fixed top-0 left-0 right-0 bottom-0 z-[100] flex items-center justify-center" style="margin: 0; padding: 1rem;">
+  <div use:portal class="fixed top-0 left-0 right-0 bottom-0 flex items-center justify-center" style="margin: 0; padding: 1rem; z-index: {zIndex};">
     <!-- Backdrop -->
     <button
       type="button"

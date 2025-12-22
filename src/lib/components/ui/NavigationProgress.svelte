@@ -2,11 +2,40 @@
   import { navigating } from '$app/stores';
   import { browser } from '$app/environment';
 
-  // Show indicator when navigating
-  const isNavigating = $derived(browser && $navigating !== null);
+  // Check if View Transitions API is supported
+  const supportsViewTransitions = browser && 'startViewTransition' in document;
+
+  // Delay before showing progress bar (allows view transitions to complete first)
+  const SHOW_DELAY_MS = 300;
+
+  let showProgress = $state(false);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  // Show progress bar after delay if still navigating
+  $effect(() => {
+    if ($navigating) {
+      // If view transitions supported, use longer delay
+      // Otherwise show immediately
+      const delay = supportsViewTransitions ? SHOW_DELAY_MS : 0;
+
+      timeoutId = setTimeout(() => {
+        showProgress = true;
+      }, delay);
+    } else {
+      clearTimeout(timeoutId);
+      showProgress = false;
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  });
+
+  // Only render when navigating and either no view transitions or slow load
+  const shouldShow = $derived(browser && showProgress && $navigating !== null);
 </script>
 
-{#if isNavigating}
+{#if shouldShow}
   <div
     class="fixed top-0 left-0 right-0 z-[100] h-0.5 bg-primary-500/10 dark:bg-primary-400/10 transition-opacity duration-200"
     role="progressbar"
@@ -40,4 +69,3 @@
     width: 40%;
   }
 </style>
-
