@@ -9,7 +9,7 @@ export type MachineConfigLite = {
   display_name: string | null;
   description: string | null;
   theme: string | null;
-  contract_id: number;
+  contract_id: number; // Maps to game_contract_id in machines table
   chain: 'base' | 'voi' | 'solana';
   is_active: boolean;
   house_edge: number;
@@ -38,34 +38,35 @@ export async function fetchMachinePerformance(
 ): Promise<MachinePerformanceResult> {
   const supabase = createAdminClient();
 
+  // Query the machines table (replaces slot_machine_configs)
   const { data: configs, error } = await supabase
-    .from('slot_machine_configs')
+    .from('machines')
     .select(
-      'id, name, display_name, description, theme, contract_id, chain, is_active, house_edge, rtp_target, min_bet, max_bet, max_paylines, launched_at, created_at, updated_at'
+      'id, name, display_name, description, theme, game_contract_id, chain, is_active, house_edge, rtp_target, min_bet, max_bet, config, launched_at, created_at, updated_at'
     )
     .eq('is_active', true)
     .order('display_name', { ascending: true });
 
   if (error) {
-    throw new Error(`Failed to load slot machine configs: ${error.message}`);
+    throw new Error(`Failed to load machines: ${error.message}`);
   }
 
   const machines = (configs || [])
-    .filter((config) => config.contract_id && Number(config.contract_id) > 0)
+    .filter((config) => config.game_contract_id && Number(config.game_contract_id) > 0)
     .map((config) => ({
       id: config.id as string,
       name: config.name as string,
       display_name: (config.display_name as string) ?? null,
       description: (config.description as string) ?? null,
       theme: (config.theme as string) ?? null,
-      contract_id: Number(config.contract_id),
+      contract_id: Number(config.game_contract_id), // Map game_contract_id to contract_id for compatibility
       chain: (config.chain as MachineConfigLite['chain']) ?? 'voi',
       is_active: Boolean(config.is_active),
       house_edge: Number(config.house_edge) || 0,
       rtp_target: Number(config.rtp_target) || 0,
       min_bet: Number(config.min_bet) || 0,
       max_bet: Number(config.max_bet) || 0,
-      max_paylines: Number(config.max_paylines) || 0,
+      max_paylines: Number((config.config as Record<string, unknown>)?.max_paylines) || 0,
       launched_at: (config.launched_at as string) ?? null,
       created_at: (config.created_at as string) ?? new Date().toISOString(),
       updated_at: (config.updated_at as string) ?? new Date().toISOString(),

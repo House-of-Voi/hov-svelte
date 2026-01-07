@@ -2,36 +2,11 @@
  * TypeScript types for admin functionality
  */
 
-// Permission constants
-export const PERMISSIONS = {
-  // Player management
-  VIEW_PLAYERS: 'view_players',
-  EDIT_PLAYERS: 'edit_players',
-  DELETE_PLAYERS: 'delete_players',
-  GRANT_ACCESS: 'grant_access',
-  MANAGE_WAITLIST: 'manage_waitlist',
+// Import permissions from the single source of truth
+import { PERMISSIONS, type Permission } from '$lib/auth/permissions';
 
-  // Game management
-  VIEW_GAMES: 'view_games',
-  EDIT_GAMES: 'edit_games',
-  CREATE_GAMES: 'create_games',
-  DELETE_GAMES: 'delete_games',
-
-  // Referral management
-  VIEW_REFERRALS: 'view_referrals',
-  MANAGE_REFERRALS: 'manage_referrals',
-
-  // Analytics & Treasury
-  VIEW_ANALYTICS: 'view_analytics',
-  VIEW_TREASURY: 'view_treasury',
-  MANAGE_TREASURY: 'manage_treasury',
-
-  // Admin management
-  MANAGE_ADMINS: 'manage_admins',
-  VIEW_AUDIT_LOG: 'view_audit_log',
-} as const;
-
-export type Permission = typeof PERMISSIONS[keyof typeof PERMISSIONS];
+// Re-export for consumers of this module
+export { PERMISSIONS, type Permission };
 
 // Admin role type from database enum
 export type AdminRole = 'owner' | 'operator' | 'viewer';
@@ -380,41 +355,57 @@ export interface GameFilters extends PaginationParams {
   active?: boolean;
 }
 
-// Slot Machine Config types
-export interface SlotMachineConfig {
-  id: string;
-  name: string;
-  display_name: string;
-  description: string | null;
-  theme: string | null;
-  contract_id: number;
-  chain: 'base' | 'voi' | 'solana';
-  treasury_address: string | null;
-  rtp_target: string;
-  house_edge: string;
-  min_bet: number;
-  max_bet: number;
-  max_paylines: number;
-  reel_config: Record<string, unknown>;
-  is_active: boolean;
-  launched_at: string;
-  deprecated_at: string | null;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
+// Machine types (game-agnostic, replaces SlotMachineConfig)
+import type { MachineType, MachineStatus, Machine } from './database';
+export type { MachineType, MachineStatus, Machine };
 
-export interface SlotMachineConfigListItem extends SlotMachineConfig {
+// Extended machine for admin list views with stats
+export interface MachineListItem extends Machine {
   total_spins?: number;
   total_wagered?: string;
   total_payout?: string;
   unique_players?: number;
 }
 
-export interface SlotMachineConfigFilters extends PaginationParams {
+// Machine filters for admin queries
+export interface MachineFilters extends PaginationParams {
+  machine_type?: MachineType;
+  status?: MachineStatus;
   chain?: 'base' | 'voi' | 'solana';
   is_active?: boolean;
   theme?: string;
+}
+
+// Request types for machine management
+export interface MachineCreateDraftRequest {
+  name: string;
+  display_name: string;
+  description?: string;
+  theme?: string;
+  machine_type: MachineType;
+  chain?: 'voi';
+  platform_fee_percent?: number;
+  platform_treasury_address?: string;
+  min_bet: number;
+  max_bet: number;
+  config?: Record<string, unknown>;
+  rtp_target?: number;
+  house_edge?: number;
+}
+
+export interface MachineRegisterRequest {
+  game_contract_id: number;
+  treasury_contract_id: number;  // Required - treasury must be provided
+  display_name: string;
+  machine_type: MachineType;
+  // Note: name is auto-generated from machine_type and game_contract_id
+  // Note: platform_fee_percent and platform_treasury_address are read from contract state
+}
+
+export interface MachineDeployRequest {
+  machine_id: string;
+  deployer_address: string;
+  initial_funding?: number;
 }
 
 export interface ReferralFilters extends PaginationParams {

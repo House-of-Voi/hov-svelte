@@ -2,14 +2,14 @@
  * Types for House Treasury / YBT (Yield Bearing Token) functionality
  */
 
-import type { SlotMachineConfig } from './database';
+import type { Machine } from './database';
 
 /**
  * User's position in a specific house pool (YBT contract)
  */
 export interface HousePosition {
-  contractId: number; // Slot machine contract ID
-  ybtAppId: number; // YBT contract app ID
+  contractId: number; // Game contract ID (renamed from slot machine)
+  ybtAppId: number; // Treasury contract app ID (YBT)
   address: string; // Voi address holding the position
   shares: bigint; // YBT shares held (raw value with decimals)
   formattedShares: number; // Human-readable shares (divided by 10^decimals)
@@ -30,10 +30,10 @@ export interface HousePortfolio {
 }
 
 /**
- * House position with additional contract metadata
+ * House position with additional contract/machine metadata
  */
 export interface HousePositionWithMetadata extends HousePosition {
-  contract: SlotMachineConfig;
+  contract: Machine; // Renamed internally but kept as 'contract' for compatibility
   profitLoss?: ProfitLoss;
 }
 
@@ -67,17 +67,22 @@ export interface YBTTransaction {
 
 /**
  * Contract treasury balance information
+ * Supports both native VOI and ARC200 token treasuries
  */
 export interface TreasuryBalance {
   contractId: number;
   ybtAppId: number;
-  balanceTotal: bigint; // Total contract balance (microVOI)
-  balanceAvailable: bigint; // Available for payouts (microVOI)
-  balanceLocked: bigint; // Locked in active bets (microVOI)
+  balanceTotal: bigint; // Total contract balance (in token atomic units)
+  balanceAvailable: bigint; // Available for payouts
+  balanceLocked: bigint; // Locked in active bets
   totalSupply: bigint; // Total YBT shares in circulation
   decimals: number; // YBT token decimals (typically 9)
-  sharePrice: bigint; // VOI per YBT share (with decimals)
+  sharePrice: bigint; // Token per YBT share (with decimals)
   lastUpdated: Date;
+  // Token information (null/undefined for native VOI)
+  tokenContractId?: number | null; // ARC200 token contract ID
+  tokenSymbol?: string; // Token symbol (e.g., "WAD", "VOI")
+  tokenDecimals?: number; // Token decimals (for balance display)
 }
 
 /**

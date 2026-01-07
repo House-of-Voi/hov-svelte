@@ -16,7 +16,8 @@
 	import { SlotMachineEngine } from '$lib/game-engine/SlotMachineEngine';
 	import { VoiW2WAdapter } from '$lib/game-engine/adapters/VoiW2WAdapter';
 	import { gameStore } from '$lib/game-engine/stores/gameStore.svelte';
-	import { gameConfigService } from '$lib/services/gameConfigService';
+	import { machineService } from '$lib/services/machineService';
+	import { getArc200TokenInfo } from '$lib/voi/arc200';
 	import { formatVoi } from '$lib/game-engine/utils/gameConstants';
 	import { SpinStatus, GameEventType } from '$lib/game-engine/types';
 
@@ -50,8 +51,16 @@
 	// Local state
 	let engine: SlotMachineEngine | null = $state(null);
 	let slotConfig = $state<any>(null);
-	let gameConfig = $state<{ display_name: string; description: string | null } | null>(null);
+	let gameConfig = $state<{ display_name: string; description: string | null; treasury_asset_id?: number } | null>(null);
 	let winAmount = $state(0);
+
+	// Token info for the machine's betting currency
+	let tokenInfo = $state<{ symbol: string; decimals: number; contractId: number | null }>({
+		symbol: 'VOI',
+		decimals: 6,
+		contractId: null
+	});
+	let tokenBalance = $state<bigint>(0n);
 	let winLevel = $state<any>('none');
 	let waysWins = $state<any[]>([]);
 	let bonusSpinsAwarded = $state(0);
@@ -60,6 +69,8 @@
 	let credits = $state(0);
 	let bonusSpins = $state(0);
 	let modeEnabled = $state(7); // Default: all modes enabled
+	let baseBet = $state(40); // Base bet from contract (defaults to 40)
+	let kickerAmount = $state(20); // Kicker amount from contract (defaults to 20)
 	let cleanupFn: (() => void) | null = $state(null);
 	let showWinDisplay = $state(false);
 	let isRefreshingBalance = $state(false);
@@ -113,13 +124,31 @@
 			// Create signer
 			const signer = new StoredKeySigner(playerAlgorandAddress);
 
-			// Fetch game config
-			const config = await gameConfigService.getConfigByContractId(contractId);
+			// Fetch machine config
+			const config = await machineService.getMachineByContractId(contractId);
 			if (config) {
 				gameConfig = {
 					display_name: config.display_name,
-					description: config.description
+					description: config.description,
+					treasury_asset_id: config.treasury_asset_id
 				};
+
+				// If machine has a treasury_asset_id, it uses an ARC200 token
+				if (config.treasury_asset_id) {
+					try {
+						const arc200Info = await getArc200TokenInfo(config.treasury_asset_id);
+						tokenInfo = {
+							symbol: arc200Info.symbol || 'TOKEN',
+							decimals: arc200Info.decimals || 6,
+							contractId: config.treasury_asset_id
+						};
+						console.log('🪙 W2W Machine uses ARC200 token:', tokenInfo.symbol);
+					} catch (err) {
+						console.error('Failed to fetch ARC200 token info:', err);
+					}
+				} else {
+					tokenInfo = { symbol: 'VOI', decimals: 6, contractId: null };
+				}
 			}
 
 			// Create W2W adapter
@@ -172,19 +201,59 @@
 			await engine.initialize();
 
 			// Load initial balance, user data, and machine state
-			const initialBalance = await engine.getBalance();
-			gameStore.setBalance(initialBalance);
+			await fetchTokenBalance();
 			await refreshUserData();
 			
-			// Fetch modeEnabled from machine state
+			// Fetch modeEnabled and bet costs from machine state
 			if (engineAdapter.getMachineState) {
 				try {
 					const machineState = await engineAdapter.getMachineState();
-					if (machineState && machineState.mode_enabled !== undefined) {
-						modeEnabled = Number(machineState.mode_enabled);
+					if (machineState) {
+						// Get mode enabled
+						if (machineState.mode_enabled !== undefined) {
+							modeEnabled = Number(machineState.mode_enabled);
+						}
+
+						// Determine bet costs based on enabled modes
+						// If token mode is enabled (mode_enabled & 4) and network is not, use token costs
+						// Otherwise use network costs
+						const isTokenMode = (modeEnabled & 4) !== 0;
+						const isNetworkMode = (modeEnabled & 2) !== 0;
+
+						if (isTokenMode && !isNetworkMode) {
+							// Token-only mode: use token_base_bet_cost and token_kicker_extra
+							if (machineState.token_base_bet_cost) {
+								baseBet = Number(machineState.token_base_bet_cost) / 1_000_000;
+							}
+							if (machineState.token_kicker_extra) {
+								kickerAmount = Number(machineState.token_kicker_extra) / 1_000_000;
+							}
+						} else if (isNetworkMode) {
+							// Network mode (or mixed mode): use network_base_bet_cost and network_kicker_extra
+							if (machineState.network_base_bet_cost) {
+								baseBet = Number(machineState.network_base_bet_cost) / 1_000_000;
+							}
+							if (machineState.network_kicker_extra) {
+								kickerAmount = Number(machineState.network_kicker_extra) / 1_000_000;
+							}
+						} else if (isTokenMode) {
+							// Token mode available but network is also available - prefer network for consistency
+							if (machineState.network_base_bet_cost) {
+								baseBet = Number(machineState.network_base_bet_cost) / 1_000_000;
+							} else if (machineState.token_base_bet_cost) {
+								baseBet = Number(machineState.token_base_bet_cost) / 1_000_000;
+							}
+							if (machineState.network_kicker_extra) {
+								kickerAmount = Number(machineState.network_kicker_extra) / 1_000_000;
+							} else if (machineState.token_kicker_extra) {
+								kickerAmount = Number(machineState.token_kicker_extra) / 1_000_000;
+							}
+						}
+
+						console.log('💰 Machine bet costs:', { baseBet, kickerAmount, modeEnabled });
 					}
 				} catch (error) {
-					console.warn('Failed to fetch modeEnabled, using default:', error);
+					console.warn('Failed to fetch machine state, using defaults:', error);
 				}
 			}
 
@@ -438,7 +507,7 @@
 
 		try {
 			isRefreshingBalance = true;
-			await engine.getBalance();
+			await fetchTokenBalance();
 			await refreshUserData();
 		} catch (error) {
 			console.error('Failed to refresh balance:', error);
@@ -446,6 +515,44 @@
 		} finally {
 			isRefreshingBalance = false;
 		}
+	}
+
+	/**
+	 * Fetch token balance - either ARC200 or native VOI
+	 */
+	async function fetchTokenBalance() {
+		if (!playerAlgorandAddress) return;
+
+		try {
+			if (tokenInfo.contractId) {
+				// Fetch ARC200 token balance
+				const arc200Info = await getArc200TokenInfo(tokenInfo.contractId, playerAlgorandAddress);
+				tokenBalance = BigInt(arc200Info.balance || '0');
+				// Update game store with the balance
+				gameStore.setBalance(Number(tokenBalance));
+				console.log(`💰 ${tokenInfo.symbol} balance:`, tokenBalance.toString());
+			} else {
+				// Fetch native VOI balance via engine
+				if (engine) {
+					const voiBalance = await engine.getBalance();
+					tokenBalance = BigInt(voiBalance);
+				}
+			}
+		} catch (error) {
+			console.error('Failed to fetch token balance:', error);
+		}
+	}
+
+	/**
+	 * Format token balance for display
+	 */
+	function formatTokenBalance(rawBalance: bigint | number, decimals: number): string {
+		const bal = typeof rawBalance === 'bigint' ? rawBalance : BigInt(rawBalance);
+		const divisor = BigInt(10 ** decimals);
+		const whole = bal / divisor;
+		const frac = bal % divisor;
+		const fracStr = frac.toString().padStart(decimals, '0').slice(0, 2);
+		return `${whole.toLocaleString()}.${fracStr}`;
 	}
 </script>
 
@@ -524,11 +631,11 @@
 								</div>
 							{/if}
 						{:else if mode === 2 || mode === 4}
-							<div class="text-sm text-tertiary">VOI Balance</div>
+							<div class="text-sm text-tertiary">{tokenInfo.symbol} Balance</div>
 							<div class="text-2xl font-bold text-primary-400">
-								{formatVoi(balance)}
+								{formatTokenBalance(tokenInfo.contractId ? tokenBalance : balance, tokenInfo.decimals)}
 							</div>
-							{#if reservedBalance > 0}
+							{#if reservedBalance > 0 && !tokenInfo.contractId}
 								<div class="text-xs text-secondary">
 									Reserved: {formatVoi(reservedBalance)}
 								</div>
@@ -569,6 +676,8 @@
 					mode={mode}
 					disabled={false}
 					isSpinning={pendingSpins > 0}
+					{baseBet}
+					{kickerAmount}
 					onBetChange={handleBetChange}
 					onSpin={handleSpin}
 				/>

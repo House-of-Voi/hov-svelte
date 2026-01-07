@@ -59,6 +59,8 @@
 	let isRefreshingBalance = $state(false);
 	let slotConfig = $state<any>(null);
 	let modeEnabled = $state(7); // Default: all modes enabled
+	let baseBet = $state(40); // Base bet from contract (defaults to 40)
+	let kickerAmount = $state(20); // Kicker amount from contract (defaults to 20)
 	let pendingSpinId: string | null = $state(null);
 	let isAutoBonusMode = $state(false); // Track if we're in auto bonus spin mode
 	let isAutoSpinning = $state(false); // Prevent multiple simultaneous auto-spins
@@ -68,6 +70,7 @@
 	let voiAddress = $state<string | null>(null);
 	let configContractId = $state<string | null>(null);
 	let isArc200Machine = $state(false);
+	let configReceived = $state(false); // Track if CONFIG message received (prevents balance flicker)
 
 	// Account lock state
 	let isAccountLocked = $state(false);
@@ -278,10 +281,13 @@
 			const result = await response.json();
 			const config = result?.data;
 
+			console.log('🔍 Slot config response:', { contractId, result, config, ybt_asset_id: config?.ybt_asset_id });
+
 			lastSlotConfigFetchId = contractId;
 
 			if (result?.success && config) {
 				const arcIdRaw = config.ybt_asset_id ?? null;
+				console.log('🔍 ARC200 check:', { arcIdRaw, type: typeof arcIdRaw, truthy: !!arcIdRaw });
 				if (arcIdRaw) {
 					const tokenId = Number(arcIdRaw);
 					if (Number.isFinite(tokenId)) {
@@ -682,6 +688,10 @@
 	 */
 	function handleConfig(message: ConfigMessage): void {
 		const payload = message.payload;
+
+		// Mark config as received (used to prevent balance display flicker)
+		configReceived = true;
+
 		slotConfig = {
 			contractId: payload.contractId,
 			minBet: payload.minBet,
@@ -698,9 +708,40 @@
 			modeEnabled = Number(payload.modeEnabled) ?? 7;
 		}
 
+		// Update bet costs from config (W2W format)
+		if ('baseBet' in payload && payload.baseBet) {
+			baseBet = Number(payload.baseBet);
+			// Also update betAmount to match the new baseBet if it was using the old default
+			if (betAmount === 40 || betAmount === 60) {
+				betAmount = baseBet;
+			}
+			console.log('💰 CONFIG baseBet:', baseBet);
+		}
+		if ('kickerAmount' in payload && payload.kickerAmount) {
+			kickerAmount = Number(payload.kickerAmount);
+			console.log('💰 CONFIG kickerAmount:', kickerAmount);
+		}
+
+		// Check for tokenContractId in config (W2W format) - use this immediately to avoid balance flicker
+		if ('tokenContractId' in payload && payload.tokenContractId) {
+			const tokenId = Number(payload.tokenContractId);
+			if (Number.isFinite(tokenId)) {
+				console.log('🪙 CONFIG contains tokenContractId, setting up ARC200 machine:', tokenId);
+				arc200ContractId = tokenId;
+				isArc200Machine = true;
+				applyArc200ModePreference();
+				// Fetch token info (symbol, name, balance) in background
+				refreshArc200TokenInfo(true);
+			}
+		}
+
 		if (payload.contractId) {
 			configContractId = payload.contractId;
-			loadSlotMachineMetadata(payload.contractId);
+			// Only load slot metadata if we don't already have token info from CONFIG
+			// This avoids redundant API calls and prevents the balance flicker
+			if (!isArc200Machine) {
+				loadSlotMachineMetadata(payload.contractId);
+			}
 		}
 	}
 
@@ -1265,6 +1306,8 @@
 						tokenLabel={arc200DisplayLabel}
 						disabled={isAccountLocked}
 						isSpinning={pendingSpins > 0}
+						{baseBet}
+						{kickerAmount}
 						onBetChange={handleBetChange}
 						onSpin={handleSpin}
 					/>
@@ -1307,7 +1350,15 @@
 				</CardHeader>
 				<CardContent>
 					<div class="space-y-3">
-						{#if isArc200Machine && arc200ContractId}
+						{#if !configReceived}
+							<!-- Wait for CONFIG to know machine type before showing balance -->
+							<div class="flex justify-between">
+								<span class="text-tertiary">Balance:</span>
+								<span class="text-3xl font-extrabold text-primary-400 animate-pulse">
+									Loading...
+								</span>
+							</div>
+						{:else if isArc200Machine && arc200ContractId}
 							<div class="space-y-1">
 								<div class="flex flex-row justify-between">
 									<div class="text-xs uppercase tracking-wide text-tertiary">{arc200TokenName || arc200DisplayLabel}</div>

@@ -23,7 +23,7 @@ type PlatformStatPayload = Awaited<ReturnType<typeof getPlatformStats>> extends 
 
 interface PlatformStatResponse extends PlatformStatPayload {
   machine_name: string | null;
-  slot_machine_config_id: string | null;
+  machine_id: string | null;
   chain: 'base' | 'voi' | 'solana' | null;
 }
 
@@ -78,7 +78,7 @@ export const GET: RequestHandler = async ({ url }) => {
       return {
         ...stat,
         machine_name: config?.display_name ?? null,
-        slot_machine_config_id: config?.id ?? null,
+        machine_id: config?.id ?? null,
         chain: (config?.chain as PlatformStatResponse['chain']) ?? null,
       };
     });
@@ -106,12 +106,13 @@ type MachineConfigRow = {
 async function loadMachineConfigMap(contractId?: number) {
   const supabase = createAdminClient();
 
+  // Query from machines table (replaces slot_machine_configs)
   const query = supabase
-    .from('slot_machine_configs')
-    .select('id, display_name, contract_id, chain');
+    .from('machines')
+    .select('id, display_name, game_contract_id, chain');
 
   if (contractId !== undefined) {
-    query.eq('contract_id', contractId);
+    query.eq('game_contract_id', contractId);
   }
 
   const { data, error } = await query;
@@ -124,16 +125,25 @@ async function loadMachineConfigMap(contractId?: number) {
 
     if (code === 'PGRST205') {
       console.warn(
-        'slot_machine_configs table not found. Skipping machine enrichment.'
+        'machines table not found. Skipping machine enrichment.'
       );
     } else {
-      console.error('Failed to load slot machine configs:', error);
+      console.error('Failed to load machines:', error);
     }
 
     return new Map<number, MachineConfigRow>();
   }
 
+  // Map game_contract_id to contract_id for compatibility
   return new Map<number, MachineConfigRow>(
-    data.map((config) => [config.contract_id as number, config as MachineConfigRow])
+    data.map((config) => [
+      config.game_contract_id as number,
+      {
+        id: config.id,
+        display_name: config.display_name,
+        contract_id: config.game_contract_id as number,
+        chain: config.chain as MachineConfigRow['chain']
+      }
+    ])
   );
 }

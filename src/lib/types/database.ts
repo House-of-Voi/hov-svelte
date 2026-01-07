@@ -1,42 +1,118 @@
-export interface SlotMachineConfig {
+// Machine types enum (matches database machine_type enum)
+export type MachineType = 'slots_5reel' | 'slots_w2w' | 'keno' | 'roulette';
+
+// Machine status enum (matches database machine_status enum)
+export type MachineStatus =
+  | 'draft'
+  | 'deploying'
+  | 'bootstrapping'
+  | 'active'
+  | 'paused'
+  | 'failed'
+  | 'deprecated';
+
+// Deployment phase type
+export type DeploymentPhase =
+  | 'phase1'
+  | 'phase1b'
+  | 'phase2'
+  | 'phase2b'
+  | 'phase3'
+  | 'complete';
+
+// Deployment state for recovery
+export interface DeploymentState {
+  currentPhase: DeploymentPhase;
+  deployerAddress: string;
+  gameAppId?: number;
+  treasuryAppId?: number;
+  startedAt: string;
+  lastUpdatedAt: string;
+}
+
+// Deployment log entry for audit trail
+export interface DeploymentLogEntry {
+  phase: string;
+  txid?: string;
+  timestamp: string;
+  deployer: string;
+  appId?: number;
+  status: 'success' | 'failed';
+  error?: string;
+}
+
+// Main Machine interface (replaces SlotMachineConfig)
+export interface Machine {
   id: string;
   name: string;
   display_name: string;
   description?: string;
   theme?: string;
-  contract_id: number;
+
+  // Type & Chain
+  machine_type: MachineType;
   chain: 'voi' | 'base' | 'solana';
-  treasury_address?: string;
-  rtp_target: number;
-  house_edge: number;
+
+  // Contract IDs (on-chain)
+  game_contract_id?: number;
+  treasury_contract_id?: number;
+  treasury_asset_id?: number;
+
+  // Game Configuration
+  config: Record<string, unknown>;
+  rtp_target?: number;
+  house_edge?: number;
   min_bet: number;
   max_bet: number;
-  max_paylines: number;
-  reel_config: {
-    reelCount: number;
-    reelLength: number;
-    windowLength: number;
-    reels: number[][];
-    paylines: number[][];
-    payouts: Record<string, Record<string, number>>;
-    symbolNames: string[];
-  };
+
+  // Platform Economics
+  platform_fee_percent: number;
+  platform_treasury_address?: string;
+
+  // Status & Lifecycle
+  status: MachineStatus;
   is_active: boolean;
-  launched_at: string;
-  deprecated_at?: string;
   version: number;
+
+  // Contract Versions (for selecting correct client)
+  game_contract_version: number;
+  treasury_contract_version: number;
+
+  // Deployment Tracking
+  created_by?: string;
+  deployment_tx_id?: string;
+  deployment_error?: string;
+  deployment_started_at?: string;
+  deployment_completed_at?: string;
+  deployment_state?: DeploymentState;
+  deployment_log?: DeploymentLogEntry[];
+  last_deployment_attempt?: string;
+
+  // Timestamps
   created_at: string;
   updated_at: string;
-  ybt_app_id?: number;
-  ybt_asset_id?: number;
-  game_type?: '5reel' | 'w2w';
+  launched_at?: string;
+  deprecated_at?: string;
 }
+
+// Legacy alias for backwards compatibility during migration
+// TODO: Remove after all code is updated to use Machine
+export type SlotMachineConfig = Machine & {
+  // Legacy field mappings
+  contract_id: number; // maps to game_contract_id
+  ybt_app_id?: number; // maps to treasury_contract_id
+  ybt_asset_id?: number; // maps to treasury_asset_id
+  reel_config: Record<string, unknown>; // maps to config
+  game_type?: '5reel' | 'w2w'; // maps to machine_type
+  max_paylines?: number; // now in config
+  treasury_address?: string; // maps to platform_treasury_address
+};
 
 export interface StatsSnapshotDaily {
   id: string;
   date: string;
   snapshot_type: 'platform' | 'machine' | 'leaderboard';
-  slot_machine_config_id?: string;
+  machine_id?: string;
   stats_data: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -46,7 +122,7 @@ export interface StatsSnapshotHourly {
   id: string;
   hour: string;
   snapshot_type: 'leaderboard_address' | 'leaderboard_profile' | 'trending';
-  slot_machine_config_id?: string;
+  machine_id?: string;
   stats_data: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -155,3 +231,22 @@ export interface TournamentResponse {
     overall: TournamentLeaderboardEntry[];
   };
 }
+
+// Re-export token types for convenience
+export type {
+  Token,
+  TokenWithBalance,
+  TokenCreateRequest,
+  TokenUpdateRequest,
+  TokenFilter,
+  ChainType,
+  TokenStandard,
+} from './token';
+
+export {
+  getTokenDisplaySymbol,
+  getTokenDisplayName,
+  isNativeToken,
+  isArc200Token,
+  isAsaToken,
+} from './token';

@@ -1,6 +1,7 @@
 /**
  * YBT (Yield Bearing Token) Service
  * Handles deposits, withdrawals, and balance queries for house pool contracts
+ * Supports both native VOI treasuries and ARC200 token treasuries (TYBT)
  */
 
 import algosdk from 'algosdk';
@@ -15,6 +16,7 @@ import type {
 } from '$lib/types/house';
 import { PUBLIC_VOI_NODE_URL, PUBLIC_VOI_INDEXER_URL } from '$env/static/public';
 import { APP_SPEC as YBTAppSpec } from './YieldBearingTokenClient';
+import { getArc200TokenInfo } from '$lib/voi/arc200';
 
 // Voi network configuration
 const VOI_NODE_URL = PUBLIC_VOI_NODE_URL || 'https://testnet-api.voi.nodly.io';
@@ -104,24 +106,52 @@ class YBTService {
 
 	/**
 	 * Get treasury balance and YBT supply for a contract
+	 * Supports both native VOI treasuries and ARC200 token treasuries
+	 *
+	 * @param contractId - Game contract app ID
+	 * @param ybtAppId - YBT/TYBT contract app ID
+	 * @param tokenContractId - Optional: ARC200 token contract ID (null for native VOI)
 	 */
-	async getTreasuryBalance(contractId: number, ybtAppId: number): Promise<TreasuryBalance> {
+	async getTreasuryBalance(
+		contractId: number,
+		ybtAppId: number,
+		tokenContractId?: number | null
+	): Promise<TreasuryBalance> {
 		try {
-			// Get slot machine contract actual VOI balance (in microVOI)
 			const contractAddress = algosdk.getApplicationAddress(contractId);
-			const accountInfo = await this.algodClient.accountInformation(contractAddress).do();
-			const balanceTotal = BigInt(accountInfo.amount || 0);
+			let balanceTotal: bigint;
+			let tokenDecimals = 6; // Default for VOI
+
+			if (tokenContractId) {
+				// ARC200 token treasury - query token balance of the game contract
+				const tokenInfo = await getArc200TokenInfo(
+					tokenContractId,
+					contractAddress.toString()
+				);
+				balanceTotal = BigInt(tokenInfo.balance || '0');
+				tokenDecimals = tokenInfo.decimals;
+
+				console.log('Slot machine ARC200 token balances:', {
+					contractAddress: contractAddress.toString(),
+					tokenContractId,
+					tokenSymbol: tokenInfo.symbol,
+					balanceTotal: balanceTotal.toString(),
+					tokenDecimals
+				});
+			} else {
+				// Native VOI treasury - query native balance
+				const accountInfo = await this.algodClient.accountInformation(contractAddress).do();
+				balanceTotal = BigInt(accountInfo.amount || 0);
+
+				console.log('Slot machine VOI balances (from account):', {
+					contractAddress: contractAddress.toString(),
+					balanceTotal: balanceTotal.toString()
+				});
+			}
 
 			// For now, assume all balance is available (we can get locked balance from global state if needed)
 			const balanceAvailable = balanceTotal;
 			const balanceLocked = 0n;
-
-			console.log('Slot machine balances (from account):', {
-				contractAddress,
-				balanceTotal: balanceTotal.toString(),
-				balanceAvailable: balanceAvailable.toString(),
-				balanceLocked: balanceLocked.toString()
-			});
 
 			// Get YBT total supply using ABI call (NOT global state)
 			const ci = new CONTRACT(
@@ -159,7 +189,8 @@ class YBTService {
 				sharePrice: sharePrice.toString()
 			});
 
-			return {
+			// Build result with optional token information
+			const result: TreasuryBalance = {
 				contractId,
 				ybtAppId,
 				balanceTotal,
@@ -170,6 +201,19 @@ class YBTService {
 				sharePrice,
 				lastUpdated: new Date()
 			};
+
+			// Add token information for ARC200 treasuries
+			if (tokenContractId) {
+				const tokenInfo = await getArc200TokenInfo(tokenContractId);
+				result.tokenContractId = tokenContractId;
+				result.tokenSymbol = tokenInfo.symbol;
+				result.tokenDecimals = tokenInfo.decimals;
+			} else {
+				result.tokenSymbol = 'VOI';
+				result.tokenDecimals = 6;
+			}
+
+			return result;
 		} catch (error) {
 			console.error('Error fetching treasury balance:', error);
 			throw new Error('Failed to fetch treasury balance');

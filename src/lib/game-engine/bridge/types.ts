@@ -202,6 +202,9 @@ export interface ConfigMessage {
         jackpotAmount: number;
         bonusSpinMultiplier: number;
         modeEnabled?: number; // Bitmask: 1=credit (free-play), 2=VOI, 4=ARC200
+        tokenContractId?: number | null; // ARC200 token contract ID if this is a token machine
+        baseBet?: number; // Base bet amount (40 by default) - in VOI/token units
+        kickerAmount?: number; // Kicker amount for progressive mode (20 by default) - in VOI/token units
       }
   );
 }

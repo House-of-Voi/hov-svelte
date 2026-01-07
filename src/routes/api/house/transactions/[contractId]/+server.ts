@@ -34,18 +34,18 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	}
 
 	try {
-		// Get contract config
+		// Get contract config from machines table
 		const { data: contract, error: dbError } = await supabaseAdmin
-			.from('slot_machine_configs')
+			.from('machines')
 			.select('*')
-			.eq('contract_id', contractId)
+			.eq('game_contract_id', contractId)
 			.single();
 
-		if (dbError || !contract || !contract.ybt_app_id) {
-			throw error(404, 'Contract not found or missing YBT configuration');
+		if (dbError || !contract || !contract.treasury_contract_id) {
+			throw error(404, 'Contract not found or missing treasury configuration');
 		}
 
-		const ybtAppId = contract.ybt_app_id;
+		const ybtAppId = contract.treasury_contract_id;
 
 		// Query transactions from indexer
 		const indexerClient = new algosdk.Indexer('', VOI_INDEXER_URL, '');

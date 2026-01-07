@@ -55,12 +55,12 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		// Deduplicate addresses
 		const uniqueAddresses = [...new Set(addresses)];
 
-		// Get all active slot machine configs with YBT
+		// Get all active machines with treasury contracts
 		const { data: contracts } = await supabaseAdmin
-			.from('slot_machine_configs')
+			.from('machines')
 			.select('*')
 			.eq('is_active', true)
-			.not('ybt_app_id', 'is', null);
+			.not('treasury_contract_id', 'is', null);
 
 		if (!contracts) {
 			return json({ portfolio: { totalValue: '0', totalShares: '0', positions: [], addresses: uniqueAddresses } });

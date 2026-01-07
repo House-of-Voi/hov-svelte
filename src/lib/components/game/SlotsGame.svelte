@@ -15,7 +15,8 @@
 	import { SlotMachineEngine } from '$lib/game-engine/SlotMachineEngine';
 	import { VoiSlotMachineAdapter } from '$lib/game-engine/adapters';
 	import { gameStore } from '$lib/game-engine/stores/gameStore.svelte';
-	import { gameConfigService } from '$lib/services/gameConfigService';
+	import { machineService } from '$lib/services/machineService';
+	import { getArc200TokenInfo } from '$lib/voi/arc200';
 	import { detectWinningPaylines, calculateTotalWinnings } from '$lib/game-engine/utils/winDetection';
 	import { formatVoi, GAME_DEFAULTS } from '$lib/game-engine/utils/gameConstants';
 	import { getWinLevel } from '$lib/game-engine/types/results';
@@ -54,8 +55,16 @@
 	// Local state
 	let engine: SlotMachineEngine | null = $state(null);
 	let slotConfig = $state<any>(null);
-	let gameConfig = $state<{ display_name: string; description: string | null } | null>(null);
+	let gameConfig = $state<{ display_name: string; description: string | null; treasury_asset_id?: number } | null>(null);
 	let reels = $state<any>(null);
+
+	// Token info for the machine's betting currency
+	let tokenInfo = $state<{ symbol: string; decimals: number; contractId: number | null }>({
+		symbol: 'VOI',
+		decimals: 6,
+		contractId: null
+	});
+	let tokenBalance = $state<bigint>(0n);
 	let winAmount = $state(0);
 	let winLevel = $state<any>('small');
 	let winningLines = $state<any>([]);
@@ -184,21 +193,40 @@
 			reels = slotConfig.reelConfig.reels;
 			console.log('✅ Slot config loaded');
 
-			// Fetch game config for display name and description
+			// Fetch machine config for display name, description, and token info
 			if (contractId) {
-				const dbConfig = await gameConfigService.getConfigByContractId(contractId);
-				if (dbConfig) {
+				const machineConfig = await machineService.getMachineByContractId(contractId);
+				if (machineConfig) {
 					gameConfig = {
-						display_name: dbConfig.display_name,
-						description: dbConfig.description
+						display_name: machineConfig.display_name,
+						description: machineConfig.description,
+						treasury_asset_id: machineConfig.treasury_asset_id
 					};
+
+					// If machine has a treasury_asset_id, it uses an ARC200 token
+					if (machineConfig.treasury_asset_id) {
+						try {
+							const arc200Info = await getArc200TokenInfo(machineConfig.treasury_asset_id);
+							tokenInfo = {
+								symbol: arc200Info.symbol || 'TOKEN',
+								decimals: arc200Info.decimals || 6,
+								contractId: machineConfig.treasury_asset_id
+							};
+							console.log('🪙 Machine uses ARC200 token:', tokenInfo.symbol);
+						} catch (err) {
+							console.error('Failed to fetch ARC200 token info:', err);
+						}
+					} else {
+						// Native VOI
+						tokenInfo = { symbol: 'VOI', decimals: 6, contractId: null };
+					}
 				}
 			}
 
 			// Fetch initial balance explicitly
 			console.log('💰 Fetching initial balance...');
-			const initialBalance = await engine.getBalance();
-			console.log('✅ Initial balance:', initialBalance);
+			await fetchTokenBalance();
+			console.log('✅ Initial balance fetched');
 
 			console.log('✅ SlotsGame mounted and initialized');
 		} catch (error) {
@@ -276,6 +304,32 @@
 			engine = null;
 		}
 	});
+
+	/**
+	 * Fetch token balance - either ARC200 or native VOI
+	 */
+	async function fetchTokenBalance() {
+		if (!playerAlgorandAddress) return;
+
+		try {
+			if (tokenInfo.contractId) {
+				// Fetch ARC200 token balance
+				const arc200Info = await getArc200TokenInfo(tokenInfo.contractId, playerAlgorandAddress);
+				tokenBalance = BigInt(arc200Info.balance || '0');
+				// Update game store with the balance in micro units
+				gameStore.setBalance(Number(tokenBalance));
+				console.log(`💰 ${tokenInfo.symbol} balance:`, tokenBalance.toString());
+			} else {
+				// Fetch native VOI balance via engine
+				if (engine) {
+					const voiBalance = await engine.getBalance();
+					tokenBalance = BigInt(voiBalance);
+				}
+			}
+		} catch (error) {
+			console.error('Failed to fetch token balance:', error);
+		}
+	}
 
 	/**
 	 * Handle spin button click
@@ -358,13 +412,25 @@
 
 		try {
 			isRefreshingBalance = true;
-			await engine.getBalance();
+			await fetchTokenBalance();
 		} catch (error) {
 			console.error('Failed to refresh balance:', error);
 			gameStore.setError('Failed to refresh balance. Please try again.');
 		} finally {
 			isRefreshingBalance = false;
 		}
+	}
+
+	/**
+	 * Format token balance for display
+	 */
+	function formatTokenBalance(rawBalance: bigint | number, decimals: number): string {
+		const balance = typeof rawBalance === 'bigint' ? rawBalance : BigInt(rawBalance);
+		const divisor = BigInt(10 ** decimals);
+		const whole = balance / divisor;
+		const frac = balance % divisor;
+		const fracStr = frac.toString().padStart(decimals, '0').slice(0, 2);
+		return `${whole.toLocaleString()}.${fracStr}`;
 	}
 </script>
 
@@ -464,15 +530,15 @@
 				<CardContent>
 					<div class="text-center py-4">
 						<div class="text-4xl font-black text-warning-500 dark:text-warning-400 mb-2">
-							{formatVoi(balance)}
+							{formatTokenBalance(tokenInfo.contractId ? tokenBalance : balance, tokenInfo.decimals)}
 						</div>
-						{#if reservedBalance > 0}
+						{#if reservedBalance > 0 && !tokenInfo.contractId}
 							<div class="text-xs text-neutral-600 dark:text-neutral-500">
 								Available: {formatVoi(availableBalance)}
 							</div>
 						{/if}
 						<div class="text-xs text-neutral-600 dark:text-neutral-500 uppercase tracking-wider mt-1">
-							VOI Network
+							{tokenInfo.symbol}
 						</div>
 					</div>
 				</CardContent>
@@ -503,7 +569,7 @@
 							class="flex justify-between py-2 border-b border-warning-200 dark:border-warning-900/20"
 						>
 							<span class="text-tertiary">Min Bet:</span>
-							<span class="text-secondary font-semibold">{formatVoi(slotConfig.minBet)}</span>
+							<span class="text-secondary font-semibold">{formatTokenBalance(slotConfig.minBet, tokenInfo.decimals)} {tokenInfo.symbol}</span>
 						</div>
 						<div class="flex justify-between py-2">
 							<span class="text-tertiary">Max Payout:</span>

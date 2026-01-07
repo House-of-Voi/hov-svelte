@@ -8,7 +8,7 @@
 import { SlotMachineEngine } from '../SlotMachineEngine';
 import type { BlockchainAdapter } from '../SlotMachineEngine';
 import { AdapterFactory } from '../adapters/AdapterFactory';
-import { gameConfigService } from '$lib/services/gameConfigService';
+import { machineService } from '$lib/services/machineService';
 import type { WalletSigner } from '$lib/wallet/algokitTransactionSigner';
 import type { SpinResult, GameError } from '../types';
 import type {
@@ -51,6 +51,9 @@ export class GameBridge {
   private spinRequestCount: number = 0;
   private lastSpinTime: number = 0;
   private currentMode: number = 2; // Track current mode: 1=credit, 2=VOI/network, 4=ARC200/token (default to VOI)
+  private treasuryAssetId: number | null = null; // ARC200 token contract ID if this is a token machine
+  private baseBet: number = 40; // Base bet amount in VOI/token units (from machine config)
+  private kickerAmount: number = 20; // Kicker amount in VOI/token units (from machine config)
 
   constructor(config: GameBridgeConfig) {
     this.config = config;
@@ -79,9 +82,9 @@ export class GameBridge {
     try {
       console.log('GameBridge: Starting initialization for contract:', this.config.contractId.toString());
 
-      // Query game configuration from database
-      console.log('GameBridge: Fetching game config from database...');
-      const gameConfig = await gameConfigService.getConfigByContractId(this.config.contractId);
+      // Query machine configuration from database
+      console.log('GameBridge: Fetching machine config from database...');
+      const machineConfig = await machineService.getMachineByContractId(this.config.contractId);
 
       // Check if destroyed during async operation
       if (this.destroyed) {
@@ -89,23 +92,29 @@ export class GameBridge {
         return;
       }
 
-      if (!gameConfig) {
-        const errorMsg = `No active game configuration found for contract ${this.config.contractId}`;
+      if (!machineConfig) {
+        const errorMsg = `No active machine configuration found for contract ${this.config.contractId}`;
         console.error('GameBridge:', errorMsg);
         throw new Error(errorMsg);
       }
 
-      if (!gameConfig.is_active) {
-        const errorMsg = `Game configuration for contract ${this.config.contractId} is not active`;
+      if (!machineConfig.is_active) {
+        const errorMsg = `Machine configuration for contract ${this.config.contractId} is not active`;
         console.error('GameBridge:', errorMsg);
         throw new Error(errorMsg);
       }
 
-      console.log('GameBridge: Initializing with game type:', gameConfig.game_type);
+      console.log('GameBridge: Initializing with machine type:', machineConfig.machine_type);
+
+      // Store treasury_asset_id for token machines (sent in CONFIG message)
+      if (machineConfig.treasury_asset_id) {
+        this.treasuryAssetId = machineConfig.treasury_asset_id;
+        console.log('GameBridge: Machine uses ARC200 token:', this.treasuryAssetId);
+      }
 
       // Create adapter using factory (automatically selects 5reel or w2w adapter)
       console.log('GameBridge: Creating adapter...');
-      this.adapter = this.adapterFactory.createAdapter(gameConfig, this.config.walletSigner);
+      this.adapter = this.adapterFactory.createAdapter(machineConfig, this.config.walletSigner);
       console.log('GameBridge: Adapter created successfully');
 
       // Create engine
@@ -392,10 +401,13 @@ export class GameBridge {
         const betAmountMicroAlgos = mode === 0 ? 0 : betAmountVOI * 1_000_000;
 
         // Validate bet amount (in VOI units for user-friendly validation)
-        if (mode !== 0 && betAmountVOI !== 40 && betAmountVOI !== 60) {
+        // Valid amounts are baseBet (e.g., 40) or baseBet + kickerAmount (e.g., 60)
+        const validBaseBet = this.baseBet;
+        const validKickerBet = this.baseBet + this.kickerAmount;
+        if (mode !== 0 && betAmountVOI !== validBaseBet && betAmountVOI !== validKickerBet) {
           this.sendError({
             code: 'INVALID_BET',
-            message: 'Bet amount must be 40 or 60 for W2W games',
+            message: `Bet amount must be ${validBaseBet} or ${validKickerBet} for W2W games`,
             recoverable: true,
             requestId: clientSpinId,
           });
@@ -574,22 +586,71 @@ export class GameBridge {
 
     const config = this.engine.getConfig();
     const adapter = (this.engine as any).adapter;
-    
+
     // Check if this is a W2W adapter
     const isW2W = adapter && typeof adapter.getMachineState === 'function';
-    
+
     if (isW2W) {
-      // W2W format - try to get jackpot and modeEnabled from machine state
+      // W2W format - try to get jackpot, modeEnabled, and bet costs from machine state
       let jackpotAmount = 0; // Default
       let modeEnabled = 7; // Default: all modes enabled
+      let baseBet = 40; // Default base bet in VOI/token units
+      let kickerAmount = 20; // Default kicker amount in VOI/token units
+
       try {
         const machineState = await adapter.getMachineState();
-        
+
         // Get modeEnabled from machine state
         if (machineState && machineState.mode_enabled !== undefined) {
           modeEnabled = Number(machineState.mode_enabled);
         }
-        
+
+        // Determine bet costs based on enabled modes
+        // If token mode is enabled (mode_enabled & 4), use token costs
+        // Otherwise use network costs
+        // Note: Contract stores values in microAlgos, convert to VOI/token units
+        if (machineState) {
+          const isTokenMode = (modeEnabled & 4) !== 0;
+          const isNetworkMode = (modeEnabled & 2) !== 0;
+
+          if (isTokenMode && !isNetworkMode) {
+            // Token-only mode: use token_base_bet_cost and token_kicker_extra
+            // These are stored as bytes (uint256) in the contract
+            if (machineState.token_base_bet_cost) {
+              baseBet = Number(machineState.token_base_bet_cost) / 1_000_000;
+            }
+            if (machineState.token_kicker_extra) {
+              kickerAmount = Number(machineState.token_kicker_extra) / 1_000_000;
+            }
+          } else if (isNetworkMode) {
+            // Network mode (or mixed mode): use network_base_bet_cost and network_kicker_extra
+            // These are stored as uint64 in the contract
+            if (machineState.network_base_bet_cost) {
+              baseBet = Number(machineState.network_base_bet_cost) / 1_000_000;
+            }
+            if (machineState.network_kicker_extra) {
+              kickerAmount = Number(machineState.network_kicker_extra) / 1_000_000;
+            }
+          } else if (isTokenMode) {
+            // Token mode available but network is also available - prefer network for consistency
+            // but still check token values as fallback
+            if (machineState.network_base_bet_cost) {
+              baseBet = Number(machineState.network_base_bet_cost) / 1_000_000;
+            } else if (machineState.token_base_bet_cost) {
+              baseBet = Number(machineState.token_base_bet_cost) / 1_000_000;
+            }
+            if (machineState.network_kicker_extra) {
+              kickerAmount = Number(machineState.network_kicker_extra) / 1_000_000;
+            } else if (machineState.token_kicker_extra) {
+              kickerAmount = Number(machineState.token_kicker_extra) / 1_000_000;
+            }
+          }
+        }
+
+        // Store bet costs for validation in spin requests
+        this.baseBet = baseBet;
+        this.kickerAmount = kickerAmount;
+
         // Select the correct jackpot based on current mode
         // Mode 1 = credit -> jackpot_credit
         // Mode 2 = VOI/network -> jackpot_network
@@ -600,7 +661,7 @@ export class GameBridge {
         if (state.currentBet?.mode !== undefined && state.currentBet.mode !== 0) {
           mode = state.currentBet.mode;
         }
-        
+
         // Select jackpot based on mode
         if (machineState) {
           if (mode === 1 && machineState.jackpot_credit) {
@@ -631,7 +692,7 @@ export class GameBridge {
           }
         }
       } catch (error) {
-        console.warn('Failed to get machine state for jackpot:', error);
+        console.warn('Failed to get machine state for config:', error);
       }
 
       this.sendToGame({
@@ -645,6 +706,11 @@ export class GameBridge {
           jackpotAmount,
           bonusSpinMultiplier: 1.5, // Default bonus multiplier
           modeEnabled,
+          // Include token info so game can display correct balance immediately (avoids flicker)
+          tokenContractId: this.treasuryAssetId,
+          // Include bet costs from contract
+          baseBet,
+          kickerAmount,
         },
       } as ConfigMessage);
     } else {
@@ -888,11 +954,14 @@ export class GameBridge {
     } else if (isW2WFormat) {
       const { betAmount } = message.payload as { betAmount: number; reserved: number };
 
-      // Validate bet amount (must be 40 or 60)
-      if (betAmount !== 40 && betAmount !== 60) {
+      // Validate bet amount using configured values
+      // Valid amounts are baseBet (e.g., 40) or baseBet + kickerAmount (e.g., 60)
+      const validBaseBet = this.baseBet;
+      const validKickerBet = this.baseBet + this.kickerAmount;
+      if (betAmount !== validBaseBet && betAmount !== validKickerBet) {
         return {
           valid: false,
-          error: 'Bet amount must be 40 or 60 for W2W games',
+          error: `Bet amount must be ${validBaseBet} or ${validKickerBet} for W2W games`,
         };
       }
     } else {

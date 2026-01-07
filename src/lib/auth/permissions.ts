@@ -17,6 +17,7 @@ export const PERMISSIONS = {
   EDIT_GAMES: 'edit_games',
   CREATE_GAMES: 'create_games',
   DELETE_GAMES: 'delete_games',
+  DEPLOY_MACHINES: 'deploy_machines',
 
   // Referral management
   VIEW_REFERRALS: 'view_referrals',
@@ -48,6 +49,7 @@ const DEFAULT_PERMISSIONS: Record<AdminRole, Permission[]> = {
     PERMISSIONS.VIEW_GAMES,
     PERMISSIONS.EDIT_GAMES,
     PERMISSIONS.CREATE_GAMES,
+    PERMISSIONS.DEPLOY_MACHINES,
     PERMISSIONS.VIEW_REFERRALS,
     PERMISSIONS.MANAGE_REFERRALS,
     PERMISSIONS.VIEW_ANALYTICS,

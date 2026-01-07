@@ -36,41 +36,41 @@ export const POST: RequestHandler = async ({ cookies }) => {
 
     const supabase = createAdminClient();
 
-    // Fetch all Voi slot machine configs (source of truth for all machines)
-    const { data: slotMachines, error: fetchError } = await supabase
-      .from('slot_machine_configs')
-      .select('contract_id, chain, display_name')
+    // Fetch all Voi machines from the machines table
+    const { data: machines, error: fetchError } = await supabase
+      .from('machines')
+      .select('game_contract_id, chain, display_name')
       .eq('chain', 'voi')
       .eq('is_active', true);
 
     if (fetchError) {
-      console.error('Failed to fetch slot machines from database:', fetchError);
+      console.error('Failed to fetch machines from database:', fetchError);
       return json<ApiResponse>(
-        { success: false, error: 'Failed to fetch slot machines from database' },
+        { success: false, error: 'Failed to fetch machines from database' },
         { status: 500 }
       );
     }
 
-    if (!slotMachines || slotMachines.length === 0) {
+    if (!machines || machines.length === 0) {
       return json<ApiResponse>(
         {
           success: false,
-          error: 'No active Voi slot machines found in database. Add machines to slot_machine_configs table first.'
+          error: 'No active Voi machines found in database. Add machines to machines table first.'
         },
         { status: 404 }
       );
     }
 
-    // Sync each slot machine contract
+    // Sync each machine contract
     let updatedCount = 0;
     const errors: string[] = [];
 
-    for (const machine of slotMachines) {
+    for (const machine of machines) {
       try {
-        const appId = Number(machine.contract_id);
+        const appId = Number(machine.game_contract_id);
 
         if (isNaN(appId) || appId <= 0) {
-          errors.push(`Invalid contract_id for ${machine.display_name}: ${machine.contract_id}`);
+          errors.push(`Invalid game_contract_id for ${machine.display_name}: ${machine.game_contract_id}`);
           continue;
         }
 
@@ -79,7 +79,7 @@ export const POST: RequestHandler = async ({ cookies }) => {
 
         // Update/insert treasury record
         const treasuryData = {
-          contract_id: machine.contract_id.toString(),
+          contract_id: machine.game_contract_id.toString(),
           chain: machine.chain,
           game_type: 'slots' as const,
           game_name: machine.display_name,
@@ -103,7 +103,7 @@ export const POST: RequestHandler = async ({ cookies }) => {
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
         errors.push(`Failed to sync ${machine.display_name}: ${errorMsg}`);
-        console.error(`Error syncing contract ${machine.contract_id}:`, error);
+        console.error(`Error syncing contract ${machine.game_contract_id}:`, error);
       }
     }
 

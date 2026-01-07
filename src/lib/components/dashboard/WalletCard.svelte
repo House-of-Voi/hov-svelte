@@ -9,14 +9,14 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { fetchAllBalances, formatBalance, formatUsdValue } from '$lib/voi/balances';
-	import { openIBuyVoiWidget, isPopupBlocked } from '$lib/voi/ibuyvoi';
 	import type { AssetBalance } from '$lib/voi/balances';
+	import type { Token } from '$lib/types/token';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import CardContent from '$lib/components/ui/CardContent.svelte';
 	import AccountPrepModal from '$lib/components/wallet/AccountPrepModal.svelte';
 	import UsdcWithdrawModal from '$lib/components/wallet/UsdcWithdrawModal.svelte';
-	import VoiDepositModal from '$lib/components/wallet/VoiDepositModal.svelte';
+	import TokenDepositModal from '$lib/components/wallet/TokenDepositModal.svelte';
 	import VoiWithdrawModal from '$lib/components/wallet/VoiWithdrawModal.svelte';
 	import SwapPlaceholderModal from '$lib/components/wallet/SwapPlaceholderModal.svelte';
 	import {
@@ -33,6 +33,15 @@
 		type FountainError
 	} from '$lib/voi/fountain-client';
 	import { signTransaction } from '$lib/voi/wallet-utils';
+	import {
+		AUSDC_ASSET_ID,
+		AUSDC_DECIMALS,
+		ACCOUNT_PREP_CONFIRMATION_ROUNDS,
+		ACCOUNT_PREP_VERIFY_TIMEOUT_MS,
+		ACCOUNT_PREP_VERIFY_INTERVAL_MS,
+		FOUNTAIN_MAX_ATTEMPTS,
+		FOUNTAIN_POLL_INTERVAL_MS
+	} from '$lib/constants/tokens';
 
 	interface Props {
 		address: string;
@@ -40,8 +49,6 @@
 	}
 
 	let { address, activeAccountNickname }: Props = $props();
-
-	const AUSDC_ASSET_ID = 302190;
 
 	// Balance state
 	let usdcBalance = $state<AssetBalance | null>(null);
@@ -61,7 +68,8 @@
 
 	// Modal states
 	let showUsdcWithdrawModal = $state(false);
-	let showVoiDepositModal = $state(false);
+	let showTokenDepositModal = $state(false);
+	let selectedDepositToken = $state<Token | null>(null);
 	let showVoiWithdrawModal = $state(false);
 	let swapModal = $state<{
 		isOpen: boolean;
@@ -72,6 +80,55 @@
 		tokenSymbol: '',
 		action: 'deposit'
 	});
+
+	/**
+	 * Convert AssetBalance to Token-like object for the deposit modal
+	 */
+	function assetBalanceToToken(balance: AssetBalance): Token {
+		const isNative = balance.contractId === undefined;
+		return {
+			id: balance.contractId?.toString() || 'native-voi',
+			chain: 'voi',
+			contract_id: balance.contractId ?? null,
+			token_standard: isNative ? 'native' : 'voi_arc200',
+			symbol: balance.symbol,
+			name: balance.name,
+			decimals: balance.decimals,
+			icon_url: balance.imageUrl || null,
+			display_symbol: balance.symbol,
+			display_name: balance.name,
+			is_active: true,
+			is_displayable: true,
+			is_game_enabled: false,
+			is_treasury_enabled: false,
+			created_at: new Date().toISOString(),
+			updated_at: new Date().toISOString(),
+		};
+	}
+
+	/**
+	 * Create a Token object for USDC
+	 */
+	function getUsdcToken(): Token {
+		return {
+			id: AUSDC_ASSET_ID.toString(),
+			chain: 'voi',
+			contract_id: AUSDC_ASSET_ID,
+			token_standard: 'voi_arc200',
+			symbol: 'USDC',
+			name: 'USD Coin',
+			decimals: AUSDC_DECIMALS,
+			icon_url: null,
+			display_symbol: 'USDC',
+			display_name: 'USD Coin',
+			is_active: true,
+			is_displayable: true,
+			is_game_enabled: true,
+			is_treasury_enabled: false,
+			created_at: new Date().toISOString(),
+			updated_at: new Date().toISOString(),
+		};
+	}
 
 	const loadBalances = async () => {
 		loading = true;
@@ -100,17 +157,20 @@
 		}
 	});
 
-	// Prepare account for USDC deposits
-	const prepareAndDeposit = async () => {
+	// Open USDC deposit modal (with opt-in check)
+	const handleUsdcDeposit = async () => {
 		try {
 			prepModalStep = 'checking';
 			const isOptedIn = await checkAssetOptIn(address, AUSDC_ASSET_ID);
 
 			if (isOptedIn) {
-				openDepositWidget();
+				// Already opted in, open deposit modal directly
+				selectedDepositToken = getUsdcToken();
+				showTokenDepositModal = true;
 				return;
 			}
 
+			// Need to opt in first
 			showPrepModal = true;
 			isPreparingAccount = true;
 			await runAccountPreparation();
@@ -136,7 +196,7 @@
 					const fountainResponse = await requestVoi(address);
 
 					if (fountainResponse.success) {
-						const received = await waitForVoiReceipt(address, initialBalance, 20, 1000);
+						const received = await waitForVoiReceipt(address, initialBalance, FOUNTAIN_MAX_ATTEMPTS, FOUNTAIN_POLL_INTERVAL_MS);
 						if (!received) {
 							throw new Error('Timeout waiting for VOI tokens. Please try again.');
 						}
@@ -155,9 +215,10 @@
 			const session = $page.data.session;
 			const signedBlob = await signTransaction(optInTxn, address, session);
 			const txId = await submitTransaction(signedBlob);
-			await waitForConfirmation(txId, 10);
+			await waitForConfirmation(txId, ACCOUNT_PREP_CONFIRMATION_ROUNDS);
 
-			const verified = await verifyAssetOptIn(address, AUSDC_ASSET_ID, 15, 1000);
+			const verifyAttempts = Math.floor(ACCOUNT_PREP_VERIFY_TIMEOUT_MS / ACCOUNT_PREP_VERIFY_INTERVAL_MS);
+			const verified = await verifyAssetOptIn(address, AUSDC_ASSET_ID, verifyAttempts, ACCOUNT_PREP_VERIFY_INTERVAL_MS);
 			if (!verified) {
 				throw new Error(
 					'Failed to verify opt-in. The transaction may still be processing. Please refresh and try again.'
@@ -168,7 +229,9 @@
 			setTimeout(() => {
 				showPrepModal = false;
 				isPreparingAccount = false;
-				openDepositWidget();
+				// Open the USDC deposit modal
+				selectedDepositToken = getUsdcToken();
+				showTokenDepositModal = true;
 			}, 1500);
 		} catch (err) {
 			console.error('Account preparation error:', err);
@@ -176,23 +239,6 @@
 			prepModalError =
 				err instanceof Error ? err.message : 'An unexpected error occurred. Please try again.';
 			isPreparingAccount = false;
-		}
-	};
-
-	const openDepositWidget = () => {
-		const popup = openIBuyVoiWidget(address, () => {
-			depositStatus = 'Refreshing balance...';
-			setTimeout(() => {
-				loadBalances();
-				depositStatus = null;
-			}, 1000);
-		});
-
-		if (isPopupBlocked(popup)) {
-			error = 'Popup was blocked. Please allow popups for this site.';
-			setTimeout(() => {
-				error = null;
-			}, 5000);
 		}
 	};
 
@@ -214,13 +260,10 @@
 		loadBalances();
 	};
 
-	// Handle token deposit (for non-VOI tokens, show placeholder)
+	// Handle token deposit - use unified TokenDepositModal for all tokens
 	const handleTokenDeposit = (token: AssetBalance) => {
-		if (token.symbol === 'VOI') {
-			showVoiDepositModal = true;
-			return;
-		}
-		swapModal = { isOpen: true, tokenSymbol: token.symbol, action: 'deposit' };
+		selectedDepositToken = assetBalanceToToken(token);
+		showTokenDepositModal = true;
 	};
 
 	// Handle token withdraw (for non-VOI tokens, show placeholder)
@@ -280,7 +323,7 @@
 
 					<!-- USDC Actions -->
 					<div class="flex gap-3 mt-4">
-						<Button variant="primary" size="md" onclick={prepareAndDeposit} class="flex-1">
+						<Button variant="primary" size="md" onclick={handleUsdcDeposit} class="flex-1">
 							Deposit
 						</Button>
 						<Button
@@ -430,13 +473,19 @@
 	session={$page.data.session}
 />
 
-<VoiDepositModal
-	isOpen={showVoiDepositModal}
-	onClose={() => (showVoiDepositModal = false)}
-	onSuccess={() => loadBalances()}
-	{address}
-	{usdcBalance}
-/>
+{#if selectedDepositToken}
+	<TokenDepositModal
+		isOpen={showTokenDepositModal}
+		onClose={() => {
+			showTokenDepositModal = false;
+			selectedDepositToken = null;
+		}}
+		onSuccess={() => loadBalances()}
+		{address}
+		token={selectedDepositToken}
+		{usdcBalance}
+	/>
+{/if}
 
 <VoiWithdrawModal
 	isOpen={showVoiWithdrawModal}

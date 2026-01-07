@@ -35,15 +35,15 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	}
 
 	try {
-		// Get contract info
+		// Get contract info from machines table
 		const { data: contract } = await supabaseAdmin
-			.from('slot_machine_configs')
+			.from('machines')
 			.select('*')
-			.eq('contract_id', contractId)
+			.eq('game_contract_id', contractId)
 			.single();
 
-		if (!contract || !contract.ybt_app_id) {
-			throw error(404, 'Contract not found or YBT not configured');
+		if (!contract || !contract.treasury_contract_id) {
+			throw error(404, 'Contract not found or treasury not configured');
 		}
 
 		// Get position

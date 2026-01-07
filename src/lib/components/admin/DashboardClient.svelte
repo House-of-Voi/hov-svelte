@@ -111,9 +111,9 @@
         >
           {syncing ? 'Refreshing...' : 'Refresh'}
         </button>
-        <a href="/admin/games">
+        <a href="/admin/machines">
           <button class="px-4 py-2 text-sm border-2 border-primary-300 dark:border-primary-700 text-primary-600 dark:text-primary-400 rounded-lg hover:bg-primary-50 dark:hover:bg-primary-950 transition-colors font-medium">
-            Manage Games
+            Manage Machines
           </button>
         </a>
         <a href="/admin/analytics">

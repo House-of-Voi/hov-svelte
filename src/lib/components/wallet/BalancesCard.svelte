@@ -3,27 +3,27 @@
   import { fetchAllBalances, formatBalance, formatUsdValue } from '$lib/voi/balances';
   import { openIBuyVoiWidget, isPopupBlocked } from '$lib/voi/ibuyvoi';
   import type { AssetBalance } from '$lib/voi/balances';
+  import type { Token } from '$lib/types/token';
   import Button from '$lib/components/ui/Button.svelte';
   import Card from '$lib/components/ui/Card.svelte';
   import CardContent from '$lib/components/ui/CardContent.svelte';
   import CardHeader from '$lib/components/ui/CardHeader.svelte';
-  import SwapPlaceholderModal from './SwapPlaceholderModal.svelte';
   import AccountPrepModal from './AccountPrepModal.svelte';
   import UsdcWithdrawModal from './UsdcWithdrawModal.svelte';
-  import VoiDepositModal from './VoiDepositModal.svelte';
+  import TokenDepositModal from './TokenDepositModal.svelte';
   import VoiWithdrawModal from './VoiWithdrawModal.svelte';
+  import SwapPlaceholderModal from './SwapPlaceholderModal.svelte';
   import { checkAssetOptIn, createAssetOptInTransaction, verifyAssetOptIn, submitTransaction, waitForConfirmation } from '$lib/voi/asa-utils';
   import { requestVoi, waitForVoiReceipt, hasSufficientVoi, type FountainError } from '$lib/voi/fountain-client';
   import { signTransaction } from '$lib/voi/wallet-utils';
   import { page } from '$app/stores';
+  import { AUSDC_ASSET_ID } from '$lib/constants/tokens';
 
   interface Props {
     address: string;
   }
 
   let { address }: Props = $props();
-
-  const AUSDC_ASSET_ID = 302190;
 
   let usdcBalance = $state<AssetBalance | null>(null);
   let otherBalances = $state<AssetBalance[]>([]);
@@ -41,6 +41,35 @@
     action: 'deposit',
   });
 
+  // Token deposit modal state
+  let showTokenDepositModal = $state(false);
+  let selectedDepositToken = $state<Token | null>(null);
+
+  /**
+   * Convert AssetBalance to Token-like object for the deposit modal
+   */
+  function assetBalanceToToken(balance: AssetBalance): Token {
+    const isNative = balance.contractId === undefined;
+    return {
+      id: balance.contractId?.toString() || 'native-voi',
+      chain: 'voi',
+      contract_id: balance.contractId ?? null,
+      token_standard: isNative ? 'native' : 'voi_arc200',
+      symbol: balance.symbol,
+      name: balance.name,
+      decimals: balance.decimals,
+      icon_url: balance.imageUrl || null,
+      display_symbol: balance.symbol,
+      display_name: balance.name,
+      is_active: true,
+      is_displayable: true,
+      is_game_enabled: false,
+      is_treasury_enabled: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
   // Account preparation modal state
   let showPrepModal = $state(false);
   let prepModalStep = $state<'checking' | 'requesting' | 'preparing' | 'ready' | 'error'>('checking');
@@ -49,9 +78,6 @@
 
   // Withdraw modal state
   let showWithdrawModal = $state(false);
-
-  // Voi deposit modal state
-  let showVoiDepositModal = $state(false);
 
   // Voi withdraw modal state
   let showVoiWithdrawModal = $state(false);
@@ -234,19 +260,10 @@
     loadBalances();
   };
 
-  const handleTokenDeposit = (tokenSymbol: string) => {
-    // If VOI, open the Voi Deposit Modal instead of swap modal
-    if (tokenSymbol === 'VOI') {
-      showVoiDepositModal = true;
-      return;
-    }
-    
-    // For other tokens, use the swap placeholder modal
-    swapModal = {
-      isOpen: true,
-      tokenSymbol,
-      action: 'deposit',
-    };
+  const handleTokenDeposit = (balance: AssetBalance) => {
+    // Convert AssetBalance to Token and open the unified deposit modal
+    selectedDepositToken = assetBalanceToToken(balance);
+    showTokenDepositModal = true;
   };
 
   const handleTokenWithdraw = (tokenSymbol: string) => {
@@ -406,7 +423,7 @@
                 <!-- Action Buttons -->
                 <div class="flex gap-2">
                   <button
-                    onclick={() => handleTokenDeposit(balance.symbol)}
+                    onclick={() => handleTokenDeposit(balance)}
                     class="flex-1 px-3 py-2 text-xs font-semibold bg-success-100 dark:bg-success-600/20 text-success-600 dark:text-success-400 border border-success-300 dark:border-success-500/30 rounded hover:bg-success-200 dark:hover:bg-success-600/30 transition-colors uppercase tracking-wide"
                   >
                     Buy / Deposit
@@ -470,19 +487,23 @@
     session={$page.data.session}
   />
 
-  <!-- Voi Deposit Modal -->
-  <VoiDepositModal
-    isOpen={showVoiDepositModal}
-    onClose={() => {
-      showVoiDepositModal = false;
-    }}
-    onSuccess={() => {
-      // Refresh balances after successful swap
-      loadBalances();
-    }}
-    address={address}
-    usdcBalance={usdcBalance}
-  />
+  <!-- Token Deposit Modal (unified for VOI and ARC200 tokens) -->
+  {#if selectedDepositToken}
+    <TokenDepositModal
+      isOpen={showTokenDepositModal}
+      onClose={() => {
+        showTokenDepositModal = false;
+        selectedDepositToken = null;
+      }}
+      onSuccess={() => {
+        // Refresh balances after successful deposit/swap
+        loadBalances();
+      }}
+      address={address}
+      token={selectedDepositToken}
+      usdcBalance={usdcBalance}
+    />
+  {/if}
 
   <!-- Voi Withdraw Modal -->
   <VoiWithdrawModal

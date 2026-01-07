@@ -1,9 +1,8 @@
 <script lang="ts">
 	import W2WSlotsGamePostMessage from '$lib/components/game/W2WSlotsGamePostMessage.svelte';
 	import GameBridgeWrapper from '$lib/components/game/GameBridgeWrapper.svelte';
-	import { gameConfigService } from '$lib/services/gameConfigService';
+	import { machineService } from '$lib/services/machineService';
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -14,25 +13,25 @@
 	);
 	const algorandAddress = $derived(data.algorandAddress);
 
-	// Fetch game config for page title
-	let gameConfig = $state<{ display_name: string } | null>(null);
+	// Fetch machine config for page title
+	let machineConfig = $state<{ display_name: string } | null>(null);
 
 	onMount(async () => {
 		if (contractId) {
 			try {
-				const config = await gameConfigService.getConfigByContractId(contractId);
+				const config = await machineService.getMachineByContractId(contractId);
 				if (config) {
-					gameConfig = { display_name: config.display_name };
+					machineConfig = { display_name: config.display_name };
 				}
 			} catch (err) {
-				console.error('Failed to fetch game config for title:', err);
+				console.error('Failed to fetch machine config for title:', err);
 			}
 		}
 	});
 </script>
 
 <svelte:head>
-	<title>{gameConfig?.display_name || 'Ways to Win Slots'} - House of Voi</title>
+	<title>{machineConfig?.display_name || 'Ways to Win Slots'} - House of Voi</title>
 </svelte:head>
 
 {#if data.contractId === 'test-mode'}

@@ -6,6 +6,10 @@
 import { mimirBrowser } from '$lib/mimir/browserClient';
 import { browser } from '$app/environment';
 
+// TEMPORARY: Disable WebSocket/realtime subscriptions
+// Set to true to re-enable realtime functionality
+const WEBSOCKETS_ENABLED = false;
+
 export interface RecentWinEvent {
   round: bigint;
   intra: number;
@@ -58,11 +62,17 @@ class RecentWinsService {
    * Setup realtime subscription to hov_events
    */
   private setupRealtimeSubscription(): void {
+    // Skip WebSocket setup if disabled
+    if (!WEBSOCKETS_ENABLED) {
+      console.log('⏸️ Realtime subscriptions disabled (WEBSOCKETS_ENABLED = false)');
+      return;
+    }
+
     try {
       // Only subscribe to UPDATE events (BetClaimed sets payout)
       // BetPlaced events are INSERTs with payout=NULL, BetClaimed events are UPDATEs with payout>0
       const channelName = `recent_wins_changes_${Date.now()}`;
-      
+
       const channel = mimirBrowser
         .channel(channelName)
         .on(

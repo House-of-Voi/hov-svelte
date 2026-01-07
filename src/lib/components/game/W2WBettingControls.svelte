@@ -12,6 +12,10 @@
 		disabled?: boolean;
 		/** Whether currently spinning */
 		isSpinning?: boolean;
+		/** Base bet amount from contract (defaults to 40) */
+		baseBet?: number;
+		/** Kicker amount for progressive mode from contract (defaults to 20) */
+		kickerAmount?: number;
 		/** Callback when bet amount changes */
 		onBetChange: (betAmount: number) => void;
 		/** Callback when progressive mode changes */
@@ -26,6 +30,8 @@
 		tokenLabel = 'ARC200',
 		disabled = false,
 		isSpinning = false,
+		baseBet = 40,
+		kickerAmount = 20,
 		onBetChange,
 		onProgressiveChange,
 		onSpin
@@ -35,8 +41,9 @@
 	// But we still respect the disabled prop for cases like account locked
 	const buttonDisabled = $derived(disabled);
 
-	const BASE_BET = 40;
-	const KICKER_AMOUNT = 20;
+	// Use contract values instead of hardcoded constants
+	const BASE_BET = $derived(baseBet);
+	const KICKER_AMOUNT = $derived(kickerAmount);
 	const progressiveEnabled = $derived(betAmount === BASE_BET + KICKER_AMOUNT);
 
 	function handleProgressiveToggle(enabled: boolean) {

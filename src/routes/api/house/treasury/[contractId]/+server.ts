@@ -17,23 +17,23 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 
 	try {
-		// Get contract config from database
+		// Get contract config from machines table
 		const { data: contract, error: dbError } = await supabaseAdmin
-			.from('slot_machine_configs')
+			.from('machines')
 			.select('*')
-			.eq('contract_id', contractId)
+			.eq('game_contract_id', contractId)
 			.single();
 
 		if (dbError || !contract) {
 			throw error(404, 'Contract not found');
 		}
 
-		if (!contract.ybt_app_id) {
-			throw error(400, 'Contract does not have YBT support');
+		if (!contract.treasury_contract_id) {
+			throw error(400, 'Contract does not have treasury support');
 		}
 
 		// Get treasury balance from YBT service
-		const treasury = await ybtService.getTreasuryBalance(contractId, contract.ybt_app_id);
+		const treasury = await ybtService.getTreasuryBalance(contractId, contract.treasury_contract_id);
 
 		return json({
 			treasury: {

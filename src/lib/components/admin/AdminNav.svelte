@@ -45,8 +45,13 @@
       permission: PERMISSIONS.VIEW_PLAYERS,
     },
     {
-      href: '/admin/games',
-      label: 'Games',
+      href: '/admin/machines',
+      label: 'Machines',
+      permission: PERMISSIONS.VIEW_GAMES,
+    },
+    {
+      href: '/admin/tokens',
+      label: 'Tokens',
       permission: PERMISSIONS.VIEW_GAMES,
     },
     {

@@ -6,7 +6,7 @@ const supabaseAdmin = createAdminClient();
 
 /**
  * GET /api/house/contracts
- * Returns all active slot machine configs with YBT support
+ * Returns all active machines with treasury contracts
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	const session = locals.session;
@@ -28,10 +28,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 
 	try {
 		const { data: contracts, error: fetchError } = await supabaseAdmin
-			.from('slot_machine_configs')
+			.from('machines')
 			.select('*')
 			.eq('is_active', true)
-			.not('ybt_app_id', 'is', null)
+			.not('treasury_contract_id', 'is', null)
 			.order('created_at', { ascending: false });
 
 		if (fetchError) {

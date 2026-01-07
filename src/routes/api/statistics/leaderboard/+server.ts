@@ -157,9 +157,10 @@ async function resolveLeaderboardScope(
     };
   }
 
+  // Query from machines table (replaces slot_machine_configs)
   const { data, error } = await supabase
-    .from('slot_machine_configs')
-    .select('contract_id')
+    .from('machines')
+    .select('game_contract_id')
     .eq('id', machineId)
     .single();
 
@@ -173,7 +174,7 @@ async function resolveLeaderboardScope(
   }
 
   return {
-    contractId: data.contract_id ?? undefined,
+    contractId: data.game_contract_id ?? undefined,
     cacheKey: machineId,
     snapshotKey: machineId,
   };
