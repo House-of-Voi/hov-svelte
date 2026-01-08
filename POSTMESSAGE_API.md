@@ -181,6 +181,9 @@ window.addEventListener('message', (event) => {
     case 'SPIN_QUEUE':              // [Both] Spin queue state updates
       handleSpinQueue(message.payload);
       break;
+    case 'ORIENTATION':             // [Both] Device orientation updates
+      handleOrientation(message.payload);
+      break;
   }
 });
 ```
@@ -435,9 +438,9 @@ Initialize connection and get initial state.
 }
 ```
 
-**Response:** `BALANCE_RESPONSE`, `CONFIG`, and `SPIN_QUEUE`
+**Response:** `BALANCE_RESPONSE`, `CONFIG`, `SPIN_QUEUE`, and `ORIENTATION`
 
-**Note:** On initialization, the bridge sends the current spin queue state, allowing games to restore their state if reconnecting (e.g., after a page refresh).
+**Note:** On initialization, the bridge sends the current spin queue state and device orientation, allowing games to restore their state and configure their layout appropriately.
 
 #### EXIT
 
@@ -773,6 +776,50 @@ window.parent.postMessage({
   type: 'GET_SPIN_QUEUE'
 }, '*');
 ```
+
+#### ORIENTATION `[Both]`
+
+Device orientation and viewport dimensions. This message is sent automatically:
+- On initialization (with INIT response)
+- When device orientation changes (portrait ↔ landscape)
+- When viewport dimensions change (e.g., window resize)
+
+```typescript
+{
+  namespace: 'com.houseofvoi';
+  type: 'ORIENTATION';
+  payload: {
+    orientation: 'portrait' | 'landscape';
+    width: number;   // Viewport width in pixels
+    height: number;  // Viewport height in pixels
+  };
+}
+```
+
+**Example:**
+```javascript
+function handleOrientation(payload) {
+  console.log('Orientation:', payload.orientation);
+  console.log('Viewport:', payload.width, 'x', payload.height);
+
+  if (payload.orientation === 'portrait') {
+    // Adjust UI for portrait mode
+    showPortraitLayout();
+  } else {
+    // Adjust UI for landscape mode
+    showLandscapeLayout();
+  }
+
+  // Optionally resize game canvas to fit viewport
+  resizeGameCanvas(payload.width, payload.height);
+}
+```
+
+**Notes:**
+- The orientation is determined by comparing viewport dimensions (height > width = portrait)
+- Messages are only sent when orientation or dimensions actually change
+- Use this to adapt your game UI for different screen orientations
+- On mobile devices, this helps detect when users rotate their device
 
 #### ERROR
 
@@ -1414,6 +1461,53 @@ function handleCreditBalance(payload) {
   }
 }
 ```
+
+### 7. Handle Orientation Changes `[Both]`
+
+Adapt your game layout based on device orientation and viewport size:
+
+```javascript
+let currentOrientation = null;
+let viewportWidth = 0;
+let viewportHeight = 0;
+
+function handleOrientation(payload) {
+  const orientationChanged = payload.orientation !== currentOrientation;
+
+  currentOrientation = payload.orientation;
+  viewportWidth = payload.width;
+  viewportHeight = payload.height;
+
+  if (orientationChanged) {
+    // Reconfigure game layout for new orientation
+    if (currentOrientation === 'portrait') {
+      configurePortraitLayout();
+    } else {
+      configureLandscapeLayout();
+    }
+  }
+
+  // Always update canvas/game size to fit viewport
+  resizeGame(viewportWidth, viewportHeight);
+}
+
+function configurePortraitLayout() {
+  // Stack controls below reels
+  // Use larger touch targets
+  // Consider hiding secondary UI elements
+}
+
+function configureLandscapeLayout() {
+  // Place controls beside reels
+  // Show full UI
+}
+```
+
+**Tips:**
+- Store the initial orientation from the INIT response
+- Pause animations during orientation transitions
+- Consider using CSS media queries in addition to JS handling
+- Test on both mobile and desktop browsers
 
 ## Security Considerations
 

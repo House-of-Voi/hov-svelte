@@ -300,6 +300,19 @@ export interface SpinQueueMessage {
   };
 }
 
+/**
+ * Orientation message - sent when device orientation changes or on init
+ */
+export interface OrientationMessage {
+  namespace: string;
+  type: 'ORIENTATION';
+  payload: {
+    orientation: 'portrait' | 'landscape';
+    width: number; // viewport width in pixels
+    height: number; // viewport height in pixels
+  };
+}
+
 export type GameResponse =
   | OutcomeMessage
   | BalanceUpdateMessage
@@ -309,7 +322,8 @@ export type GameResponse =
   | CreditBalanceMessage
   | SpinSubmittedMessage
   | AccountLockedMessage
-  | SpinQueueMessage;
+  | SpinQueueMessage
+  | OrientationMessage;
 
 // ============================================================================
 // MESSAGE VALIDATION

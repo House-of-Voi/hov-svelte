@@ -25,6 +25,7 @@ import type {
   ExitRequest,
   QueuedSpinItem,
   SpinQueueMessage,
+  OrientationMessage,
 } from './types';
 import { isGameRequest, isSpinRequest, MESSAGE_NAMESPACE } from './types';
 
@@ -58,6 +59,14 @@ export class GameBridge {
   private kickerAmount: number = 20; // Kicker amount in VOI/token units (from machine config)
   private spinQueue: QueuedSpinItem[] = []; // Queue of pending/completed spins
   private maxQueueSize: number = 50; // Maximum number of spins to keep in queue history
+  private orientationMediaQuery: MediaQueryList | null = null; // Media query for orientation detection
+  private orientationHandler: ((event: MediaQueryListEvent) => void) | null = null; // Orientation change handler
+  private currentOrientation: 'portrait' | 'landscape' | null = null; // Track current orientation to avoid duplicates
+  private currentWidth: number = 0; // Track current viewport width to avoid unnecessary updates
+  private currentHeight: number = 0; // Track current viewport height to avoid unnecessary updates
+  private resizeHandler: (() => void) | null = null; // Resize handler for dimension updates
+  private resizeDebounceTimer: number | null = null; // Debounce timer for resize events
+  private readonly RESIZE_DEBOUNCE_MS = 100; // Debounce delay for resize events
 
   constructor(config: GameBridgeConfig) {
     this.config = config;
@@ -153,6 +162,10 @@ export class GameBridge {
       // Set up postMessage listener
       console.log('GameBridge: Setting up postMessage listener...');
       this.setupMessageListener();
+
+      // Set up orientation listener
+      console.log('GameBridge: Setting up orientation listener...');
+      this.setupOrientationListener();
 
       this.initialized = true;
       console.log('GameBridge: Bridge initialized successfully');
@@ -255,6 +268,94 @@ export class GameBridge {
     };
 
     window.addEventListener('message', this.messageHandler);
+  }
+
+  /**
+   * Set up orientation change listener
+   * Uses matchMedia API for reliable orientation detection with resize fallback.
+   * Requires modern browsers: Safari 14+, Chrome 45+, Firefox 55+, Edge 79+
+   */
+  private setupOrientationListener(): void {
+    // Guard against setting up listener if already destroyed
+    if (this.destroyed) {
+      console.log('GameBridge: Not setting up orientation listener - already destroyed');
+      return;
+    }
+
+    // Feature detection for older browsers
+    if (typeof window.matchMedia !== 'function') {
+      console.warn('GameBridge: matchMedia not supported, orientation detection disabled');
+      return;
+    }
+
+    // Use matchMedia for reliable orientation detection
+    this.orientationMediaQuery = window.matchMedia('(orientation: portrait)');
+
+    // Handler for orientation changes
+    this.orientationHandler = (event: MediaQueryListEvent) => {
+      if (this.destroyed) return;
+      this.sendOrientationUpdate();
+    };
+
+    // Add listener for orientation changes
+    this.orientationMediaQuery.addEventListener('change', this.orientationHandler);
+
+    // Also listen for resize to update dimensions (debounced)
+    this.resizeHandler = () => {
+      if (this.destroyed) return;
+
+      // Clear any existing debounce timer
+      if (this.resizeDebounceTimer) {
+        clearTimeout(this.resizeDebounceTimer);
+      }
+
+      // Debounce resize events to avoid excessive messages
+      this.resizeDebounceTimer = window.setTimeout(() => {
+        // Double-check destroyed status after debounce delay
+        if (this.destroyed) return;
+        this.sendOrientationUpdate();
+      }, this.RESIZE_DEBOUNCE_MS);
+    };
+
+    window.addEventListener('resize', this.resizeHandler);
+  }
+
+  /**
+   * Send orientation update to game
+   * Only sends if orientation or dimensions have actually changed.
+   */
+  private sendOrientationUpdate(): void {
+    if (this.destroyed) return;
+
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const orientation: 'portrait' | 'landscape' = height > width ? 'portrait' : 'landscape';
+
+    // Only send if something actually changed (or this is the first update)
+    const isFirstUpdate = this.currentOrientation === null;
+    const orientationChanged = orientation !== this.currentOrientation;
+    const dimensionsChanged = width !== this.currentWidth || height !== this.currentHeight;
+
+    if (!isFirstUpdate && !orientationChanged && !dimensionsChanged) {
+      return; // Nothing changed, skip update
+    }
+
+    // Update tracked state
+    this.currentOrientation = orientation;
+    this.currentWidth = width;
+    this.currentHeight = height;
+
+    // Final check before sending (in case destroyed during processing)
+    if (this.destroyed) return;
+
+    this.sendToGame({
+      type: 'ORIENTATION',
+      payload: {
+        orientation,
+        width,
+        height,
+      },
+    } as OrientationMessage);
   }
 
   /**
@@ -881,6 +982,9 @@ export class GameBridge {
 
     // Send current spin queue state
     this.sendSpinQueueUpdate();
+
+    // Send initial orientation
+    this.sendOrientationUpdate();
   }
 
   /**
@@ -1154,14 +1258,38 @@ export class GameBridge {
    * Cleanup resources
    */
   destroy(): void {
-    // Set destroyed flag FIRST to prevent any async operations from completing
+    // 1. Set destroyed flag FIRST to prevent any async operations from completing
     this.destroyed = true;
+
+    // 2. Clear timers that might trigger callbacks
+    if (this.resizeDebounceTimer) {
+      clearTimeout(this.resizeDebounceTimer);
+      this.resizeDebounceTimer = null;
+    }
+
+    // 3. Remove event listeners (can't fire anymore after removal)
+    if (this.orientationMediaQuery && this.orientationHandler) {
+      this.orientationMediaQuery.removeEventListener('change', this.orientationHandler);
+      this.orientationHandler = null;
+    }
+    this.orientationMediaQuery = null;
+
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
 
     if (this.messageHandler) {
       window.removeEventListener('message', this.messageHandler);
       this.messageHandler = null;
     }
 
+    // 4. Clear state
+    this.currentOrientation = null;
+    this.currentWidth = 0;
+    this.currentHeight = 0;
+
+    // 5. Destroy engine LAST (most expensive, relies on nothing else)
     if (this.engine) {
       this.engine.destroy();
       this.engine = null;
