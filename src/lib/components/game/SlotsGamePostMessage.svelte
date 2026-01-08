@@ -21,6 +21,8 @@
 		ConfigMessage,
 		BalanceResponse,
 		SpinSubmittedMessage,
+		SpinQueueMessage,
+		QueuedSpinItem,
 	} from '$lib/game-engine/bridge/types';
 	import { MESSAGE_NAMESPACE } from '$lib/game-engine/bridge/types';
 
@@ -55,6 +57,26 @@
 	let reels = $state<any>(null);
 	let slotConfig = $state<any>(null);
 	let pendingSpinId: string | null = $state(null);
+
+	// Spin queue state (synced from bridge via postMessage)
+	interface LocalQueuedSpin {
+		clientSpinId: string;
+		engineSpinId?: string;
+		betAmount: number;
+		paylines?: number;
+		betPerLine?: number;
+		timestamp: number;
+		status: 'pending' | 'submitted' | 'completed' | 'failed';
+		outcome?: {
+			winnings: number;
+			isWin: boolean;
+			winLevel?: string;
+			winningLines?: any[];
+		};
+		error?: string;
+	}
+	let spinQueue = $state<LocalQueuedSpin[]>([]);
+	let pendingSpins = $derived(spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted').length);
 
 	// Message handler
 	let messageHandler: ((event: MessageEvent) => void) | null = null;
@@ -99,15 +121,19 @@
 				case 'SPIN_SUBMITTED':
 					handleSpinSubmitted(message);
 					break;
+				case 'SPIN_QUEUE':
+					handleSpinQueue(message as SpinQueueMessage);
+					break;
 			}
 		};
 
 		window.addEventListener('message', messageHandler);
 
-		// Initialize connection - request balance and config
+		// Initialize connection - request balance, config, and spin queue
 		sendMessage({ type: 'INIT' });
 		sendMessage({ type: 'GET_BALANCE' });
 		sendMessage({ type: 'GET_CONFIG' });
+		sendMessage({ type: 'GET_SPIN_QUEUE' } as any);
 	});
 
 	onDestroy(() => {
@@ -235,6 +261,45 @@
 		// Animation already started in handleSpin(), just confirm we're waiting
 		// (waitingForOutcome is already true from handleSpin)
 		console.log('📤 Spin submitted:', payload.spinId);
+	}
+
+	/**
+	 * Handle spin queue message from bridge
+	 * Syncs the local spin queue state with the authoritative queue from the bridge
+	 */
+	function handleSpinQueue(message: SpinQueueMessage): void {
+		const payload = message.payload;
+		console.log('📋 Spin queue update received:', payload);
+
+		// Convert bridge queue items to local queue format
+		const bridgeQueue = payload.queue || [];
+
+		// Update local spin queue with bridge data
+		spinQueue = bridgeQueue.map((item: QueuedSpinItem) => ({
+			clientSpinId: item.clientSpinId || item.spinId,
+			engineSpinId: item.spinId,
+			betAmount: item.betAmount,
+			paylines: item.paylines,
+			betPerLine: item.betPerLine,
+			timestamp: item.timestamp,
+			status: item.status,
+			outcome: item.outcome ? {
+				winnings: item.outcome.winnings,
+				isWin: item.outcome.isWin,
+				winLevel: item.outcome.winLevel,
+				winningLines: item.outcome.winningLines,
+			} : undefined,
+			error: item.error,
+		}));
+
+		// Update spinning state based on queue
+		const hasPending = spinQueue.some(s => s.status === 'pending' || s.status === 'submitted');
+		if (hasPending && !isSpinning) {
+			isSpinning = true;
+			waitingForOutcome = true;
+		} else if (!hasPending && isSpinning) {
+			// Don't clear spinning state here - let OUTCOME message handle it
+		}
 	}
 
 	/**

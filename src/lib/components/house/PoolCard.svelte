@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SlotMachineConfig } from '$lib/types/database';
+	import type { Machine } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
 	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
 	import { onMount } from 'svelte';
@@ -8,7 +8,7 @@
 	import TransactionHistoryModal from './TransactionHistoryModal.svelte';
 
 	interface Props {
-		contract: SlotMachineConfig;
+		contract: Machine;
 		positions: HousePositionWithMetadata[];
 		gameAccounts: GameAccountInfo[];
 		activeGameAccountId?: string;
@@ -35,7 +35,7 @@
 	async function loadTreasuryData() {
 		try {
 			loading = true;
-			const response = await fetch(`/api/house/treasury/${contract.contract_id}`);
+			const response = await fetch(`/api/house/treasury/${contract.game_contract_id}`);
 			if (response.ok) {
 				const data = await response.json();
 				treasuryData = data.treasury;
@@ -48,15 +48,20 @@
 	}
 
 	function formatVOI(microVOI: bigint | number): string {
-		const amount = typeof microVOI === 'bigint' ? Number(microVOI) : microVOI;
-		const voi = amount / 1_000_000;
-		if (voi >= 1_000_000) {
-			return `${(voi / 1_000_000).toFixed(3)}M`;
+		return formatToken(microVOI, 6);
+	}
+
+	function formatToken(atomicAmount: bigint | number, decimals: number): string {
+		const amount = typeof atomicAmount === 'bigint' ? Number(atomicAmount) : atomicAmount;
+		const divisor = Math.pow(10, decimals);
+		const value = amount / divisor;
+		if (value >= 1_000_000) {
+			return `${(value / 1_000_000).toFixed(3)}M`;
 		}
-		if (voi >= 1000) {
-			return `${(voi / 1000).toFixed(2)}K`;
+		if (value >= 1000) {
+			return `${(value / 1000).toFixed(2)}K`;
 		}
-		return voi.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+		return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 	}
 
 	const totalPositionValue = $derived(
@@ -111,7 +116,7 @@
 			<h3 class="text-lg md:text-xl font-bold text-neutral-900 dark:text-white mb-1">{contract.display_name}</h3>
 			<p class="text-sm text-neutral-500 dark:text-neutral-400">{contract.name}</p>
 		</div>
-		<span class="badge-primary">{contract.game_type}</span>
+		<span class="badge-primary">{contract.machine_type}</span>
 	</div>
 
 	{#if loading}
@@ -120,14 +125,16 @@
 		</div>
 	{:else if treasuryData}
 		<!-- Pool Overview Stats -->
+		{@const tokenSymbol = treasuryData.tokenSymbol || 'VOI'}
+		{@const tokenDecimals = treasuryData.tokenDecimals || 6}
 		<div class="grid grid-cols-3 gap-3 p-3 md:p-4 bg-neutral-50 dark:bg-neutral-800/50 rounded-xl mb-5">
 			<div class="flex flex-col gap-0.5">
 				<span class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide font-medium">Total Pool</span>
-				<span class="text-sm md:text-base font-semibold text-neutral-900 dark:text-white">{formatVOI(treasuryData.balanceTotal)} VOI</span>
+				<span class="text-sm md:text-base font-semibold text-neutral-900 dark:text-white">{formatToken(treasuryData.balanceTotal, tokenDecimals)} {tokenSymbol}</span>
 			</div>
 			<div class="flex flex-col gap-0.5">
 				<span class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide font-medium">Your Value</span>
-				<span class="text-sm md:text-base font-semibold text-primary-600 dark:text-primary-400">{formatVOI(totalPositionValue)} VOI</span>
+				<span class="text-sm md:text-base font-semibold text-primary-600 dark:text-primary-400">{formatToken(totalPositionValue, tokenDecimals)} {tokenSymbol}</span>
 			</div>
 			<div class="flex flex-col gap-0.5">
 				<span class="text-xs text-neutral-500 dark:text-neutral-400 uppercase tracking-wide font-medium">Your Share</span>
@@ -181,7 +188,7 @@
 										{/if}
 									</div>
 									<div class="flex items-center gap-3">
-										<span class="text-sm font-semibold text-neutral-900 dark:text-white">{formatVOI(position.voiValue)} VOI</span>
+										<span class="text-sm font-semibold text-neutral-900 dark:text-white">{formatToken(position.voiValue, tokenDecimals)} {tokenSymbol}</span>
 										<span class="text-xs font-medium text-success-600 dark:text-success-400">{position.sharePercentage.toFixed(2)}%</span>
 									</div>
 								</div>
@@ -267,7 +274,7 @@
 	<TransactionHistoryModal
 		isOpen={showHistoryModal}
 		onClose={() => (showHistoryModal = false)}
-		contractId={contract.contract_id}
+		contractId={contract.game_contract_id!}
 		contractName={contract.display_name}
 		address={historyAddress}
 	/>

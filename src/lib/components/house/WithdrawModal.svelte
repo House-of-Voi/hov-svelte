@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SlotMachineConfig } from '$lib/types/database';
+	import type { Machine } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
 	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
 	import { connectedWallets } from 'avm-wallet-svelte';
@@ -12,7 +12,7 @@
 	import { APP_SPEC as YBTAppSpec } from '$lib/voi/house/YieldBearingTokenClient';
 
 	interface Props {
-		contract: SlotMachineConfig;
+		contract: Machine;
 		position: HousePositionWithMetadata | null;
 		positions: HousePositionWithMetadata[];
 		gameAccounts: GameAccountInfo[];
@@ -109,7 +109,7 @@
 
 	async function loadTreasuryData() {
 		try {
-			const response = await fetch(`/api/house/treasury/${contract.contract_id}`);
+			const response = await fetch(`/api/house/treasury/${contract.game_contract_id}`);
 			if (!response.ok) throw new Error('Failed to load treasury data');
 
 			const data = await response.json();
@@ -163,16 +163,25 @@
 	const withdrawPercentage = $derived(maxShares > 0 ? (sharesAmount / maxShares) * 100 : 0);
 
 	function formatVOI(microVOI: bigint | number): string {
-		const amount = typeof microVOI === 'bigint' ? Number(microVOI) : microVOI;
-		const voi = amount / 1_000_000;
-		if (voi >= 1_000_000) {
-			return `${(voi / 1_000_000).toFixed(3)}M`;
-		}
-		if (voi >= 1000) {
-			return `${(voi / 1000).toFixed(2)}K`;
-		}
-		return voi.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+		return formatToken(microVOI, 6);
 	}
+
+	function formatToken(atomicAmount: bigint | number, decimals: number): string {
+		const amount = typeof atomicAmount === 'bigint' ? Number(atomicAmount) : atomicAmount;
+		const divisor = Math.pow(10, decimals);
+		const value = amount / divisor;
+		if (value >= 1_000_000) {
+			return `${(value / 1_000_000).toFixed(3)}M`;
+		}
+		if (value >= 1000) {
+			return `${(value / 1000).toFixed(2)}K`;
+		}
+		return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+	}
+
+	// Get token info from treasury
+	const tokenSymbol = $derived(treasury?.tokenSymbol || 'VOI');
+	const tokenDecimals = $derived(treasury?.tokenDecimals || 6);
 
 	function formatShares(shares: number, decimals: number = 9): string {
 		return shares.toLocaleString('en-US', {
@@ -221,8 +230,230 @@
 				events: []
 			};
 
+			// Debug: Log the address and contract IDs being used for the withdraw
+			console.log('Withdraw - Using address:', selectedPosition.address);
+			console.log('Withdraw - YBT (treasury) contract ID:', contract.treasury_contract_id);
+			console.log('Withdraw - SlotMachine (game) contract ID:', contract.game_contract_id);
+			console.log('Withdraw - shares to withdraw:', sharesBigInt.toString());
+
+			// Check YBT contract's yield_bearing_source via global state
+			try {
+				// Ensure contract ID is a number (not BigInt)
+				const treasuryId = typeof contract.treasury_contract_id === 'bigint'
+					? Number(contract.treasury_contract_id)
+					: Number(contract.treasury_contract_id);
+				console.log('Treasury ID type:', typeof contract.treasury_contract_id, '-> converted to:', treasuryId);
+
+				const ybtAppInfo = await algodClient.getApplicationByID(treasuryId).do();
+				console.log('YBT App Info params:', ybtAppInfo.params);
+
+				// algosdk 3.x uses globalState (camelCase) with different structure
+				const globalState = ybtAppInfo.params?.globalState || [];
+				console.log('Global state array length:', globalState.length);
+
+				console.log('YBT Global State (ALL keys):');
+				let yieldBearingSource: bigint | number | null = null;
+
+				for (const state of globalState) {
+					// algosdk 3.x: key is Uint8Array, value is an object with .value or .bytes
+					let keyStr: string;
+					if (state.key instanceof Uint8Array) {
+						keyStr = new TextDecoder().decode(state.key);
+					} else if (typeof state.key === 'string') {
+						try {
+							const keyBytes = Uint8Array.from(atob(state.key), c => c.charCodeAt(0));
+							keyStr = new TextDecoder().decode(keyBytes);
+						} catch {
+							keyStr = state.key;
+						}
+					} else {
+						keyStr = String(state.key);
+					}
+
+					// Extract the actual value - algosdk 3.x structure
+					let actualValue: bigint | string | null = null;
+					let displayValue: string;
+
+					// Log the raw structure for debugging
+					console.log(`  ${keyStr} raw:`, state);
+
+					// The value might be nested differently in algosdk 3.x
+					if (typeof state.value === 'bigint') {
+						actualValue = state.value;
+						displayValue = `uint: ${state.value}`;
+					} else if (typeof state.value === 'object' && state.value !== null) {
+						// Check for nested value property
+						if ('value' in state.value && typeof state.value.value === 'bigint') {
+							actualValue = state.value.value;
+							displayValue = `uint: ${state.value.value}`;
+						} else if ('uint' in state.value) {
+							actualValue = BigInt(state.value.uint);
+							displayValue = `uint: ${state.value.uint}`;
+						} else {
+							displayValue = `object: ${JSON.stringify(state.value)}`;
+						}
+					} else if (state.valueRaw instanceof Uint8Array) {
+						displayValue = `bytes: ${state.valueRaw.length} bytes`;
+					} else {
+						displayValue = `unknown: ${JSON.stringify(state)}`;
+					}
+
+					console.log(`  ${keyStr}: ${displayValue}`);
+
+					if (keyStr === 'yield_bearing_source' && actualValue !== null) {
+						yieldBearingSource = actualValue;
+					}
+				}
+
+				if (yieldBearingSource !== null) {
+					console.log(`YBT yield_bearing_source: ${yieldBearingSource}`);
+					console.log(`Expected (game_contract_id): ${contract.game_contract_id}`);
+					const ybsNum = typeof yieldBearingSource === 'bigint' ? Number(yieldBearingSource) : yieldBearingSource;
+					const gameIdNum = typeof contract.game_contract_id === 'bigint' ? Number(contract.game_contract_id) : Number(contract.game_contract_id);
+					console.log(`Match: ${ybsNum === gameIdNum}`);
+
+					if (ybsNum !== gameIdNum) {
+						console.error('⚠️ MISMATCH: yield_bearing_source does not match game_contract_id!');
+					}
+				} else {
+					console.warn('Could not find yield_bearing_source in global state');
+				}
+			} catch (stateError) {
+				console.error('Error reading YBT global state:', stateError);
+			}
+
+			// Check slot machine's owner - must be YBT contract for withdrawals
+			if (contract.game_contract_id) {
+				try {
+					const gameId = typeof contract.game_contract_id === 'bigint'
+						? Number(contract.game_contract_id)
+						: Number(contract.game_contract_id);
+					const slotMachineInfo = await algodClient.getApplicationByID(gameId).do();
+					const smGlobalState = slotMachineInfo.params?.globalState || [];
+
+					console.log('SlotMachine Global State (checking owner):');
+					for (const state of smGlobalState) {
+						let keyStr: string;
+						if (state.key instanceof Uint8Array) {
+							keyStr = new TextDecoder().decode(state.key);
+						} else {
+							keyStr = String(state.key);
+						}
+
+						// Only log owner-related keys
+						if (keyStr === 'owner' || keyStr === 'yield_bearing_source') {
+							let displayValue: string;
+							if (typeof state.value === 'bigint') {
+								displayValue = `uint: ${state.value}`;
+							} else if (state.valueRaw instanceof Uint8Array && state.valueRaw.length === 32) {
+								// This is likely an address
+								displayValue = `address: ${algosdk.encodeAddress(state.valueRaw)}`;
+							} else if (typeof state.value === 'object' && state.value !== null) {
+								if (state.value.bytes instanceof Uint8Array && state.value.bytes.length === 32) {
+									displayValue = `address: ${algosdk.encodeAddress(state.value.bytes)}`;
+								} else {
+									displayValue = JSON.stringify(state.value);
+								}
+							} else {
+								displayValue = JSON.stringify(state);
+							}
+							console.log(`  SlotMachine ${keyStr}: ${displayValue}`);
+						}
+					}
+
+					// The YBT contract address
+					const ybtAddress = algosdk.getApplicationAddress(Number(contract.treasury_contract_id));
+					console.log('YBT contract address:', ybtAddress);
+					console.log('SlotMachine should be owned by YBT for withdrawals to work');
+
+				} catch (smError) {
+					console.error('Error checking slot machine:', smError);
+				}
+			}
+
+			// Pre-flight check: Query slot machine balances to debug the issue
+			if (contract.game_contract_id) {
+				try {
+					const slotMachineABI = {
+						name: "NetworkSlotMachine",
+						desc: "Slot machine contract",
+						methods: [
+							{
+								name: "get_balance_available",
+								args: [],
+								returns: { type: "uint64" }
+							},
+							{
+								name: "get_balance_locked",
+								args: [],
+								returns: { type: "uint64" }
+							},
+							{
+								name: "get_balance_total",
+								args: [],
+								returns: { type: "uint64" }
+							}
+						],
+						events: []
+					};
+
+					const slotMachineCi = new CONTRACT(
+						contract.game_contract_id,
+						algodClient,
+						undefined,
+						slotMachineABI,
+						{
+							addr: selectedPosition.address,
+							sk: new Uint8Array(0)
+						}
+					);
+
+					// Query balances (these are read-only calls)
+					const [availableResult, lockedResult, totalResult] = await Promise.all([
+						slotMachineCi.get_balance_available(),
+						slotMachineCi.get_balance_locked(),
+						slotMachineCi.get_balance_total()
+					]);
+
+					console.log('SlotMachine Balances:', {
+						available: availableResult.success ? availableResult.returnValue?.toString() : 'FAILED: ' + availableResult.error,
+						locked: lockedResult.success ? lockedResult.returnValue?.toString() : 'FAILED: ' + lockedResult.error,
+						total: totalResult.success ? totalResult.returnValue?.toString() : 'FAILED: ' + totalResult.error
+					});
+
+					// Calculate max withdrawable based on the ratio
+					if (availableResult.success && lockedResult.success && totalResult.success) {
+						const available = BigInt(availableResult.returnValue || 0);
+						const locked = BigInt(lockedResult.returnValue || 0);
+						const total = available + locked;
+						const userTotalShares = selectedPosition?.shares || 0n;
+						const withdrawAmount = sharesBigInt;
+
+						console.log('User TOTAL shares (from position):', userTotalShares.toString());
+						console.log('User trying to withdraw:', withdrawAmount.toString());
+						console.log('Treasury totalSupply:', treasury?.totalSupply?.toString());
+						console.log('Treasury decimals:', treasury?.decimals);
+
+						if (total > 0n && userTotalShares > 0n) {
+							// CORRECT formula: max_withdrawable = (user_total_shares * available) / total
+							const maxWithdrawable = (userTotalShares * available) / total;
+							console.log('Calculated max withdrawable shares:', maxWithdrawable.toString());
+							console.log('Can withdraw requested amount?', maxWithdrawable >= withdrawAmount);
+
+							if (maxWithdrawable < withdrawAmount) {
+								console.warn(`Cannot withdraw. Max: ${maxWithdrawable.toString()}, Requested: ${withdrawAmount.toString()}`);
+							}
+						} else {
+							console.log('WARNING: Total balance or user shares is 0');
+						}
+					}
+				} catch (prefightError) {
+					console.error('Pre-flight balance check failed:', prefightError);
+				}
+			}
+
 			const ci = new CONTRACT(
-				contract.ybt_app_id!,
+				contract.treasury_contract_id!,
 				algodClient,
 				undefined,
 				ybtABI,
@@ -232,11 +463,70 @@
 				}
 			);
 
-			// Set fee to cover inner transactions
+			// Set fee to cover inner transactions (same as working old codebase)
 			ci.setFee(7000);
 
-			// Call withdraw using ulujs - it handles ABI encoding, boxes, etc automatically
-			console.log('Calling withdraw with shares:', sharesBigInt.toString());
+			// Try direct algosdk ABI call instead of ulujs to debug the issue
+			console.log('Calling withdraw with shares:', sharesBigInt.toString(), 'for address:', selectedPosition.address);
+
+			// Get suggested params
+			const suggestedParams = await algodClient.getTransactionParams().do();
+			suggestedParams.fee = 8000; // Cover inner transactions
+			suggestedParams.flatFee = true;
+
+			// Create ABI method for withdraw(uint256)uint64
+			const withdrawMethod = new algosdk.ABIMethod({
+				name: 'withdraw',
+				args: [{ type: 'uint256', name: 'amount' }],
+				returns: { type: 'uint64' }
+			});
+
+			// Encode the uint256 argument (32 bytes, big-endian)
+			const amountBytes = new Uint8Array(32);
+			let tempAmount = sharesBigInt;
+			for (let i = 31; i >= 0; i--) {
+				amountBytes[i] = Number(tempAmount & 0xFFn);
+				tempAmount = tempAmount >> 8n;
+			}
+
+			// Create the app call transaction
+			const appCallTxn = algosdk.makeApplicationCallTxnFromObject({
+				sender: selectedPosition.address,
+				appIndex: Number(contract.treasury_contract_id),
+				onComplete: algosdk.OnApplicationComplete.NoOpOC,
+				appArgs: [
+					withdrawMethod.getSelector(),
+					amountBytes
+				],
+				foreignApps: [Number(contract.game_contract_id)], // Include slot machine
+				suggestedParams
+			});
+
+			console.log('Direct algosdk transaction:', {
+				appIndex: appCallTxn.appIndex,
+				appArgs: appCallTxn.appArgs?.map(a => a instanceof Uint8Array ? `bytes(${a.length})` : a),
+				foreignApps: appCallTxn.appForeignApps,
+				fee: appCallTxn.fee
+			});
+
+			// Try to simulate first
+			try {
+				const simulateRequest = new algosdk.modelsv2.SimulateRequest({
+					txnGroups: [
+						new algosdk.modelsv2.SimulateRequestTransactionGroup({
+							txns: [algosdk.decodeObj(appCallTxn.toByte())]
+						})
+					],
+					allowUnnamedResources: true,
+					allowEmptySignatures: true
+				});
+				const simulateResponse = await algodClient.simulateTransactions(simulateRequest).do();
+				console.log('Simulation response:', simulateResponse);
+			} catch (simError) {
+				console.error('Simulation error:', simError);
+			}
+
+			// Fall back to ulujs for now (for comparison)
 			const result = await ci.withdraw(sharesBigInt);
 
 			if (!result.success) {
@@ -250,7 +540,7 @@
 			console.log('ulujs generated transactions:', result.txns.length);
 
 			// Decode base64 transaction strings to algosdk.Transaction[]
-			const decodedTxns = result.txns.map((txnBlob: string) => {
+			let decodedTxns = result.txns.map((txnBlob: string) => {
 				const binaryString = atob(txnBlob);
 				const bytes = new Uint8Array(binaryString.length);
 				for (let i = 0; i < binaryString.length; i++) {
@@ -258,6 +548,25 @@
 				}
 				return algosdk.decodeUnsignedTransaction(bytes);
 			});
+
+			// Debug: Log transaction details to understand what ulujs generated
+			decodedTxns.forEach((txn: algosdk.Transaction, idx: number) => {
+				console.log(`Transaction ${idx}:`, {
+					type: txn.type,
+					appIndex: (txn as any).appIndex,
+					fee: txn.fee,
+					foreignApps: (txn as any).appForeignApps || (txn as any).foreignApps,
+					foreignAccounts: (txn as any).appAccounts || (txn as any).foreignAccounts,
+					boxes: (txn as any).boxes,
+					appArgs: (txn as any).appArgs?.map((a: Uint8Array) => new TextDecoder().decode(a.slice(0, 20)))
+				});
+			});
+
+			// NOTE: We're NOT modifying the transactions anymore!
+			// The working old codebase passes ulujs transactions directly without modification.
+			// When we reconstructed transactions to add box references, we were losing
+			// the foreignApps array that ulujs discovered during simulation.
+			// ulujs should handle all reference discovery automatically.
 
 			// Sign and send transactions
 			const signedTxns = await signTransactions(decodedTxns, selectedPosition.address, session);
@@ -330,9 +639,9 @@
 								</div>
 								<div class="text-right mr-2">
 									<span class="block text-sm font-semibold text-success-600 dark:text-success-400">
-										{formatVOI(selectedPosition.voiValue)}
+										{formatToken(selectedPosition.voiValue, tokenDecimals)}
 									</span>
-									<span class="block text-xs text-neutral-400">VOI</span>
+									<span class="block text-xs text-neutral-400">{tokenSymbol}</span>
 								</div>
 							{:else}
 								<span class="text-neutral-500">Select a position</span>
@@ -358,9 +667,9 @@
 										</div>
 										<div class="text-right">
 											<span class="block text-sm font-semibold text-success-600 dark:text-success-400">
-												{formatVOI(option.position.voiValue)}
+												{formatToken(option.position.voiValue, tokenDecimals)}
 											</span>
-											<span class="block text-xs text-neutral-400">VOI</span>
+											<span class="block text-xs text-neutral-400">{tokenSymbol}</span>
 										</div>
 										{#if isSelected}
 											<span class="text-primary-500">✓</span>
@@ -438,7 +747,7 @@
 						</div>
 						<div class="flex justify-between items-center py-2 mt-2 border-t border-neutral-200 dark:border-neutral-700 text-sm font-semibold">
 							<span class="text-neutral-700 dark:text-neutral-300">You'll receive:</span>
-							<span class="text-primary-600 dark:text-primary-400">{formatVOI(voiAmount)} VOI</span>
+							<span class="text-primary-600 dark:text-primary-400">{formatToken(voiAmount, tokenDecimals)} {tokenSymbol}</span>
 						</div>
 					</div>
 				{/if}

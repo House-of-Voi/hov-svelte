@@ -5,7 +5,7 @@
 
 import { ybtService } from './ybt-service';
 import type { HousePortfolio, HousePositionWithMetadata } from '$lib/types/house';
-import type { SlotMachineConfig } from '$lib/types/database';
+import type { Machine } from '$lib/types/database';
 
 class PortfolioService {
 	/**
@@ -13,7 +13,7 @@ class PortfolioService {
 	 */
 	async getPortfolio(
 		addresses: string[],
-		contracts: SlotMachineConfig[]
+		contracts: Machine[]
 	): Promise<HousePortfolio> {
 		const positions: HousePositionWithMetadata[] = [];
 		let totalValue = 0n;
@@ -22,33 +22,33 @@ class PortfolioService {
 
 		console.log('Getting portfolio for addresses:', addresses);
 		console.log('Checking contracts:', contracts.map(c => ({
-			id: c.contract_id,
+			id: c.game_contract_id,
 			name: c.name,
-			ybtAppId: c.ybt_app_id
+			treasuryContractId: c.treasury_contract_id
 		})));
 
 		// Query each contract for each address
 		for (const contract of contracts) {
-			if (!contract.ybt_app_id) {
-				console.log('Skipping contract', contract.contract_id, '- no YBT app ID configured');
+			if (!contract.treasury_contract_id) {
+				console.log('Skipping contract', contract.game_contract_id, '- no treasury contract ID configured');
 				continue;
 			}
 
 			for (const address of addresses) {
 				try {
 					// Get user shares
-					const shares = await ybtService.getUserShares(contract.ybt_app_id, address);
+					const shares = await ybtService.getUserShares(contract.treasury_contract_id, address);
 					console.log('shares', shares);
 
 					if (shares === 0n) {
-						console.log('No shares for', address, 'in contract', contract.contract_id);
+						console.log('No shares for', address, 'in contract', contract.game_contract_id);
 						continue; // Skip if no position
 					}
 
 					// Get treasury balance to calculate value
 					const treasuryBalance = await ybtService.getTreasuryBalance(
-						contract.contract_id,
-						contract.ybt_app_id
+						contract.game_contract_id!,
+						contract.treasury_contract_id
 					);
 
 					// Calculate VOI value of shares using helper method
@@ -69,7 +69,7 @@ class PortfolioService {
 
 					console.log('Found position:', {
 						address,
-						contractId: contract.contract_id,
+						contractId: contract.game_contract_id,
 						shares: shares.toString(),
 						formattedShares,
 						voiValue: voiValue.toString(),
@@ -78,8 +78,8 @@ class PortfolioService {
 					});
 
 					positions.push({
-						contractId: contract.contract_id,
-						ybtAppId: contract.ybt_app_id,
+						contractId: contract.game_contract_id!,
+						ybtAppId: contract.treasury_contract_id,
 						address,
 						shares,
 						formattedShares,
@@ -94,7 +94,7 @@ class PortfolioService {
 					formattedTotalShares += formattedShares;
 				} catch (error) {
 					console.error(
-						`Error getting position for ${address} in contract ${contract.contract_id}:`,
+						`Error getting position for ${address} in contract ${contract.game_contract_id}:`,
 						error
 					);
 					// Continue with other positions
@@ -123,18 +123,18 @@ class PortfolioService {
 	 */
 	async getPosition(
 		address: string,
-		contract: SlotMachineConfig
+		contract: Machine
 	): Promise<HousePositionWithMetadata | null> {
-		if (!contract.ybt_app_id) return null;
+		if (!contract.treasury_contract_id) return null;
 
 		try {
-			const shares = await ybtService.getUserShares(contract.ybt_app_id, address);
+			const shares = await ybtService.getUserShares(contract.treasury_contract_id, address);
 
 			if (shares === 0n) return null;
 
 			const treasuryBalance = await ybtService.getTreasuryBalance(
-				contract.contract_id,
-				contract.ybt_app_id
+				contract.game_contract_id!,
+				contract.treasury_contract_id
 			);
 
 			// Calculate VOI value of shares using helper method
@@ -154,8 +154,8 @@ class PortfolioService {
 			const formattedShares = ybtService.formatShares(shares, treasuryBalance.decimals);
 
 			return {
-				contractId: contract.contract_id,
-				ybtAppId: contract.ybt_app_id,
+				contractId: contract.game_contract_id!,
+				ybtAppId: contract.treasury_contract_id,
 				address,
 				shares,
 				formattedShares,

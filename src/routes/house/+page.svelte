@@ -115,8 +115,8 @@
 				{#if !loading && portfolio}
 					<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
 						<div class="card-glow p-4 md:p-6">
-							<div class="text-xs md:text-sm font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-1 md:mb-2">Total Value</div>
-							<div class="text-xl md:text-2xl lg:text-3xl font-bold text-neutral-900 dark:text-white">{formatVOI(portfolio.totalValue).split('.')[0]} <span class="text-base md:text-lg text-neutral-400 dark:text-neutral-500 font-semibold ml-1">VOI</span></div>
+							<div class="text-xs md:text-sm font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-1 md:mb-2">Est. Total Value</div>
+							<div class="text-xl md:text-2xl lg:text-3xl font-bold text-neutral-900 dark:text-white">{formatVOI(portfolio.totalValue).split('.')[0]}</div>
 						</div>
 						<div class="card p-4 md:p-6">
 							<div class="text-xs md:text-sm font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-1 md:mb-2">Total Shares</div>
@@ -165,7 +165,7 @@
 						<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
 							{#each data.contracts as contract}
 								{@const positions = portfolio?.positions.filter(
-									(p: any) => p.contractId === contract.contract_id
+									(p: any) => p.contractId === contract.game_contract_id
 								) || []}
 								<PoolCard
 									{contract}

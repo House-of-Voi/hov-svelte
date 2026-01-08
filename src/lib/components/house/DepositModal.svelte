@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SlotMachineConfig } from '$lib/types/database';
+	import type { Machine } from '$lib/types/database';
 	import type { HousePositionWithMetadata } from '$lib/types/house';
 	import type { GameAccountInfo, SessionInfo } from '$lib/auth/session';
 	import { connectedWallets } from 'avm-wallet-svelte';
@@ -9,7 +9,7 @@
 	import { fetchVoiBalance } from '$lib/voi/balances';
 
 	interface Props {
-		contract: SlotMachineConfig;
+		contract: Machine;
 		position: HousePositionWithMetadata | null;
 		gameAccounts: GameAccountInfo[];
 		activeGameAccountId?: string;
@@ -141,7 +141,7 @@
 
 	async function loadData() {
 		try {
-			const response = await fetch(`/api/house/treasury/${contract.contract_id}`);
+			const response = await fetch(`/api/house/treasury/${contract.game_contract_id}`);
 			if (!response.ok) throw new Error('Failed to load treasury data');
 
 			const data = await response.json();
@@ -224,8 +224,8 @@
 		try {
 			const result = await ybtService.deposit(
 				{
-					contractId: contract.contract_id,
-					ybtAppId: contract.ybt_app_id!,
+					contractId: contract.game_contract_id!,
+					ybtAppId: contract.treasury_contract_id!,
 					amount: microVoiAmount,
 					address: selectedAddress,
 					walletSource: selectedWallet.type === 'game' ? 'cdp' : 'external'

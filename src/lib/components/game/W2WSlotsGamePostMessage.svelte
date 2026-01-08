@@ -24,6 +24,8 @@
 		ConfigMessage,
 		CreditBalanceMessage,
 		AccountLockedMessage,
+		SpinQueueMessage,
+		QueuedSpinItem,
 	} from '$lib/game-engine/bridge/types';
 	// Use MESSAGE_NAMESPACE constant directly to avoid import issues
 	const MESSAGE_NAMESPACE = 'com.houseofvoi';
@@ -182,16 +184,20 @@
 				case 'ACCOUNT_LOCKED':
 					handleAccountLocked(message as AccountLockedMessage);
 					break;
+				case 'SPIN_QUEUE':
+					handleSpinQueue(message as SpinQueueMessage);
+					break;
 			}
 		};
 
 		window.addEventListener('message', messageHandler);
 
-		// Initialize connection - request balance, credits, and config
+		// Initialize connection - request balance, credits, config, and spin queue
 		sendMessage({ type: 'INIT' });
 		sendMessage({ type: 'GET_BALANCE' });
 		sendMessage({ type: 'GET_CREDIT_BALANCE' });
 		sendMessage({ type: 'GET_CONFIG' });
+		sendMessage({ type: 'GET_SPIN_QUEUE' } as any);
 	});
 
 	onDestroy(() => {
@@ -833,6 +839,50 @@
 			console.log('🔒 Account locked:', { voiAddress: payload.voiAddress, reason: payload.reason });
 		} else {
 			console.log('🔓 Account unlocked:', { voiAddress: payload.voiAddress });
+		}
+	}
+
+	/**
+	 * Handle spin queue message from bridge
+	 * Syncs the local spin queue state with the authoritative queue from the bridge
+	 */
+	function handleSpinQueue(message: SpinQueueMessage): void {
+		const payload = message.payload;
+		console.log('📋 Spin queue update received:', payload);
+
+		// Convert bridge queue items to local queue format
+		const bridgeQueue = payload.queue || [];
+
+		// Update local spin queue with bridge data
+		// Map QueuedSpinItem to local QueuedSpin format
+		spinQueue = bridgeQueue.map((item: QueuedSpinItem) => ({
+			clientSpinId: item.clientSpinId || item.spinId,
+			engineSpinId: item.spinId,
+			betAmount: item.betAmount,
+			mode: item.mode ?? 2,
+			timestamp: item.timestamp,
+			status: item.status,
+			completedAt: item.status === 'completed' || item.status === 'failed' ? Date.now() : undefined,
+			outcome: item.outcome ? {
+				totalPayout: item.outcome.winnings,
+				waysWins: item.outcome.waysWins,
+				grid: item.outcome.grid,
+				bonusSpinsAwarded: item.outcome.bonusSpinsAwarded,
+				jackpotHit: item.outcome.jackpotHit,
+				jackpotAmount: item.outcome.jackpotAmount,
+				winLevel: item.outcome.winLevel,
+			} : undefined,
+			error: item.error,
+		}));
+
+		// Update spinning state based on queue
+		const hasPending = spinQueue.some(s => s.status === 'pending' || s.status === 'submitted');
+		if (hasPending && !isSpinning) {
+			isSpinning = true;
+			waitingForOutcome = true;
+		} else if (!hasPending && isSpinning && !isDisplayingResults) {
+			isSpinning = false;
+			waitingForOutcome = false;
 		}
 	}
 

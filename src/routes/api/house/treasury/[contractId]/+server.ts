@@ -33,7 +33,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		}
 
 		// Get treasury balance from YBT service
-		const treasury = await ybtService.getTreasuryBalance(contractId, contract.treasury_contract_id);
+		// Pass treasury_asset_id if it's an ARC200 token treasury (non-null and non-zero)
+		const tokenContractId = contract.treasury_asset_id && contract.treasury_asset_id !== 0
+			? contract.treasury_asset_id
+			: null;
+		const treasury = await ybtService.getTreasuryBalance(contractId, contract.treasury_contract_id, tokenContractId);
 
 		return json({
 			treasury: {

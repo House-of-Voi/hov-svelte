@@ -178,6 +178,9 @@ window.addEventListener('message', (event) => {
     case 'SPIN_SUBMITTED':
       handleSpinSubmitted(message.payload);
       break;
+    case 'SPIN_QUEUE':              // [Both] Spin queue state updates
+      handleSpinQueue(message.payload);
+      break;
   }
 });
 ```
@@ -214,6 +217,12 @@ window.parent.postMessage({
 window.parent.postMessage({
   namespace: 'com.houseofvoi',
   type: 'INIT'
+}, '*');
+
+// Get spin queue state
+window.parent.postMessage({
+  namespace: 'com.houseofvoi',
+  type: 'GET_SPIN_QUEUE'
 }, '*');
 
 // Exit game and return to lobby
@@ -394,6 +403,24 @@ Get game configuration (bet limits, RTP, etc.).
 
 **Response:** `CONFIG`
 
+#### GET_SPIN_QUEUE `[Both]`
+
+Get current spin queue state. The queue contains all pending and recently completed spins.
+
+```typescript
+{
+  namespace: 'com.houseofvoi';
+  type: 'GET_SPIN_QUEUE';
+}
+```
+
+**Response:** `SPIN_QUEUE`
+
+**Note:** The spin queue is also automatically sent:
+- On initialization (with INIT response)
+- When a new spin is added to the queue
+- When a spin status changes (submitted, completed, failed)
+
 #### INIT
 
 Initialize connection and get initial state.
@@ -408,7 +435,9 @@ Initialize connection and get initial state.
 }
 ```
 
-**Response:** `BALANCE_RESPONSE` and `CONFIG`
+**Response:** `BALANCE_RESPONSE`, `CONFIG`, and `SPIN_QUEUE`
+
+**Note:** On initialization, the bridge sends the current spin queue state, allowing games to restore their state if reconnecting (e.g., after a page refresh).
 
 #### EXIT
 
@@ -653,6 +682,96 @@ Spin was submitted to blockchain (waiting for outcome).
     txId?: string;
   };
 }
+```
+
+#### SPIN_QUEUE `[Both]`
+
+Current spin queue state. Contains all pending and recently completed spins. This message is sent:
+- In response to `GET_SPIN_QUEUE` request
+- On initialization
+- When a spin is added, submitted, completed, or fails
+
+```typescript
+{
+  namespace: 'com.houseofvoi';
+  type: 'SPIN_QUEUE';
+  payload: {
+    queue: Array<{
+      spinId: string;           // Engine-assigned spin ID
+      clientSpinId?: string;    // Client-generated ID for tracking
+      betAmount: number;        // Token amount (normalized, e.g., 40 not 40000000)
+      mode?: number;            // [W2W] 0=bonus, 1=credit, 2=network token, 4=ARC200 token
+      paylines?: number;        // [5reel] Number of paylines
+      betPerLine?: number;      // [5reel] Normalized token amount per line
+      timestamp: number;        // Unix timestamp when spin was queued
+      status: 'pending' | 'submitted' | 'completed' | 'failed';
+      outcome?: {
+        grid?: string[][];      // 3x5 grid result
+        winnings: number;       // Token amount (normalized)
+        isWin: boolean;
+        winLevel?: 'none' | 'small' | 'medium' | 'large' | 'jackpot';
+        // [W2W] specific
+        waysWins?: Array<{
+          symbol: string;
+          ways: number;
+          matchLength: number;
+          payout: number;       // Token amount (normalized)
+        }>;
+        bonusSpinsAwarded?: number;
+        jackpotHit?: boolean;
+        jackpotAmount?: number; // Token amount (normalized)
+        // [5reel] specific
+        winningLines?: Array<{
+          paylineIndex: number;
+          symbol: string;
+          matchCount: number;
+          payout: number;       // Token amount (normalized)
+        }>;
+      };
+      error?: string;           // Error message if status is 'failed'
+    }>;
+    pendingCount: number;       // Number of pending/submitted spins
+    reservedBalance: number;    // Token amount reserved for pending spins (normalized)
+  };
+}
+```
+
+**Spin Status Flow:**
+1. `pending` - Spin queued locally, waiting to be sent to blockchain
+2. `submitted` - Spin transaction submitted to blockchain, waiting for confirmation
+3. `completed` - Spin confirmed, outcome available
+4. `failed` - Spin failed (error message in `error` field)
+
+**Example Usage:**
+```javascript
+// Listen for queue updates
+window.addEventListener('message', (event) => {
+  const message = event.data;
+
+  // Filter by namespace
+  if (!message || typeof message !== 'object' || message.namespace !== 'com.houseofvoi') {
+    return;
+  }
+
+  if (message.type === 'SPIN_QUEUE') {
+    const { queue, pendingCount, reservedBalance } = message.payload;
+
+    // Update UI with queue state
+    updateQueueDisplay(queue);
+
+    // Show pending count indicator
+    showPendingSpins(pendingCount);
+
+    // Update available balance display
+    // (available = total - reservedBalance)
+  }
+});
+
+// Request current queue state
+window.parent.postMessage({
+  namespace: 'com.houseofvoi',
+  type: 'GET_SPIN_QUEUE'
+}, '*');
 ```
 
 #### ERROR

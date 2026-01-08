@@ -23,6 +23,8 @@ import type {
   SpinSubmittedMessage,
   CreditBalanceMessage,
   ExitRequest,
+  QueuedSpinItem,
+  SpinQueueMessage,
 } from './types';
 import { isGameRequest, isSpinRequest, MESSAGE_NAMESPACE } from './types';
 
@@ -54,6 +56,8 @@ export class GameBridge {
   private treasuryAssetId: number | null = null; // ARC200 token contract ID if this is a token machine
   private baseBet: number = 40; // Base bet amount in VOI/token units (from machine config)
   private kickerAmount: number = 20; // Kicker amount in VOI/token units (from machine config)
+  private spinQueue: QueuedSpinItem[] = []; // Queue of pending/completed spins
+  private maxQueueSize: number = 50; // Maximum number of spins to keep in queue history
 
   constructor(config: GameBridgeConfig) {
     this.config = config;
@@ -205,6 +209,9 @@ export class GameBridge {
 
     // Listen for spin submitted
     this.engine.onSpinSubmitted((spinId: string, txId: string) => {
+      // Update spin status in queue
+      this.updateSpinInQueue(spinId, { status: 'submitted' });
+
       this.sendToGame({
         type: 'SPIN_SUBMITTED',
         payload: {
@@ -216,6 +223,13 @@ export class GameBridge {
 
     // Listen for errors
     this.engine.onError((error: GameError) => {
+      // If there's a spinId in the error, update the queue
+      if ((error as any).spinId) {
+        this.updateSpinInQueue((error as any).spinId, {
+          status: 'failed',
+          error: error.message,
+        });
+      }
       this.sendError(error);
     });
   }
@@ -295,6 +309,9 @@ export class GameBridge {
           break;
         case 'GET_CONFIG':
           await this.handleGetConfig();
+          break;
+        case 'GET_SPIN_QUEUE':
+          this.handleGetSpinQueue();
           break;
         case 'EXIT':
           this.handleExit();
@@ -416,10 +433,18 @@ export class GameBridge {
 
         totalBet = betAmountMicroAlgos;
         spinId = await (this.engine as any).spinW2W(betAmountMicroAlgos, index, mode);
+
+        // Add spin to queue
+        if (spinId) {
+          this.addSpinToQueue(spinId, clientSpinId, {
+            betAmount: betAmountMicroAlgos,
+            mode,
+          });
+        }
       }
       // Handle 5reel format
       else if (is5ReelFormat) {
-        const { paylines, betPerLine } = message.payload as { paylines: number; betPerLine: number };
+        const { paylines, betPerLine, spinId: clientSpinId } = message.payload as { paylines: number; betPerLine: number; spinId?: string };
         // Convert betPerLine from normalized VOI to microVOI for engine
         const betPerLineMicroVOI = betPerLine * 1_000_000;
         totalBet = betPerLineMicroVOI * paylines;
@@ -437,6 +462,15 @@ export class GameBridge {
         }
 
         spinId = await this.engine.spin(betPerLineMicroVOI, paylines);
+
+        // Add spin to queue
+        if (spinId) {
+          this.addSpinToQueue(spinId, clientSpinId, {
+            betAmount: totalBet,
+            paylines,
+            betPerLine: betPerLineMicroVOI,
+          });
+        }
       } else {
         this.sendError({
           code: 'INVALID_REQUEST',
@@ -463,6 +497,15 @@ export class GameBridge {
       console.error('Spin failed:', error);
       // Try to extract clientSpinId from the request payload for error matching
       const clientSpinId = (message.payload as any)?.spinId;
+
+      // If the spin was added to queue before failure, update it as failed
+      if (clientSpinId) {
+        this.updateSpinInQueue(clientSpinId, {
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'Spin failed',
+        });
+      }
+
       this.sendError({
         code: 'SPIN_FAILED',
         message: error instanceof Error ? error.message : 'Spin failed',
@@ -739,12 +782,90 @@ export class GameBridge {
   }
 
   /**
-   * Send initial state (balance, credits, and config) to game
+   * Handle GET_SPIN_QUEUE request
+   */
+  private handleGetSpinQueue(): void {
+    this.sendSpinQueueUpdate();
+  }
+
+  /**
+   * Send spin queue update to game
+   */
+  private sendSpinQueueUpdate(): void {
+    const state = this.engine?.getState();
+    const reservedBalanceMicro = state?.reservedBalance || 0;
+    const pendingCount = this.spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted').length;
+
+    this.sendToGame({
+      type: 'SPIN_QUEUE',
+      payload: {
+        queue: this.spinQueue,
+        pendingCount,
+        reservedBalance: reservedBalanceMicro / 1_000_000, // Convert to normalized token amount
+      },
+    } as SpinQueueMessage);
+  }
+
+  /**
+   * Add spin to queue
+   */
+  private addSpinToQueue(spinId: string, clientSpinId: string | undefined, params: {
+    betAmount?: number;
+    mode?: number;
+    paylines?: number;
+    betPerLine?: number;
+  }): void {
+    const queueItem: QueuedSpinItem = {
+      spinId,
+      clientSpinId,
+      betAmount: (params.betAmount || 0) / 1_000_000, // Convert to normalized token amount
+      mode: params.mode,
+      paylines: params.paylines,
+      betPerLine: params.betPerLine ? params.betPerLine / 1_000_000 : undefined, // Convert to normalized token amount
+      timestamp: Date.now(),
+      status: 'pending',
+    };
+
+    this.spinQueue.push(queueItem);
+    this.trimQueue();
+    this.sendSpinQueueUpdate();
+  }
+
+  /**
+   * Update spin status in queue
+   */
+  private updateSpinInQueue(spinId: string, updates: Partial<QueuedSpinItem>): void {
+    const index = this.spinQueue.findIndex(s => s.spinId === spinId || s.clientSpinId === spinId);
+    if (index !== -1) {
+      this.spinQueue[index] = { ...this.spinQueue[index], ...updates };
+      this.sendSpinQueueUpdate();
+    }
+  }
+
+  /**
+   * Trim queue to max size, removing oldest completed/failed spins
+   */
+  private trimQueue(): void {
+    if (this.spinQueue.length <= this.maxQueueSize) return;
+
+    // Sort by status (pending/submitted first) and then by timestamp
+    const pending = this.spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted');
+    const completed = this.spinQueue.filter(s => s.status === 'completed' || s.status === 'failed');
+
+    // Keep all pending and trim completed to fit
+    const maxCompleted = this.maxQueueSize - pending.length;
+    const trimmedCompleted = completed.slice(-maxCompleted); // Keep most recent
+
+    this.spinQueue = [...pending, ...trimmedCompleted];
+  }
+
+  /**
+   * Send initial state (balance, credits, config, and spin queue) to game
    */
   private async sendInitialState(): Promise<void> {
     if (!this.engine) return;
 
-    // Send balance, credit balance (if W2W), and config in parallel
+    // Send balance, credit balance (if W2W), config, and spin queue in parallel
     const promises = [
       this.handleGetBalance(),
       this.handleGetConfig()
@@ -757,6 +878,9 @@ export class GameBridge {
     }
 
     await Promise.all(promises);
+
+    // Send current spin queue state
+    this.sendSpinQueueUpdate();
   }
 
   /**
@@ -769,10 +893,53 @@ export class GameBridge {
 
     // Get fresh state after spin is marked as COMPLETED (reserved balance should be updated)
     const state = this.engine!.getState();
-    
+
     // Determine format based on result
     const isW2W = result.mode !== undefined || result.betAmount !== undefined;
-    
+
+    // Update spin in queue with outcome
+    const spinId = String(result.id);
+    if (isW2W) {
+      const serializableWaysWinsForQueue = (result.outcome.waysWins || []).map((win) => ({
+        symbol: String(win.symbol),
+        ways: Number(win.ways),
+        matchLength: Number(win.matchLength),
+        payout: Number(win.payout) * (Number(result.betAmount || 0) / 1_000_000 * 0.995),
+      }));
+
+      this.updateSpinInQueue(spinId, {
+        status: 'completed',
+        outcome: {
+          grid: serializableGrid,
+          winnings: Number(result.winnings) / 1_000_000,
+          isWin: Boolean(result.isWin),
+          winLevel: result.winLevel as 'none' | 'small' | 'medium' | 'large' | 'jackpot',
+          waysWins: serializableWaysWinsForQueue,
+          bonusSpinsAwarded: Number(result.outcome.bonusSpinsAwarded || 0),
+          jackpotHit: Boolean(result.outcome.jackpotHit),
+          jackpotAmount: result.outcome.jackpotAmount ? Number(result.outcome.jackpotAmount) / 1_000_000 : undefined,
+        },
+      });
+    } else {
+      const serializableWinningLinesForQueue = (result.outcome.winningLines || []).map((line) => ({
+        paylineIndex: line.paylineIndex,
+        symbol: String(line.symbol),
+        matchCount: Number(line.matchCount),
+        payout: Number(line.payout) / 1_000_000,
+      }));
+
+      this.updateSpinInQueue(spinId, {
+        status: 'completed',
+        outcome: {
+          grid: serializableGrid,
+          winnings: Number(result.winnings) / 1_000_000,
+          isWin: Boolean(result.isWin),
+          winLevel: result.winLevel as 'none' | 'small' | 'medium' | 'large' | 'jackpot',
+          winningLines: serializableWinningLinesForQueue,
+        },
+      });
+    }
+
     if (isW2W) {
       // W2W format
       // Convert all amounts from microVOI (engine) to normalized VOI (game)

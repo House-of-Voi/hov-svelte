@@ -81,6 +81,14 @@ export interface RequestUnlockRequest {
   type: 'REQUEST_UNLOCK';
 }
 
+/**
+ * Request current spin queue state
+ */
+export interface GetSpinQueueRequest {
+  namespace: string;
+  type: 'GET_SPIN_QUEUE';
+}
+
 export type GameRequest =
   | SpinRequest
   | GetBalanceRequest
@@ -88,7 +96,8 @@ export type GameRequest =
   | GetConfigRequest
   | InitRequest
   | ExitRequest
-  | RequestUnlockRequest;
+  | RequestUnlockRequest
+  | GetSpinQueueRequest;
 
 // ============================================================================
 // RESPONSE MESSAGES (Bridge → Game)
@@ -240,6 +249,57 @@ export interface AccountLockedMessage {
   };
 }
 
+/**
+ * Queued spin item - represents a spin in the queue
+ */
+export interface QueuedSpinItem {
+  spinId: string;
+  clientSpinId?: string; // Client-generated ID for tracking
+  betAmount: number; // Token amount (normalized, e.g., 40 not 40000000)
+  mode?: number; // W2W: 0=bonus, 1=credit, 2=network token (VOI), 4=ARC200 token
+  paylines?: number; // 5-reel only
+  betPerLine?: number; // 5-reel only (normalized token amount)
+  timestamp: number;
+  status: 'pending' | 'submitted' | 'completed' | 'failed';
+  outcome?: {
+    grid?: string[][];
+    winnings: number; // Token amount (normalized)
+    isWin: boolean;
+    winLevel?: 'none' | 'small' | 'medium' | 'large' | 'jackpot';
+    // W2W specific
+    waysWins?: Array<{
+      symbol: string;
+      ways: number;
+      matchLength: number;
+      payout: number; // Token amount (normalized)
+    }>;
+    bonusSpinsAwarded?: number;
+    jackpotHit?: boolean;
+    jackpotAmount?: number; // Token amount (normalized)
+    // 5-reel specific
+    winningLines?: Array<{
+      paylineIndex: number;
+      symbol: string;
+      matchCount: number;
+      payout: number; // Token amount (normalized)
+    }>;
+  };
+  error?: string;
+}
+
+/**
+ * Spin queue message - sent in response to GET_SPIN_QUEUE or automatically when queue changes
+ */
+export interface SpinQueueMessage {
+  namespace: string;
+  type: 'SPIN_QUEUE';
+  payload: {
+    queue: QueuedSpinItem[];
+    pendingCount: number; // Number of spins not yet completed
+    reservedBalance: number; // Token amount reserved for pending spins (normalized)
+  };
+}
+
 export type GameResponse =
   | OutcomeMessage
   | BalanceUpdateMessage
@@ -248,7 +308,8 @@ export type GameResponse =
   | BalanceResponse
   | CreditBalanceMessage
   | SpinSubmittedMessage
-  | AccountLockedMessage;
+  | AccountLockedMessage
+  | SpinQueueMessage;
 
 // ============================================================================
 // MESSAGE VALIDATION
@@ -270,6 +331,7 @@ export function isGameRequest(message: unknown): message is GameRequest {
     msg.type === 'GET_BALANCE' ||
     msg.type === 'GET_CREDIT_BALANCE' ||
     msg.type === 'GET_CONFIG' ||
+    msg.type === 'GET_SPIN_QUEUE' ||
     msg.type === 'INIT' ||
     msg.type === 'EXIT' ||
     msg.type === 'REQUEST_UNLOCK'
