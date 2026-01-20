@@ -4,10 +4,11 @@
 	import ConfigEditor, { type ConfigValues } from './ConfigEditor.svelte';
 	import EventMonitor from './EventMonitor.svelte';
 	import MessageLog from './MessageLog.svelte';
+	import SpinQueuePanel from './SpinQueuePanel.svelte';
 	import SpinOutcomeToast, { type OutcomeOption } from './SpinOutcomeToast.svelte';
 	import type { LoggedMessage, MessageStats } from '$lib/testing/types';
 	import type { GameType } from '$lib/testing/messageTemplates';
-	import type { GameRequest, GameResponse } from '$lib/game-engine/bridge/types';
+	import type { GameRequest, GameResponse, QueuedSpinItem } from '$lib/game-engine/bridge/types';
 
 	interface Props {
 		gameType: GameType | null;
@@ -16,8 +17,11 @@
 		stats: MessageStats;
 		currentBalance: number;
 		pendingSpinId: string | null;
+		spinQueue: QueuedSpinItem[];
 		isStuck: boolean;
 		onClearLog: () => void;
+		onClearQueue?: () => void;
+		onSelectSpin?: (spinId: string) => void;
 		onUrlChange: (url: string) => void;
 		onGameTypeChange: (type: GameType | null) => void;
 		onConfigChange: (config: ConfigValues) => void;
@@ -35,8 +39,11 @@
 		stats,
 		currentBalance,
 		pendingSpinId = null,
+		spinQueue = [],
 		isStuck: isStuckProp = $bindable(true),
 		onClearLog,
+		onClearQueue,
+		onSelectSpin,
 		onUrlChange,
 		onGameTypeChange,
 		onConfigChange,
@@ -51,7 +58,10 @@
 
 	// Overlay state
 	let isCollapsed = $state(false);
-	let activeTab = $state<'game' | 'monitor' | 'log'>('game');
+	let activeTab = $state<'game' | 'queue' | 'monitor' | 'log'>('game');
+
+	// Derived queue stats for tab badge
+	let pendingQueueCount = $derived(spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted').length);
 	let isDragging = $state(false);
 	let newBalance = $state(currentBalance); // Balance is already in VOI
 
@@ -317,6 +327,23 @@
 				</svg>
 				Game
 			</button>
+			<button class="tab" class:active={activeTab === 'queue'} onclick={() => (activeTab = 'queue')}>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+				>
+					<path d="M16 3h5v5M8 3H3v5M3 16v5h5M21 16v5h-5"/>
+					<path d="M21 3l-9 9M3 21l9-9"/>
+				</svg>
+				Queue
+				{#if pendingQueueCount > 0}
+					<span class="queue-badge">{pendingQueueCount}</span>
+				{/if}
+			</button>
 			<button class="tab" class:active={activeTab === 'log'} onclick={() => (activeTab = 'log')}>
 				<svg
 					width="16"
@@ -392,6 +419,13 @@
 						</div>
 					{/if}
 				</div>
+			{:else if activeTab === 'queue'}
+				<SpinQueuePanel
+					queue={spinQueue}
+					selectedSpinId={pendingSpinId}
+					onClearQueue={onClearQueue}
+					onSelectSpin={onSelectSpin}
+				/>
 			{:else if activeTab === 'monitor'}
 				<EventMonitor {messages} />
 			{:else if activeTab === 'log'}
@@ -582,6 +616,26 @@
 		color: #667eea;
 		border-bottom-color: #667eea;
 		background: white;
+	}
+
+	.queue-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 18px;
+		height: 18px;
+		padding: 0 0.375rem;
+		font-size: 0.625rem;
+		font-weight: 700;
+		background: #f59e0b;
+		color: white;
+		border-radius: 9999px;
+		animation: pulse-badge 2s ease-in-out infinite;
+	}
+
+	@keyframes pulse-badge {
+		0%, 100% { transform: scale(1); }
+		50% { transform: scale(1.1); }
 	}
 
 	.pulse {

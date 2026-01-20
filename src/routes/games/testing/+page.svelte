@@ -425,7 +425,7 @@
 		pendingSpinId = null;
 	}
 
-	// Send outcome to game
+	// Send outcome to game (SPIN_SUBMITTED was already sent when request was received)
 	function sendOutcome(
 		gameType: GameType | null,
 		winLevel: 'none' | 'small' | 'medium' | 'large' | 'jackpot',
@@ -437,136 +437,120 @@
 	) {
 		const spinId = spinIdOverride || lastSpinId || generateSpinId();
 
-		// 1. Send SPIN_SUBMITTED first to acknowledge the spin
-		const spinSubmitted: GameResponse = {
-			namespace: MESSAGE_NAMESPACE,
-			type: 'SPIN_SUBMITTED',
-			payload: {
-				spinId,
-				txId: 'test-tx-' + Date.now()
+		let outcome: GameResponse;
+
+		if (gameType === 'w2w') {
+			outcome = gameResponseTemplates.OUTCOME_W2W();
+			const payload = outcome.payload as any;
+
+			// Use custom grid if provided and calculate actual wins
+			if (customGrid) {
+				payload.grid = customGrid;
+				// Calculate actual waysWins from the custom grid
+				const calculatedWins = calculateW2WPayouts(customGrid as SymbolId[][]);
+				payload.waysWins = calculatedWins;
+				console.log('[Testing] Calculated W2W wins from custom grid:', calculatedWins);
 			}
-		};
-		sendResponseToGame(spinSubmitted);
 
-		// Update spin status in queue to 'submitted'
-		updateSpinInQueue(spinId, { status: 'submitted' });
-
-		// 2. Then send OUTCOME after a small delay
-		setTimeout(() => {
-			let outcome: GameResponse;
-
-			if (gameType === 'w2w') {
-				outcome = gameResponseTemplates.OUTCOME_W2W();
-				const payload = outcome.payload as any;
-
-				// Use custom grid if provided and calculate actual wins
-				if (customGrid) {
-					payload.grid = customGrid;
-					// Calculate actual waysWins from the custom grid
-					const calculatedWins = calculateW2WPayouts(customGrid as SymbolId[][]);
-					payload.waysWins = calculatedWins;
-					console.log('[Testing] Calculated W2W wins from custom grid:', calculatedWins);
-				}
-
-				payload.winnings = winnings;
-				// If bonus spins are awarded, treat it as a win even if winnings are 0
-				if (bonusSpins > 0) {
-					payload.winLevel = 'small';
-					payload.isWin = true;
-				} else {
-					payload.winLevel = winLevel;
-					payload.isWin = winnings > 0;
-				}
-				payload.jackpotHit = jackpotHit;
-				if (jackpotHit) {
-					payload.jackpotAmount = winnings;
-				}
-				payload.bonusSpinsAwarded = bonusSpins;
-				payload.spinId = spinId;
-				// Clear waysWins for losses (no winnings, no jackpot, and no bonus spins)
-				if (winnings === 0 && !jackpotHit && bonusSpins === 0) {
-					payload.waysWins = [];
-				}
+			payload.winnings = winnings;
+			// If bonus spins are awarded, treat it as a win even if winnings are 0
+			if (bonusSpins > 0) {
+				payload.winLevel = 'small';
+				payload.isWin = true;
 			} else {
-				outcome = gameResponseTemplates.OUTCOME_5REEL();
-				const payload = outcome.payload as any;
-
-				// Use custom grid if provided and calculate actual wins
-				if (customGrid) {
-					payload.grid = customGrid;
-					// Calculate actual winningLines from the custom grid
-					const paylines = (payload.paylines as number) || 10;
-					const betPerLine = (payload.betPerLine as number) || 0.1;
-					const selectedPaylines = DEFAULT_PAYLINE_PATTERNS.slice(0, paylines);
-					const calculatedWins = evaluatePaylines(
-						customGrid as SymbolId[][],
-						selectedPaylines,
-						DEFAULT_PAYTABLE,
-						betPerLine
-					);
-					payload.winningLines = calculatedWins;
-					console.log('[Testing] Calculated 5reel wins from custom grid:', calculatedWins);
-				}
-
-				payload.winnings = winnings;
 				payload.winLevel = winLevel;
 				payload.isWin = winnings > 0;
-				payload.spinId = spinId;
-				// Clear winningLines for losses
-				if (winnings === 0) {
-					payload.winningLines = [];
+			}
+			payload.jackpotHit = jackpotHit;
+			if (jackpotHit) {
+				payload.jackpotAmount = winnings;
+			}
+			payload.bonusSpinsAwarded = bonusSpins;
+			payload.spinId = spinId;
+			// Clear waysWins for losses (no winnings, no jackpot, and no bonus spins)
+			if (winnings === 0 && !jackpotHit && bonusSpins === 0) {
+				payload.waysWins = [];
+			}
+		} else {
+			outcome = gameResponseTemplates.OUTCOME_5REEL();
+			const payload = outcome.payload as any;
+
+			// Use custom grid if provided and calculate actual wins
+			if (customGrid) {
+				payload.grid = customGrid;
+				// Calculate actual winningLines from the custom grid
+				const paylines = (payload.paylines as number) || 10;
+				const betPerLine = (payload.betPerLine as number) || 0.1;
+				const selectedPaylines = DEFAULT_PAYLINE_PATTERNS.slice(0, paylines);
+				const calculatedWins = evaluatePaylines(
+					customGrid as SymbolId[][],
+					selectedPaylines,
+					DEFAULT_PAYTABLE,
+					betPerLine
+				);
+				payload.winningLines = calculatedWins;
+				console.log('[Testing] Calculated 5reel wins from custom grid:', calculatedWins);
+			}
+
+			payload.winnings = winnings;
+			payload.winLevel = winLevel;
+			payload.isWin = winnings > 0;
+			payload.spinId = spinId;
+			// Clear winningLines for losses
+			if (winnings === 0) {
+				payload.winningLines = [];
+			}
+		}
+
+		sendResponseToGame(outcome);
+
+		// Update spin in queue with completed status and outcome
+		const outcomePayload = outcome.payload as any;
+		if (gameType === 'w2w') {
+			updateSpinInQueue(spinId, {
+				status: 'completed',
+				outcome: {
+					grid: outcomePayload.grid,
+					winnings,
+					isWin: winnings > 0 || bonusSpins > 0,
+					winLevel,
+					waysWins: outcomePayload.waysWins,
+					bonusSpinsAwarded: bonusSpins,
+					jackpotHit,
+					jackpotAmount: jackpotHit ? winnings : undefined
 				}
-			}
+			});
+		} else {
+			updateSpinInQueue(spinId, {
+				status: 'completed',
+				outcome: {
+					grid: outcomePayload.grid,
+					winnings,
+					isWin: winnings > 0,
+					winLevel,
+					winningLines: outcomePayload.winningLines
+				}
+			});
+		}
 
-			sendResponseToGame(outcome);
+		// Add winnings back to balance and send update
+		if (winnings > 0) {
+			currentBalance = roundBalance(currentBalance + winnings);
+			sendBalanceUpdate(currentBalance);
+		}
 
-			// Update spin in queue with completed status and outcome
-			const outcomePayload = outcome.payload as any;
-			if (gameType === 'w2w') {
-				updateSpinInQueue(spinId, {
-					status: 'completed',
-					outcome: {
-						grid: outcomePayload.grid,
-						winnings,
-						isWin: winnings > 0 || bonusSpins > 0,
-						winLevel,
-						waysWins: outcomePayload.waysWins,
-						bonusSpinsAwarded: bonusSpins,
-						jackpotHit,
-						jackpotAmount: jackpotHit ? winnings : undefined
-					}
-				});
-			} else {
-				updateSpinInQueue(spinId, {
-					status: 'completed',
-					outcome: {
-						grid: outcomePayload.grid,
-						winnings,
-						isWin: winnings > 0,
-						winLevel,
-						winningLines: outcomePayload.winningLines
-					}
-				});
-			}
+		// Handle bonus spins for W2W games
+		if (gameType === 'w2w' && bonusSpins > 0) {
+			currentBonusSpins += bonusSpins;
+			// Send credit balance update after a short delay to ensure outcome is processed first
+			setTimeout(() => {
+				sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
+			}, 100);
+		}
 
-			// Add winnings back to balance and send update
-			if (winnings > 0) {
-				currentBalance = roundBalance(currentBalance + winnings);
-				sendBalanceUpdate(currentBalance);
-			}
-
-			// Handle bonus spins for W2W games
-			if (gameType === 'w2w' && bonusSpins > 0) {
-				currentBonusSpins += bonusSpins;
-				// Send credit balance update after a short delay to ensure outcome is processed first
-				setTimeout(() => {
-					sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
-				}, 100);
-			}
-
-			// Clear the lastSpinId so we're ready for the next spin
-			lastSpinId = null;
-		}, 500); // Small delay to simulate network
+		// Clear the pending spin and lastSpinId
+		pendingSpinId = null;
+		lastSpinId = null;
 	}
 
 	// Send balance update to game (balance is in VOI normalized)
@@ -641,6 +625,28 @@
 		sendSpinQueueUpdate();
 	}
 
+	function addSpinToQueueAsSubmitted(spinId: string, clientSpinId: string | undefined, params: {
+		betAmount?: number;
+		mode?: number;
+		paylines?: number;
+		betPerLine?: number;
+	}): void {
+		const queueItem: QueuedSpinItem = {
+			spinId,
+			clientSpinId,
+			betAmount: params.betAmount || 0,
+			mode: params.mode,
+			paylines: params.paylines,
+			betPerLine: params.betPerLine,
+			timestamp: Date.now(),
+			status: 'submitted'
+		};
+
+		spinQueue = [...spinQueue, queueItem];
+		trimQueue();
+		sendSpinQueueUpdate();
+	}
+
 	function updateSpinInQueue(spinId: string, updates: Partial<QueuedSpinItem>): void {
 		const index = spinQueue.findIndex(s => s.spinId === spinId || s.clientSpinId === spinId);
 		if (index !== -1) {
@@ -707,7 +713,7 @@
 				return;
 
 			case 'SPIN_REQUEST':
-				// Save spinId and show toast for outcome selection
+				// Add spin to queue - user will select outcome from queue panel
 				const spinRequestPayload = message.payload as {
 					spinId?: string;
 					paylines?: number;
@@ -718,7 +724,7 @@
 				};
 				const spinId = spinRequestPayload.spinId || generateSpinId();
 				lastSpinId = spinId;
-				pendingSpinId = spinId;
+				// Don't set pendingSpinId here - user will select from queue
 
 				// Calculate bet amount based on game type
 				const detectedGameType = gameType || detectGameTypeFromUrl(gameUrl);
@@ -754,16 +760,26 @@
 					sendBalanceUpdate(currentBalance);
 				}
 
-				// Add spin to queue
-				addSpinToQueue(spinId, spinRequestPayload.spinId, {
+				// Immediately acknowledge the spin with SPIN_SUBMITTED
+				const spinSubmittedAck: GameResponse = {
+					namespace: MESSAGE_NAMESPACE,
+					type: 'SPIN_SUBMITTED',
+					payload: {
+						spinId,
+						txId: 'test-tx-' + Date.now()
+					}
+				};
+				sendResponseToGame(spinSubmittedAck);
+
+				// Add spin to queue with 'submitted' status - user selects outcome from queue
+				addSpinToQueueAsSubmitted(spinId, spinRequestPayload.spinId, {
 					betAmount,
 					mode: spinRequestPayload.mode,
 					paylines: spinRequestPayload.paylines,
 					betPerLine: spinRequestPayload.betPerLine
 				});
 
-				console.log('[Auto-Respond] SPIN_REQUEST received with spinId:', spinId, 'betAmount:', betAmount, 'reserved:', spinRequestPayload.reserved);
-				// Show toast - don't send outcome automatically
+				console.log('[Auto-Respond] SPIN_REQUEST acknowledged with spinId:', spinId, 'betAmount:', betAmount, 'reserved:', spinRequestPayload.reserved);
 				return;
 
 			case 'EXIT':
@@ -832,6 +848,20 @@
 		}
 	}
 
+	// Clear spin queue
+	function handleClearQueue() {
+		if (confirm('Clear all queued spins?')) {
+			spinQueue = [];
+			sendSpinQueueUpdate();
+		}
+	}
+
+	// Select a spin from the queue to respond to
+	function handleSelectSpin(spinId: string) {
+		pendingSpinId = spinId;
+		lastSpinId = spinId;
+	}
+
 	// Setup message listener
 	onMount(() => {
 		window.addEventListener('message', handleMessageFromIframe);
@@ -885,8 +915,11 @@
 		{stats}
 		currentBalance={currentBalance}
 		pendingSpinId={pendingSpinId}
+		{spinQueue}
 		bind:isStuck={isOverlayStuck}
 		onClearLog={handleClearLog}
+		onClearQueue={handleClearQueue}
+		onSelectSpin={handleSelectSpin}
 		onUrlChange={handleUrlChange}
 		onGameTypeChange={handleGameTypeChange}
 		onConfigChange={handleConfigChange}
