@@ -141,6 +141,8 @@ export interface OutcomeMessage {
     isWin: boolean;
     winLevel: 'none' | 'small' | 'medium' | 'large' | 'jackpot';
     totalBet: number;
+    availableBalance: number; // On-chain balance minus reserved for pending spins (normalized VOI)
+    reserved: number; // Amount currently allocated to pending spins (normalized VOI)
   } & (
     | {
         // 5reel format
@@ -233,6 +235,8 @@ export interface SpinSubmittedMessage {
   payload: {
     spinId: string;
     txId?: string;
+    availableBalance: number; // On-chain balance minus reserved for pending spins (normalized VOI)
+    reserved: number; // Amount currently allocated to pending spins (normalized VOI)
   };
 }
 

@@ -225,11 +225,17 @@ export class GameBridge {
       // Update spin status in queue
       this.updateSpinInQueue(spinId, { status: 'submitted' });
 
+      // Get current balance state for the message
+      const state = this.engine!.getState();
+      const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
+
       this.sendToGame({
         type: 'SPIN_SUBMITTED',
         payload: {
           spinId,
           txId,
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
+          reserved: state.reservedBalance / 1_000_000,
         },
       } as SpinSubmittedMessage);
     });
@@ -1061,6 +1067,9 @@ export class GameBridge {
         wildMultiplier: Number(win.wildMultiplier || 1), // Include wild multiplier, default to 1
       }));
 
+      // Calculate balance info for outcome message
+      const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
+
       this.sendToGame({
         type: 'OUTCOME',
         payload: {
@@ -1075,6 +1084,8 @@ export class GameBridge {
           jackpotAmount: result.outcome.jackpotAmount ? Number(result.outcome.jackpotAmount) / 1_000_000 : undefined, // Convert microVOI to VOI
           winLevel: String(result.winLevel),
           totalBet: Number(result.totalBet) / 1_000_000, // Convert from microVOI to VOI
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
+          reserved: state.reservedBalance / 1_000_000,
         },
       } as OutcomeMessage);
     } else {
@@ -1086,6 +1097,9 @@ export class GameBridge {
         matchCount: Number(line.matchCount), // Ensure number
         payout: Number(line.payout) / 1_000_000, // Convert from microVOI to VOI
       }));
+
+      // Calculate balance info for outcome message
+      const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
 
       this.sendToGame({
         type: 'OUTCOME',
@@ -1099,6 +1113,8 @@ export class GameBridge {
           betPerLine: Number(result.betPerLine || 0) / 1_000_000, // Convert from microVOI to VOI
           paylines: Number(result.paylines || 0),
           totalBet: Number(result.totalBet) / 1_000_000, // Convert from microVOI to VOI
+          availableBalance: availableBalanceMicroVOI / 1_000_000,
+          reserved: state.reservedBalance / 1_000_000,
         },
       } as OutcomeMessage);
     }

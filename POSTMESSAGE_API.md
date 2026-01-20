@@ -469,7 +469,7 @@ function onExitButtonClicked() {
 
 #### OUTCOME `[Both]`
 
-Spin outcome with grid and winnings. The payload format differs based on game type:
+Spin outcome with grid and winnings. Includes current balance state after the outcome (with any winnings applied). The payload format differs based on game type:
 
 **Common Fields (both game types):**
 ```typescript
@@ -483,10 +483,16 @@ Spin outcome with grid and winnings. The payload format differs based on game ty
     isWin: boolean;
     winLevel: 'none' | 'small' | 'medium' | 'large' | 'jackpot';
     totalBet: number;      // [5reel] microVOI, [W2W] credits
+    availableBalance: number;  // Balance after outcome (with winnings applied, normalized VOI)
+    reserved: number;          // Remaining reserved for other pending spins (normalized VOI)
     // ... plus game-type-specific fields below
   };
 }
 ```
+
+**Balance Fields:**
+- `availableBalance`: The on-chain balance after this spin's winnings have been applied, minus any reserved amounts for other pending spins. This is the player's current spendable balance.
+- `reserved`: The total amount still reserved for other pending spins (this completed spin's bet is no longer reserved). When all spins complete, this returns to 0.
 
 **`[5reel]` Additional Fields:**
 ```typescript
@@ -674,7 +680,7 @@ Game configuration response. The payload format differs based on game type:
 
 #### SPIN_SUBMITTED
 
-Spin was submitted to blockchain (waiting for outcome).
+Spin was submitted to blockchain (waiting for outcome). Includes current balance state after deducting the spin cost.
 
 ```typescript
 {
@@ -683,9 +689,15 @@ Spin was submitted to blockchain (waiting for outcome).
   payload: {
     spinId: string;
     txId?: string;
+    availableBalance: number;  // Balance after spin cost deducted (normalized VOI)
+    reserved: number;          // Total amount reserved for all pending spins (normalized VOI)
   };
 }
 ```
+
+**Balance Fields:**
+- `availableBalance`: The on-chain balance minus all reserved amounts for pending spins. This is what the player can bet with for the next spin.
+- `reserved`: The total amount currently allocated to pending spins (including this one). When all spins complete, this returns to 0.
 
 #### SPIN_QUEUE `[Both]`
 
@@ -1136,6 +1148,8 @@ class SlotMachineScene extends Phaser.Scene {
           break;
         case 'SPIN_SUBMITTED':
           console.log('Spin submitted:', message.payload.spinId);
+          console.log('Available balance:', message.payload.availableBalance);
+          console.log('Reserved for pending spins:', message.payload.reserved);
           break;
       }
     });
@@ -1202,6 +1216,10 @@ class SlotMachineScene extends Phaser.Scene {
     function handleOutcome(payload) {
       console.log('Outcome:', payload);
       isSpinning = false;
+
+      // Update balance display from outcome (no need to wait for separate update)
+      console.log('Balance after outcome:', payload.availableBalance);
+      console.log('Still reserved for other spins:', payload.reserved);
 
       // Animate reels to final grid
       animateReelsToGrid(payload.grid);

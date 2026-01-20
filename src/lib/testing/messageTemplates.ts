@@ -127,6 +127,8 @@ export const gameResponseTemplates = {
 			isWin: true,
 			winLevel: 'medium',
 			totalBet: 1, // normalized VOI
+			availableBalance: 99.5, // balance after outcome (normalized VOI)
+			reserved: 0, // no pending spins
 			winningLines: [
 				{
 					paylineIndex: 1,
@@ -162,6 +164,8 @@ export const gameResponseTemplates = {
 			isWin: true,
 			winLevel: 'small',
 			totalBet: 40,
+			availableBalance: 180, // balance after outcome (normalized VOI)
+			reserved: 0, // no pending spins
 			waysWins: [
 				{
 					symbol: '0',
@@ -199,6 +203,8 @@ export const gameResponseTemplates = {
 			isWin: true,
 			winLevel: 'jackpot',
 			totalBet: 40,
+			availableBalance: 10060, // balance after jackpot win (normalized VOI)
+			reserved: 0, // no pending spins
 			waysWins: [],
 			betAmount: 40,
 			bonusSpinsAwarded: 0,
@@ -223,6 +229,8 @@ export const gameResponseTemplates = {
 			isWin: false,
 			winLevel: 'none',
 			totalBet: 40,
+			availableBalance: 60, // balance after outcome (normalized VOI)
+			reserved: 0, // no pending spins
 			waysWins: [],
 			betAmount: 40,
 			bonusSpinsAwarded: 8, // 2+ BONUS symbols
@@ -275,7 +283,9 @@ export const gameResponseTemplates = {
 		type: 'SPIN_SUBMITTED',
 		payload: {
 			spinId: 'spin-' + Date.now(),
-			txId: 'ABC123XYZ789'
+			txId: 'ABC123XYZ789',
+			availableBalance: 60, // balance after spin cost deducted (normalized VOI)
+			reserved: 40 // amount reserved for this pending spin (normalized VOI)
 		}
 	})
 };

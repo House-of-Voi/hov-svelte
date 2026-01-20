@@ -502,6 +502,22 @@
 			}
 		}
 
+		// Calculate balance values for the outcome message
+		// New balance after winnings are applied
+		const balanceAfterOutcome = roundBalance(currentBalance + winnings);
+		// Reserved balance after this spin is completed (exclude this spin's bet from reserved)
+		const existingReserved = spinQueue
+			.filter(s => s.status === 'pending' || s.status === 'submitted')
+			.reduce((sum, s) => sum + s.betAmount, 0);
+		// Find this spin's bet amount to subtract from reserved
+		const thisSpinItem = spinQueue.find(s => s.spinId === spinId || s.clientSpinId === spinId);
+		const thisSpinBet = thisSpinItem?.betAmount || 0;
+		const reservedAfterOutcome = Math.max(0, existingReserved - thisSpinBet);
+
+		// Set balance values in payload
+		(outcome.payload as any).availableBalance = balanceAfterOutcome;
+		(outcome.payload as any).reserved = reservedAfterOutcome;
+
 		sendResponseToGame(outcome);
 
 		// Update spin in queue with completed status and outcome
@@ -760,24 +776,34 @@
 					sendBalanceUpdate(currentBalance);
 				}
 
-				// Immediately acknowledge the spin with SPIN_SUBMITTED
-				const spinSubmittedAck: GameResponse = {
-					namespace: MESSAGE_NAMESPACE,
-					type: 'SPIN_SUBMITTED',
-					payload: {
-						spinId,
-						txId: 'test-tx-' + Date.now()
-					}
-				};
-				sendResponseToGame(spinSubmittedAck);
+				// Acknowledge the spin with SPIN_SUBMITTED after a small delay
+				setTimeout(() => {
+					// Calculate total reserved: existing pending spins + this new bet
+					const existingReserved = spinQueue
+						.filter(s => s.status === 'pending' || s.status === 'submitted')
+						.reduce((sum, s) => sum + s.betAmount, 0);
+					const totalReserved = existingReserved + betAmount;
 
-				// Add spin to queue with 'submitted' status - user selects outcome from queue
-				addSpinToQueueAsSubmitted(spinId, spinRequestPayload.spinId, {
-					betAmount,
-					mode: spinRequestPayload.mode,
-					paylines: spinRequestPayload.paylines,
-					betPerLine: spinRequestPayload.betPerLine
-				});
+					const spinSubmittedAck: GameResponse = {
+						namespace: MESSAGE_NAMESPACE,
+						type: 'SPIN_SUBMITTED',
+						payload: {
+							spinId,
+							txId: 'test-tx-' + Date.now(),
+							availableBalance: currentBalance,
+							reserved: totalReserved
+						}
+					};
+					sendResponseToGame(spinSubmittedAck);
+
+					// Add spin to queue with 'submitted' status - user selects outcome from queue
+					addSpinToQueueAsSubmitted(spinId, spinRequestPayload.spinId, {
+						betAmount,
+						mode: spinRequestPayload.mode,
+						paylines: spinRequestPayload.paylines,
+						betPerLine: spinRequestPayload.betPerLine
+					});
+				}, 100);
 
 				console.log('[Auto-Respond] SPIN_REQUEST acknowledged with spinId:', spinId, 'betAmount:', betAmount, 'reserved:', spinRequestPayload.reserved);
 				return;
