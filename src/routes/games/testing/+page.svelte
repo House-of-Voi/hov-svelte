@@ -10,7 +10,7 @@
 		detectGameTypeFromUrl,
 		generateSpinId
 	} from '$lib/testing/messageTemplates';
-	import type { GameRequest, GameResponse, OutcomeMessage } from '$lib/game-engine/bridge/types';
+	import type { GameRequest, GameResponse, OutcomeMessage, QueuedSpinItem, SpinQueueMessage } from '$lib/game-engine/bridge/types';
 	import { MESSAGE_NAMESPACE, isGameRequest } from '$lib/game-engine/bridge/types';
 	import {
 		calculateW2WPayouts,
@@ -142,6 +142,10 @@
 	let isOverlayStuck = $state(true); // Default to stuck mode
 	let currentBonusSpins = $state(0); // Track current bonus spin count
 	let currentCredits = $state(5000); // Track current credits for W2W games
+
+	// Spin queue management
+	let spinQueue = $state<QueuedSpinItem[]>([]);
+	const maxQueueSize = 50;
 
 	// Stats
 	let stats = $derived.by(() => {
@@ -444,6 +448,9 @@
 		};
 		sendResponseToGame(spinSubmitted);
 
+		// Update spin status in queue to 'submitted'
+		updateSpinInQueue(spinId, { status: 'submitted' });
+
 		// 2. Then send OUTCOME after a small delay
 		setTimeout(() => {
 			let outcome: GameResponse;
@@ -513,6 +520,35 @@
 
 			sendResponseToGame(outcome);
 
+			// Update spin in queue with completed status and outcome
+			const outcomePayload = outcome.payload as any;
+			if (gameType === 'w2w') {
+				updateSpinInQueue(spinId, {
+					status: 'completed',
+					outcome: {
+						grid: outcomePayload.grid,
+						winnings,
+						isWin: winnings > 0 || bonusSpins > 0,
+						winLevel,
+						waysWins: outcomePayload.waysWins,
+						bonusSpinsAwarded: bonusSpins,
+						jackpotHit,
+						jackpotAmount: jackpotHit ? winnings : undefined
+					}
+				});
+			} else {
+				updateSpinInQueue(spinId, {
+					status: 'completed',
+					outcome: {
+						grid: outcomePayload.grid,
+						winnings,
+						isWin: winnings > 0,
+						winLevel,
+						winningLines: outcomePayload.winningLines
+					}
+				});
+			}
+
 			// Add winnings back to balance and send update
 			if (winnings > 0) {
 				currentBalance = roundBalance(currentBalance + winnings);
@@ -562,6 +598,73 @@
 		sendResponseToGame(creditMessage);
 	}
 
+	// Spin queue helper functions
+	function sendSpinQueueUpdate() {
+		const pendingCount = spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted').length;
+		// Calculate reserved balance from pending spins
+		const reservedBalance = spinQueue
+			.filter(s => s.status === 'pending' || s.status === 'submitted')
+			.reduce((sum, s) => sum + s.betAmount, 0);
+
+		const queueMessage: SpinQueueMessage = {
+			namespace: MESSAGE_NAMESPACE,
+			type: 'SPIN_QUEUE',
+			payload: {
+				queue: spinQueue,
+				pendingCount,
+				reservedBalance
+			}
+		};
+
+		sendResponseToGame(queueMessage);
+	}
+
+	function addSpinToQueue(spinId: string, clientSpinId: string | undefined, params: {
+		betAmount?: number;
+		mode?: number;
+		paylines?: number;
+		betPerLine?: number;
+	}): void {
+		const queueItem: QueuedSpinItem = {
+			spinId,
+			clientSpinId,
+			betAmount: params.betAmount || 0,
+			mode: params.mode,
+			paylines: params.paylines,
+			betPerLine: params.betPerLine,
+			timestamp: Date.now(),
+			status: 'pending'
+		};
+
+		spinQueue = [...spinQueue, queueItem];
+		trimQueue();
+		sendSpinQueueUpdate();
+	}
+
+	function updateSpinInQueue(spinId: string, updates: Partial<QueuedSpinItem>): void {
+		const index = spinQueue.findIndex(s => s.spinId === spinId || s.clientSpinId === spinId);
+		if (index !== -1) {
+			spinQueue = spinQueue.map((s, i) =>
+				i === index ? { ...s, ...updates } : s
+			);
+			sendSpinQueueUpdate();
+		}
+	}
+
+	function trimQueue(): void {
+		if (spinQueue.length <= maxQueueSize) return;
+
+		// Sort by status (pending/submitted first) and then by timestamp
+		const pending = spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted');
+		const completed = spinQueue.filter(s => s.status === 'completed' || s.status === 'failed');
+
+		// Keep all pending and trim completed to fit
+		const maxCompleted = maxQueueSize - pending.length;
+		const trimmedCompleted = completed.slice(-maxCompleted); // Keep most recent
+
+		spinQueue = [...pending, ...trimmedCompleted];
+	}
+
 	// Auto-respond to game requests
 	function autoRespondToMessage(message: GameRequest) {
 		if (!iframeElement || !iframeElement.contentWindow) {
@@ -583,6 +686,8 @@
 				if (detectedGameTypeOnInit === 'w2w') {
 					sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
 				}
+				// Send current spin queue state
+				sendSpinQueueUpdate();
 				return;
 
 			case 'GET_CONFIG':
@@ -597,6 +702,10 @@
 				sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
 				return;
 
+			case 'GET_SPIN_QUEUE':
+				sendSpinQueueUpdate();
+				return;
+
 			case 'SPIN_REQUEST':
 				// Save spinId and show toast for outcome selection
 				const spinRequestPayload = message.payload as {
@@ -605,15 +714,16 @@
 					betPerLine?: number;
 					betAmount?: number;
 					reserved?: number;
+					mode?: number;
 				};
 				const spinId = spinRequestPayload.spinId || generateSpinId();
 				lastSpinId = spinId;
 				pendingSpinId = spinId;
-				
+
 				// Calculate bet amount based on game type
 				const detectedGameType = gameType || detectGameTypeFromUrl(gameUrl);
 				let betAmount = 0;
-				
+
 				if (detectedGameType === '5reel') {
 					// 5reel format: paylines * betPerLine (both in VOI normalized)
 					if (spinRequestPayload.paylines && spinRequestPayload.betPerLine) {
@@ -626,7 +736,7 @@
 					if (spinRequestPayload.reserved === 0 && spinRequestPayload.betAmount) {
 						betAmount = spinRequestPayload.betAmount;
 					}
-					
+
 					// Handle bonus spin usage (reserved === 1)
 					if (spinRequestPayload.reserved === 1) {
 						if (currentBonusSpins > 0) {
@@ -636,14 +746,22 @@
 						}
 					}
 				}
-				
+
 				// Deduct bet from balance (only if betAmount > 0)
 				if (betAmount > 0) {
 					currentBalance = roundBalance(Math.max(0, currentBalance - betAmount));
 					// Send balance update immediately after deducting
 					sendBalanceUpdate(currentBalance);
 				}
-				
+
+				// Add spin to queue
+				addSpinToQueue(spinId, spinRequestPayload.spinId, {
+					betAmount,
+					mode: spinRequestPayload.mode,
+					paylines: spinRequestPayload.paylines,
+					betPerLine: spinRequestPayload.betPerLine
+				});
+
 				console.log('[Auto-Respond] SPIN_REQUEST received with spinId:', spinId, 'betAmount:', betAmount, 'reserved:', spinRequestPayload.reserved);
 				// Show toast - don't send outcome automatically
 				return;
