@@ -903,10 +903,45 @@ export class GameBridge {
     const reservedBalanceMicro = state?.reservedBalance || 0;
     const pendingCount = this.spinQueue.filter(s => s.status === 'pending' || s.status === 'submitted').length;
 
+    // Deep clone queue to avoid DataCloneError in postMessage
+    // Ensure all values are primitive types that can be cloned
+    const serializableQueue = this.spinQueue.map(item => ({
+      spinId: String(item.spinId),
+      clientSpinId: item.clientSpinId ? String(item.clientSpinId) : undefined,
+      betAmount: Number(item.betAmount),
+      mode: item.mode !== undefined ? Number(item.mode) : undefined,
+      paylines: item.paylines !== undefined ? Number(item.paylines) : undefined,
+      betPerLine: item.betPerLine !== undefined ? Number(item.betPerLine) : undefined,
+      timestamp: Number(item.timestamp),
+      status: String(item.status) as 'pending' | 'submitted' | 'completed' | 'failed',
+      outcome: item.outcome ? {
+        grid: item.outcome.grid ? item.outcome.grid.map(reel => [...reel]) : undefined,
+        winnings: Number(item.outcome.winnings),
+        isWin: Boolean(item.outcome.isWin),
+        winLevel: item.outcome.winLevel ? String(item.outcome.winLevel) as 'none' | 'small' | 'medium' | 'large' | 'jackpot' : undefined,
+        waysWins: item.outcome.waysWins ? item.outcome.waysWins.map(win => ({
+          symbol: String(win.symbol),
+          ways: Number(win.ways),
+          matchLength: Number(win.matchLength),
+          payout: Number(win.payout),
+        })) : undefined,
+        bonusSpinsAwarded: item.outcome.bonusSpinsAwarded !== undefined ? Number(item.outcome.bonusSpinsAwarded) : undefined,
+        jackpotHit: item.outcome.jackpotHit !== undefined ? Boolean(item.outcome.jackpotHit) : undefined,
+        jackpotAmount: item.outcome.jackpotAmount !== undefined ? Number(item.outcome.jackpotAmount) : undefined,
+        winningLines: item.outcome.winningLines ? item.outcome.winningLines.map(line => ({
+          paylineIndex: Number(line.paylineIndex),
+          symbol: String(line.symbol),
+          matchCount: Number(line.matchCount),
+          payout: Number(line.payout),
+        })) : undefined,
+      } : undefined,
+      error: item.error ? String(item.error) : undefined,
+    }));
+
     this.sendToGame({
       type: 'SPIN_QUEUE',
       payload: {
-        queue: this.spinQueue,
+        queue: serializableQueue,
         pendingCount,
         reservedBalance: reservedBalanceMicro / 1_000_000, // Convert to normalized token amount
       },
