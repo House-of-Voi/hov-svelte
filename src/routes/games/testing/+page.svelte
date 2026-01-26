@@ -606,11 +606,15 @@
 			.filter(s => s.status === 'pending' || s.status === 'submitted')
 			.reduce((sum, s) => sum + s.betAmount, 0);
 
+		// Use $state.snapshot() to convert the Svelte 5 reactive proxy to a plain array
+		// This is required because postMessage uses structured clone, which can't handle proxies
+		const queueSnapshot = $state.snapshot(spinQueue);
+
 		const queueMessage: SpinQueueMessage = {
 			namespace: MESSAGE_NAMESPACE,
 			type: 'SPIN_QUEUE',
 			payload: {
-				queue: spinQueue,
+				queue: queueSnapshot,
 				pendingCount,
 				reservedBalance
 			}
