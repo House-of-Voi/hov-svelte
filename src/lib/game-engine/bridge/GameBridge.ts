@@ -26,6 +26,10 @@ import type {
   QueuedSpinItem,
   SpinQueueMessage,
   OrientationMessage,
+  BonusSpinStartMessage,
+  BonusSpinProgressMessage,
+  BonusSpinResultsMessage,
+  WaysWin,
 } from './types';
 import { isGameRequest, isSpinRequest, MESSAGE_NAMESPACE } from './types';
 
@@ -67,6 +71,9 @@ export class GameBridge {
   private resizeHandler: (() => void) | null = null; // Resize handler for dimension updates
   private resizeDebounceTimer: number | null = null; // Debounce timer for resize events
   private readonly RESIZE_DEBOUNCE_MS = 100; // Debounce delay for resize events
+  private bonusProcessing: boolean = false; // True while bonus spins are being batch-processed
+  private spinOutcomeResolvers: Map<string, (result: SpinResult) => void> = new Map();
+  private spinOutcomeRejecters: Map<string, (error: Error) => void> = new Map();
 
   constructor(config: GameBridgeConfig) {
     this.config = config;
@@ -200,6 +207,15 @@ export class GameBridge {
 
     // Listen for outcomes
     this.engine.onOutcome((result: SpinResult) => {
+      // Check if a bonus spin resolver is waiting for this spinId
+      const resolver = this.spinOutcomeResolvers.get(result.id);
+      if (resolver) {
+        this.spinOutcomeResolvers.delete(result.id);
+        this.spinOutcomeRejecters.delete(result.id);
+        resolver(result);
+        return; // Don't send individual OUTCOME for bonus spins
+      }
+
       this.sendOutcome(result).catch((error) => {
         console.error('Failed to send outcome:', error);
       });
@@ -242,9 +258,18 @@ export class GameBridge {
 
     // Listen for errors
     this.engine.onError((error: GameError) => {
-      // If there's a spinId in the error, update the queue
-      if ((error as any).spinId) {
-        this.updateSpinInQueue((error as any).spinId, {
+      // If there's a spinId in the error, check if a bonus spin rejecter is waiting
+      const spinId = (error as any).spinId;
+      if (spinId) {
+        const rejecter = this.spinOutcomeRejecters.get(spinId);
+        if (rejecter) {
+          this.spinOutcomeResolvers.delete(spinId);
+          this.spinOutcomeRejecters.delete(spinId);
+          rejecter(new Error(error.message));
+          return; // Don't send individual ERROR for bonus spins
+        }
+
+        this.updateSpinInQueue(spinId, {
           status: 'failed',
           error: error.message,
         });
@@ -470,6 +495,25 @@ export class GameBridge {
         recoverable: true,
       });
       return;
+    }
+
+    // Block game-initiated bonus spins while bridge is batch-processing bonus spins
+    if (this.bonusProcessing) {
+      const payload = (message as SpinRequest).payload;
+      const isW2W = 'betAmount' in payload && 'reserved' in payload;
+      if (isW2W) {
+        const { mode, reserved } = payload as { mode?: number; reserved: number; betAmount: number };
+        const isBonusSpin = mode === 0 || reserved === 1;
+        if (isBonusSpin) {
+          this.sendError({
+            code: 'BONUS_PROCESSING',
+            message: 'Bonus spins are being processed automatically. Please wait.',
+            recoverable: true,
+            requestId: (payload as any).spinId,
+          });
+          return;
+        }
+      }
     }
 
     // Detect format (5reel or w2w)
@@ -1187,6 +1231,194 @@ export class GameBridge {
       console.error('Failed to refresh balance after outcome:', error);
       // Balance update already sent above with correct reserved balance
     }
+
+    // Check if this outcome triggered bonus spins — fire-and-forget processing
+    const bonusSpinsAwarded = result.outcome.bonusSpinsAwarded || 0;
+    if (bonusSpinsAwarded > 0 && isW2W && !this.bonusProcessing) {
+      console.log(`GameBridge: Bonus spins awarded: ${bonusSpinsAwarded}, starting batch processing`);
+      this.processBonusSpins(String(result.id), bonusSpinsAwarded).catch((error) => {
+        console.error('GameBridge: Bonus spin processing failed:', error);
+      });
+    }
+  }
+
+  /**
+   * Process all bonus spins sequentially after a triggering spin's claim completes.
+   * Each bonus spin's claim must finish before the next one starts (on-chain counter decrement).
+   */
+  private async processBonusSpins(triggeringSpinId: string, totalSpins: number): Promise<void> {
+    if (!this.engine || this.destroyed) return;
+
+    this.bonusProcessing = true;
+
+    const outcomes: BonusSpinResultsMessage['payload']['outcomes'] = [];
+    let totalWinnings = 0;
+    let failedSpins = 0;
+
+    try {
+      // Step 1: Wait for the triggering spin's claim to complete (awards bonus spins on-chain)
+      console.log(`GameBridge: Awaiting claim for triggering spin ${triggeringSpinId}`);
+      await this.engine.awaitClaim(triggeringSpinId);
+      console.log(`GameBridge: Triggering claim completed, starting ${totalSpins} bonus spins`);
+
+      if (this.destroyed) return;
+
+      // Step 2: Send BONUS_SPIN_START
+      this.sendToGame({
+        type: 'BONUS_SPIN_START',
+        payload: {
+          totalSpins,
+          triggeringSpinId,
+        },
+      } as BonusSpinStartMessage);
+
+      // Step 3: Process each bonus spin sequentially
+      for (let i = 0; i < totalSpins; i++) {
+        if (this.destroyed) break;
+
+        try {
+          // Spin with mode=0 (bonus), betAmount=0, index=timestamp-based
+          const index = Date.now() % 1000000;
+          const spinId = await this.engine.spinW2W(0, index, 0);
+
+          // Add to bridge's spin queue
+          this.addSpinToQueue(spinId, undefined, { betAmount: 0, mode: 0 });
+
+          // Wait for the engine to produce an outcome for this spin
+          const result = await this.waitForSpinOutcome(spinId);
+
+          // Wait for the claim to complete before starting next spin
+          await this.engine.awaitClaim(spinId);
+
+          if (this.destroyed) break;
+
+          // Build outcome entry
+          const betAmountVOI = Number(result.betAmount || 0) / 1_000_000;
+          const betAmountAfterFee = betAmountVOI * 0.995;
+          const serializableWaysWins: WaysWin[] = (result.outcome.waysWins || []).map((win) => ({
+            symbol: String(win.symbol),
+            ways: Number(win.ways),
+            matchLength: Number(win.matchLength),
+            payout: Number(win.payout) * betAmountAfterFee,
+            wildMultiplier: Number(win.wildMultiplier || 1),
+          }));
+          const winnings = Number(result.winnings) / 1_000_000;
+
+          const outcomeEntry = {
+            spinId: String(result.id),
+            grid: result.outcome.grid.map((reel: string[]) => [...reel]),
+            winnings,
+            isWin: Boolean(result.isWin),
+            waysWins: serializableWaysWins,
+            winLevel: String(result.winLevel),
+          };
+
+          outcomes.push(outcomeEntry);
+          totalWinnings += winnings;
+
+          // Update queue entry
+          this.updateSpinInQueue(spinId, {
+            status: 'completed',
+            outcome: {
+              grid: outcomeEntry.grid,
+              winnings: outcomeEntry.winnings,
+              isWin: outcomeEntry.isWin,
+              winLevel: outcomeEntry.winLevel as any,
+              waysWins: serializableWaysWins,
+              bonusSpinsAwarded: 0,
+              jackpotHit: false,
+            },
+          });
+
+          // Get fresh balance
+          const state = this.engine.getState();
+          const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
+
+          // Send BONUS_SPIN_PROGRESS
+          this.sendToGame({
+            type: 'BONUS_SPIN_PROGRESS',
+            payload: {
+              completed: i + 1,
+              total: totalSpins,
+              availableBalance: availableBalanceMicroVOI / 1_000_000,
+              latestOutcome: outcomeEntry,
+            },
+          } as BonusSpinProgressMessage);
+        } catch (spinError) {
+          console.error(`GameBridge: Bonus spin ${i + 1}/${totalSpins} failed:`, spinError);
+          failedSpins++;
+
+          const errorEntry = {
+            spinId: `bonus_failed_${i}`,
+            grid: [] as string[][],
+            winnings: 0,
+            isWin: false,
+            waysWins: [] as WaysWin[],
+            winLevel: 'none',
+            error: spinError instanceof Error ? spinError.message : 'Bonus spin failed',
+          };
+          outcomes.push(errorEntry);
+
+          // Stop processing on error — partial results will be sent
+          break;
+        }
+      }
+    } catch (error) {
+      console.error('GameBridge: Fatal error in bonus spin processing:', error);
+    } finally {
+      this.bonusProcessing = false;
+
+      if (!this.destroyed && this.engine) {
+        // Refresh balance from blockchain
+        let availableBalance = 0;
+        try {
+          const freshBalance = await this.engine.getBalance();
+          const finalState = this.engine.getState();
+          availableBalance = Math.max(0, freshBalance - finalState.reservedBalance) / 1_000_000;
+        } catch {
+          const fallbackState = this.engine.getState();
+          availableBalance = Math.max(0, fallbackState.balance - fallbackState.reservedBalance) / 1_000_000;
+        }
+
+        // Send BONUS_SPIN_RESULTS
+        this.sendToGame({
+          type: 'BONUS_SPIN_RESULTS',
+          payload: {
+            outcomes,
+            totalWinnings,
+            totalSpins,
+            completedSpins: outcomes.length - failedSpins,
+            failedSpins,
+            triggeringSpinId,
+            availableBalance,
+          },
+        } as BonusSpinResultsMessage);
+      }
+    }
+  }
+
+  /**
+   * Returns a promise that resolves when the engine produces an outcome for the given spinId.
+   * Times out after 60 seconds.
+   */
+  private waitForSpinOutcome(spinId: string): Promise<SpinResult> {
+    return new Promise<SpinResult>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.spinOutcomeResolvers.delete(spinId);
+        this.spinOutcomeRejecters.delete(spinId);
+        reject(new Error(`Timeout waiting for bonus spin outcome: ${spinId}`));
+      }, 60_000);
+
+      this.spinOutcomeResolvers.set(spinId, (result: SpinResult) => {
+        clearTimeout(timeout);
+        resolve(result);
+      });
+
+      this.spinOutcomeRejecters.set(spinId, (error: Error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
   }
 
   /**
@@ -1336,6 +1568,9 @@ export class GameBridge {
     }
 
     // 4. Clear state
+    this.bonusProcessing = false;
+    this.spinOutcomeResolvers.clear();
+    this.spinOutcomeRejecters.clear();
     this.currentOrientation = null;
     this.currentWidth = 0;
     this.currentHeight = 0;

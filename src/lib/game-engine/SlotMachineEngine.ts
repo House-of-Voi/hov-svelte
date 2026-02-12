@@ -92,6 +92,7 @@ export class SlotMachineEngine {
   private walletAddress: string | null = null;
   private processingQueue: Set<string> = new Set();
   private balancePollTimeout: ReturnType<typeof setTimeout> | null = null;
+  private claimPromises: Map<string, Promise<number>> = new Map();
 
   constructor(config: EngineConfig, adapter?: BlockchainAdapter) {
     this.config = config;
@@ -640,7 +641,7 @@ export class SlotMachineEngine {
       // - Update bonus spins on contract (if bonus was triggered)
       // - Clean up the bet from contract storage
       // - Update user's bonus spin balance
-      w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, calculatedPayout)
+      const claimPromise = w2wAdapter.claimSpinW2W(spin.betKey, spin.claimBlock, calculatedPayout)
         .then((actualPayout: number) => {
           // Update outcome as verified after claim completes
           const log = logger.scope('SlotMachineEngine:waitAndClaimOutcome');
@@ -649,7 +650,7 @@ export class SlotMachineEngine {
             calculatedPayout,
             actualPayout
           });
-          
+
           // Update outcome to verified and use actual payout if outcome was incomplete
           if (outcome) {
             outcome.verified = true;
@@ -659,13 +660,18 @@ export class SlotMachineEngine {
             }
             this.store.updateSpin(spin.id, { outcome });
           }
+          return actualPayout;
         })
         .catch((error: Error) => {
           const log = logger.scope('SlotMachineEngine:waitAndClaimOutcome');
           log.error('background claim failed', { spinId: spin.id, error });
           // Don't fail the spin - outcome is already shown to user
           // Just log the error for debugging
+          return 0;
         });
+
+      // Store the claim promise so external callers (e.g., GameBridge bonus processing) can await it
+      this.claimPromises.set(spin.id, claimPromise);
     }
     // Handle 5reel format
     else if (spin.betPerLine !== undefined && spin.paylines !== undefined) {
@@ -983,6 +989,20 @@ export class SlotMachineEngine {
   // ============================================================================
 
   /**
+   * Await the claim promise for a given spin.
+   * Returns the actual payout from the claim transaction, or 0 if no claim is tracked.
+   */
+  async awaitClaim(spinId: string): Promise<number> {
+    const promise = this.claimPromises.get(spinId);
+    if (!promise) {
+      return 0;
+    }
+    const result = await promise;
+    this.claimPromises.delete(spinId);
+    return result;
+  }
+
+  /**
    * Reset engine to initial state
    */
   reset(): void {
@@ -998,6 +1018,7 @@ export class SlotMachineEngine {
       clearTimeout(this.balancePollTimeout);
       this.balancePollTimeout = null;
     }
+    this.claimPromises.clear();
     this.initialized = false;
   }
 

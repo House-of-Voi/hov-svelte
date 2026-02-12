@@ -216,7 +216,19 @@ Buffalo ways-to-win:
 - **Trigger**: 2+ BONUS symbols (F) in the grid
 - **Awarded**: 8 bonus spins
 - **Multiplier**: 1.5× applied to all payouts during bonus spins
-- **Mode**: Use mode 0 (bonus spin) with bet_amount = 0
+- **Mode**: Uses mode 0 (bonus spin) with bet_amount = 0
+
+**Automatic Processing:** Bonus spins are processed automatically by the GameBridge. When an OUTCOME includes `bonusSpinsAwarded > 0`, the bridge:
+
+1. Waits for the triggering spin's claim to complete (awards bonus spins on-chain)
+2. Sends `BONUS_SPIN_START` to the game
+3. Processes each bonus spin sequentially (submit → outcome → claim)
+4. Sends `BONUS_SPIN_PROGRESS` after each spin completes
+5. Sends `BONUS_SPIN_RESULTS` with all outcomes when done
+
+Games should **not** send their own bonus `SPIN_REQUEST` messages. If a game attempts to send a bonus spin request while the bridge is processing, it will receive a `BONUS_PROCESSING` error.
+
+See the [PostMessage API Reference](../plans/game-integration/07-postmessage-api.md) for full message type documentation.
 
 ### Jackpot
 
@@ -232,6 +244,7 @@ Buffalo ways-to-win:
 - `bet_amount` must be 0
 - Requires `bonus_spin >= 1` in user data
 - No jackpot contribution
+- **Note:** Bonus spins are processed automatically by the bridge after a triggering spin awards them. Games should not submit mode 0 spins manually.
 
 ### Mode 1: Credit Spin
 - Uses user credits

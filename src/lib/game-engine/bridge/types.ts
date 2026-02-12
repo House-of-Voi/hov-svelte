@@ -117,6 +117,7 @@ export interface WaysWin {
   ways: number;
   matchLength: number;
   payout: number; // credits or VOI
+  wildMultiplier?: number; // Wild multiplier applied (default 1)
 }
 
 /**
@@ -317,6 +318,69 @@ export interface OrientationMessage {
   };
 }
 
+// ============================================================================
+// BONUS SPIN BATCH MESSAGES (Bridge → Game)
+// ============================================================================
+
+/**
+ * Sent when the bridge begins processing bonus spins after a triggering spin's claim completes.
+ */
+export interface BonusSpinStartMessage {
+  namespace: string;
+  type: 'BONUS_SPIN_START';
+  payload: {
+    totalSpins: number;
+    triggeringSpinId: string;
+  };
+}
+
+/**
+ * Sent after each individual bonus spin completes (outcome + claim).
+ */
+export interface BonusSpinProgressMessage {
+  namespace: string;
+  type: 'BONUS_SPIN_PROGRESS';
+  payload: {
+    completed: number;
+    total: number;
+    availableBalance: number; // Current balance after this spin (normalized VOI)
+    latestOutcome: {
+      spinId: string;
+      grid: string[][];
+      winnings: number;
+      isWin: boolean;
+      waysWins: WaysWin[];
+      winLevel: string;
+      error?: string;
+    };
+  };
+}
+
+/**
+ * Sent after all bonus spins have been processed (or on error).
+ */
+export interface BonusSpinResultsMessage {
+  namespace: string;
+  type: 'BONUS_SPIN_RESULTS';
+  payload: {
+    outcomes: Array<{
+      spinId: string;
+      grid: string[][];
+      winnings: number;
+      isWin: boolean;
+      waysWins: WaysWin[];
+      winLevel: string;
+      error?: string;
+    }>;
+    totalWinnings: number;
+    totalSpins: number;
+    completedSpins: number;
+    failedSpins: number;
+    triggeringSpinId: string;
+    availableBalance: number; // Final balance after all bonus spins (normalized VOI)
+  };
+}
+
 export type GameResponse =
   | OutcomeMessage
   | BalanceUpdateMessage
@@ -327,7 +391,10 @@ export type GameResponse =
   | SpinSubmittedMessage
   | AccountLockedMessage
   | SpinQueueMessage
-  | OrientationMessage;
+  | OrientationMessage
+  | BonusSpinStartMessage
+  | BonusSpinProgressMessage
+  | BonusSpinResultsMessage;
 
 // ============================================================================
 // MESSAGE VALIDATION
