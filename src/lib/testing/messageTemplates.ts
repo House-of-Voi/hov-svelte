@@ -11,7 +11,10 @@ import {
 	type GameResponse,
 	type SpinRequest,
 	type OutcomeMessage,
-	type ConfigMessage
+	type ConfigMessage,
+	type BonusSpinStartMessage,
+	type BonusSpinProgressMessage,
+	type BonusSpinResultsMessage
 } from '$lib/game-engine/bridge/types';
 
 // Re-export MESSAGE_NAMESPACE for convenience
@@ -286,6 +289,62 @@ export const gameResponseTemplates = {
 			txId: 'ABC123XYZ789',
 			availableBalance: 60, // balance after spin cost deducted (normalized VOI)
 			reserved: 40 // amount reserved for this pending spin (normalized VOI)
+		}
+	}),
+
+	BONUS_SPIN_START: (): BonusSpinStartMessage => ({
+		namespace: MESSAGE_NAMESPACE,
+		type: 'BONUS_SPIN_START',
+		payload: {
+			totalSpins: 8,
+			triggeringSpinId: 'spin-' + Date.now()
+		}
+	}),
+
+	BONUS_SPIN_PROGRESS: (): BonusSpinProgressMessage => ({
+		namespace: MESSAGE_NAMESPACE,
+		type: 'BONUS_SPIN_PROGRESS',
+		payload: {
+			completed: 3,
+			total: 8,
+			availableBalance: 10120,
+			latestOutcome: {
+				spinId: 'bonus-spin-' + Date.now(),
+				grid: [
+					['1', '0', '2'],
+					['1', '3', '4'],
+					['1', '5', '6'],
+					['1', '7', '8'],
+					['9', 'A', 'B']
+				],
+				winnings: 40,
+				isWin: true,
+				waysWins: [{ symbol: '1', ways: 1, matchLength: 4, payout: 40 }],
+				winLevel: 'small'
+			}
+		}
+	}),
+
+	BONUS_SPIN_RESULTS: (): BonusSpinResultsMessage => ({
+		namespace: MESSAGE_NAMESPACE,
+		type: 'BONUS_SPIN_RESULTS',
+		payload: {
+			outcomes: [
+				{
+					spinId: 'bonus-spin-1',
+					grid: [['0', '1', '2'], ['3', '4', '5'], ['6', '7', '8'], ['9', 'A', 'B'], ['C', 'D', 'E']],
+					winnings: 0,
+					isWin: false,
+					waysWins: [],
+					winLevel: 'none'
+				}
+			],
+			totalWinnings: 120,
+			totalSpins: 8,
+			completedSpins: 8,
+			failedSpins: 0,
+			triggeringSpinId: 'spin-' + Date.now(),
+			availableBalance: 10120
 		}
 	})
 };

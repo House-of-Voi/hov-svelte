@@ -129,6 +129,132 @@
 		];
 	}
 
+	// Weighted random grid selection for bonus spins
+	function generateRandomW2WGrid(): SymbolId[][] {
+		const roll = Math.random();
+		if (roll < 0.4) return generateW2WLossGrid();
+		if (roll < 0.7) return generateW2WMediumWinGrid();
+		if (roll < 0.9) return generateW2WMediumWinGrid(); // another medium variant
+		return generateW2WBigWinGrid();
+	}
+
+	// Process a batch of bonus spins with timed coordination
+	async function processBonusSpinSequence(triggeringSpinId: string, totalSpins: number) {
+		bonusProcessing = true;
+		bonusProgress = { completed: 0, total: totalSpins };
+
+		const outcomes: Array<{
+			spinId: string;
+			grid: string[][];
+			winnings: number;
+			isWin: boolean;
+			waysWins: Array<{ symbol: string; ways: number; matchLength: number; payout: number }>;
+			winLevel: string;
+		}> = [];
+		let totalWinnings = 0;
+
+		// Simulate claim completion wait
+		await new Promise((r) => setTimeout(r, 1500));
+
+		// Send BONUS_SPIN_START
+		sendResponseToGame({
+			namespace: MESSAGE_NAMESPACE,
+			type: 'BONUS_SPIN_START',
+			payload: {
+				totalSpins,
+				triggeringSpinId
+			}
+		});
+
+		for (let i = 0; i < totalSpins; i++) {
+			// Delay between spins
+			await new Promise((r) => setTimeout(r, 2000));
+
+			const grid = generateRandomW2WGrid();
+			const calculatedWins = calculateW2WPayouts(grid);
+			const winnings = calculatedWins.reduce((sum, w) => sum + w.payout, 0);
+			const isWin = winnings > 0;
+			let winLevel: string = 'none';
+			if (winnings >= 5000) winLevel = 'large';
+			else if (winnings >= 1000) winLevel = 'medium';
+			else if (winnings > 0) winLevel = 'small';
+
+			// Apply winnings to balance
+			if (winnings > 0) {
+				currentBalance = roundBalance(currentBalance + winnings);
+			}
+			totalWinnings += winnings;
+
+			// Decrement bonus spin counter
+			currentBonusSpins = Math.max(0, currentBonusSpins - 1);
+
+			// Generate bonus spin ID and add to queue as completed
+			const bonusSpinId = generateSpinId();
+			addSpinToQueueAsSubmitted(bonusSpinId, undefined, {
+				betAmount: 0,
+				mode: 0
+			});
+			updateSpinInQueue(bonusSpinId, {
+				status: 'completed',
+				outcome: {
+					grid,
+					winnings,
+					isWin,
+					winLevel: winLevel as 'none' | 'small' | 'medium' | 'large' | 'jackpot',
+					waysWins: calculatedWins,
+					bonusSpinsAwarded: 0,
+					jackpotHit: false
+				}
+			});
+
+			const latestOutcome = {
+				spinId: bonusSpinId,
+				grid: grid as string[][],
+				winnings,
+				isWin,
+				waysWins: calculatedWins,
+				winLevel
+			};
+			outcomes.push(latestOutcome);
+
+			// Send BONUS_SPIN_PROGRESS
+			bonusProgress = { completed: i + 1, total: totalSpins };
+			sendResponseToGame({
+				namespace: MESSAGE_NAMESPACE,
+				type: 'BONUS_SPIN_PROGRESS',
+				payload: {
+					completed: i + 1,
+					total: totalSpins,
+					availableBalance: currentBalance,
+					latestOutcome
+				}
+			});
+		}
+
+		// Send BONUS_SPIN_RESULTS
+		sendResponseToGame({
+			namespace: MESSAGE_NAMESPACE,
+			type: 'BONUS_SPIN_RESULTS',
+			payload: {
+				outcomes,
+				totalWinnings,
+				totalSpins,
+				completedSpins: totalSpins,
+				failedSpins: 0,
+				triggeringSpinId,
+				availableBalance: currentBalance
+			}
+		});
+
+		// Reset bonus processing state
+		bonusProcessing = false;
+		bonusProgress = null;
+
+		// Send final balance updates
+		sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
+		sendBalanceUpdate(currentBalance);
+	}
+
 	// State
 	let gameUrl = $state('');
 	let gameType = $state<GameType | null>(null);
@@ -142,6 +268,8 @@
 	let isOverlayStuck = $state(true); // Default to stuck mode
 	let currentBonusSpins = $state(0); // Track current bonus spin count
 	let currentCredits = $state(5000); // Track current credits for W2W games
+	let bonusProcessing = $state(false); // Whether bonus spin batch is in progress
+	let bonusProgress = $state<{ completed: number; total: number } | null>(null);
 
 	// Spin queue management
 	let spinQueue = $state<QueuedSpinItem[]>([]);
@@ -555,13 +683,11 @@
 			sendBalanceUpdate(currentBalance);
 		}
 
-		// Handle bonus spins for W2W games
+		// Handle bonus spins for W2W games - batch process them
 		if (gameType === 'w2w' && bonusSpins > 0) {
 			currentBonusSpins += bonusSpins;
-			// Send credit balance update after a short delay to ensure outcome is processed first
-			setTimeout(() => {
-				sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
-			}, 100);
+			sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
+			processBonusSpinSequence(spinId, bonusSpins);
 		}
 
 		// Clear the pending spin and lastSpinId
@@ -732,7 +858,26 @@
 				sendSpinQueueUpdate();
 				return;
 
-			case 'SPIN_REQUEST':
+			case 'SPIN_REQUEST': {
+				// Guard: reject bonus spin requests during batch processing
+				const spinReqPayload = message.payload as {
+					reserved?: number;
+					mode?: number;
+				};
+				if (bonusProcessing && (spinReqPayload.reserved === 1 || spinReqPayload.mode === 0)) {
+					sendResponseToGame({
+						namespace: MESSAGE_NAMESPACE,
+						type: 'ERROR',
+						payload: {
+							code: 'BONUS_PROCESSING',
+							message: 'Bonus spins are being processed server-side. Please wait.',
+							recoverable: true,
+							requestId: (spinReqPayload as any).spinId
+						}
+					});
+					return;
+				}
+
 				// Add spin to queue - user will select outcome from queue panel
 				const spinRequestPayload = message.payload as {
 					spinId?: string;
@@ -811,6 +956,7 @@
 
 				console.log('[Auto-Respond] SPIN_REQUEST acknowledged with spinId:', spinId, 'betAmount:', betAmount, 'reserved:', spinRequestPayload.reserved);
 				return;
+			}
 
 			case 'EXIT':
 				console.log('[Auto-Respond] Game requested exit');
@@ -946,6 +1092,8 @@
 		currentBalance={currentBalance}
 		pendingSpinId={pendingSpinId}
 		{spinQueue}
+		{bonusProcessing}
+		{bonusProgress}
 		bind:isStuck={isOverlayStuck}
 		onClearLog={handleClearLog}
 		onClearQueue={handleClearQueue}

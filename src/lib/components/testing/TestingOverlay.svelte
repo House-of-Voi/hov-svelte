@@ -18,6 +18,8 @@
 		currentBalance: number;
 		pendingSpinId: string | null;
 		spinQueue: QueuedSpinItem[];
+		bonusProcessing?: boolean;
+		bonusProgress?: { completed: number; total: number } | null;
 		isStuck: boolean;
 		onClearLog: () => void;
 		onClearQueue?: () => void;
@@ -40,6 +42,8 @@
 		currentBalance,
 		pendingSpinId = null,
 		spinQueue = [],
+		bonusProcessing = false,
+		bonusProgress = null,
 		isStuck: isStuckProp = $bindable(true),
 		onClearLog,
 		onClearQueue,
@@ -423,6 +427,8 @@
 				<SpinQueuePanel
 					queue={spinQueue}
 					selectedSpinId={pendingSpinId}
+					{bonusProcessing}
+					{bonusProgress}
 					onClearQueue={onClearQueue}
 					onSelectSpin={onSelectSpin}
 				/>

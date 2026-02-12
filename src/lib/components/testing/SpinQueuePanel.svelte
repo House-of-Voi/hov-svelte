@@ -4,11 +4,13 @@
 	interface Props {
 		queue: QueuedSpinItem[];
 		selectedSpinId?: string | null;
+		bonusProcessing?: boolean;
+		bonusProgress?: { completed: number; total: number } | null;
 		onClearQueue?: () => void;
 		onSelectSpin?: (spinId: string) => void;
 	}
 
-	let { queue = [], selectedSpinId = null, onClearQueue, onSelectSpin }: Props = $props();
+	let { queue = [], selectedSpinId = null, bonusProcessing = false, bonusProgress = null, onClearQueue, onSelectSpin }: Props = $props();
 
 	// Derived stats
 	let pendingCount = $derived(queue.filter(s => s.status === 'pending' || s.status === 'submitted').length);
@@ -90,6 +92,22 @@
 			</button>
 		{/if}
 	</div>
+
+	<!-- Bonus Progress Indicator -->
+	{#if bonusProcessing && bonusProgress}
+		<div class="bonus-progress">
+			<div class="bonus-progress-header">
+				<span class="bonus-progress-label">Bonus Round</span>
+				<span class="bonus-progress-count">{bonusProgress.completed}/{bonusProgress.total}</span>
+			</div>
+			<div class="bonus-progress-bar">
+				<div
+					class="bonus-progress-fill"
+					style="width: {(bonusProgress.completed / bonusProgress.total) * 100}%"
+				></div>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Queue List -->
 	<div class="queue-list">
@@ -286,6 +304,48 @@
 
 	.clear-btn:hover {
 		background: #fecaca;
+	}
+
+	.bonus-progress {
+		padding: 0.5rem 1rem;
+		background: linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%);
+		border-bottom: 1px solid #6d28d9;
+	}
+
+	.bonus-progress-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 0.375rem;
+	}
+
+	.bonus-progress-label {
+		font-size: 0.6875rem;
+		font-weight: 600;
+		color: white;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.bonus-progress-count {
+		font-size: 0.75rem;
+		font-weight: 700;
+		color: white;
+		font-family: 'Courier New', monospace;
+	}
+
+	.bonus-progress-bar {
+		height: 4px;
+		background: rgba(255, 255, 255, 0.25);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.bonus-progress-fill {
+		height: 100%;
+		background: white;
+		border-radius: 2px;
+		transition: width 0.3s ease;
 	}
 
 	.queue-list {
