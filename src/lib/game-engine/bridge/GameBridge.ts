@@ -26,9 +26,6 @@ import type {
   QueuedSpinItem,
   SpinQueueMessage,
   OrientationMessage,
-  BonusSpinStartMessage,
-  BonusSpinProgressMessage,
-  BonusSpinResultsMessage,
   WaysWin,
 } from './types';
 import { isGameRequest, isSpinRequest, MESSAGE_NAMESPACE } from './types';
@@ -495,25 +492,6 @@ export class GameBridge {
         recoverable: true,
       });
       return;
-    }
-
-    // Block game-initiated bonus spins while bridge is batch-processing bonus spins
-    if (this.bonusProcessing) {
-      const payload = (message as SpinRequest).payload;
-      const isW2W = 'betAmount' in payload && 'reserved' in payload;
-      if (isW2W) {
-        const { mode, reserved } = payload as { mode?: number; reserved: number; betAmount: number };
-        const isBonusSpin = mode === 0 || reserved === 1;
-        if (isBonusSpin) {
-          this.sendError({
-            code: 'BONUS_PROCESSING',
-            message: 'Bonus spins are being processed automatically. Please wait.',
-            recoverable: true,
-            requestId: (payload as any).spinId,
-          });
-          return;
-        }
-      }
     }
 
     // Detect format (5reel or w2w)
@@ -1243,46 +1221,49 @@ export class GameBridge {
   }
 
   /**
-   * Process all bonus spins sequentially after a triggering spin's claim completes.
-   * Each bonus spin's claim must finish before the next one starts (on-chain counter decrement).
+   * Process bonus spins: immediately queue all as pending, then resolve outcomes sequentially.
+   *
+   * 1. Wait for the triggering spin's claim to complete (awards bonus spins on-chain)
+   * 2. Insert all bonus spin placeholders into the queue right after the triggering spin
+   * 3. Send a single SPIN_QUEUE update so the game sees all bonus spins immediately
+   * 4. Process each bonus spin sequentially (submit → outcome → claim)
+   * 5. Update each queue entry as its outcome becomes available (sends SPIN_QUEUE update each time)
+   *
+   * Regular spins can still arrive during processing — they are appended to the end of the queue.
    */
   private async processBonusSpins(triggeringSpinId: string, totalSpins: number): Promise<void> {
     if (!this.engine || this.destroyed) return;
 
     this.bonusProcessing = true;
 
-    const outcomes: BonusSpinResultsMessage['payload']['outcomes'] = [];
-    let totalWinnings = 0;
-    let failedSpins = 0;
+    // Generate placeholder IDs for all bonus spins
+    const bonusSpinIds: string[] = [];
+    for (let i = 0; i < totalSpins; i++) {
+      bonusSpinIds.push(`bonus_${triggeringSpinId}_${i}`);
+    }
+
+    // Insert all bonus spin placeholders into the queue immediately after the triggering spin
+    this.insertBonusSpinsAfter(triggeringSpinId, bonusSpinIds);
 
     try {
-      // Step 1: Wait for the triggering spin's claim to complete (awards bonus spins on-chain)
+      // Wait for the triggering spin's claim to complete (awards bonus spins on-chain)
       console.log(`GameBridge: Awaiting claim for triggering spin ${triggeringSpinId}`);
       await this.engine.awaitClaim(triggeringSpinId);
-      console.log(`GameBridge: Triggering claim completed, starting ${totalSpins} bonus spins`);
+      console.log(`GameBridge: Triggering claim completed, processing ${totalSpins} bonus spins`);
 
-      if (this.destroyed) return;
-
-      // Step 2: Send BONUS_SPIN_START
-      this.sendToGame({
-        type: 'BONUS_SPIN_START',
-        payload: {
-          totalSpins,
-          triggeringSpinId,
-        },
-      } as BonusSpinStartMessage);
-
-      // Step 3: Process each bonus spin sequentially
+      // Process each bonus spin sequentially
       for (let i = 0; i < totalSpins; i++) {
         if (this.destroyed) break;
+
+        const placeholderId = bonusSpinIds[i];
 
         try {
           // Spin with mode=0 (bonus), betAmount=0, index=timestamp-based
           const index = Date.now() % 1000000;
           const spinId = await this.engine.spinW2W(0, index, 0);
 
-          // Add to bridge's spin queue
-          this.addSpinToQueue(spinId, undefined, { betAmount: 0, mode: 0 });
+          // Update the placeholder's spinId to the real one and mark as submitted
+          this.replaceBonusSpinId(placeholderId, spinId);
 
           // Wait for the engine to produce an outcome for this spin
           const result = await this.waitForSpinOutcome(spinId);
@@ -1292,7 +1273,7 @@ export class GameBridge {
 
           if (this.destroyed) break;
 
-          // Build outcome entry
+          // Build outcome and update queue entry
           const betAmountVOI = Number(result.betAmount || 0) / 1_000_000;
           const betAmountAfterFee = betAmountVOI * 0.995;
           const serializableWaysWins: WaysWin[] = (result.outcome.waysWins || []).map((win) => ({
@@ -1302,64 +1283,28 @@ export class GameBridge {
             payout: Number(win.payout) * betAmountAfterFee,
             wildMultiplier: Number(win.wildMultiplier || 1),
           }));
-          const winnings = Number(result.winnings) / 1_000_000;
 
-          const outcomeEntry = {
-            spinId: String(result.id),
-            grid: result.outcome.grid.map((reel: string[]) => [...reel]),
-            winnings,
-            isWin: Boolean(result.isWin),
-            waysWins: serializableWaysWins,
-            winLevel: String(result.winLevel),
-          };
-
-          outcomes.push(outcomeEntry);
-          totalWinnings += winnings;
-
-          // Update queue entry
           this.updateSpinInQueue(spinId, {
             status: 'completed',
             outcome: {
-              grid: outcomeEntry.grid,
-              winnings: outcomeEntry.winnings,
-              isWin: outcomeEntry.isWin,
-              winLevel: outcomeEntry.winLevel as any,
+              grid: result.outcome.grid.map((reel: string[]) => [...reel]),
+              winnings: Number(result.winnings) / 1_000_000,
+              isWin: Boolean(result.isWin),
+              winLevel: result.winLevel as 'none' | 'small' | 'medium' | 'large' | 'jackpot',
               waysWins: serializableWaysWins,
               bonusSpinsAwarded: 0,
               jackpotHit: false,
             },
           });
-
-          // Get fresh balance
-          const state = this.engine.getState();
-          const availableBalanceMicroVOI = Math.max(0, state.balance - state.reservedBalance);
-
-          // Send BONUS_SPIN_PROGRESS
-          this.sendToGame({
-            type: 'BONUS_SPIN_PROGRESS',
-            payload: {
-              completed: i + 1,
-              total: totalSpins,
-              availableBalance: availableBalanceMicroVOI / 1_000_000,
-              latestOutcome: outcomeEntry,
-            },
-          } as BonusSpinProgressMessage);
         } catch (spinError) {
           console.error(`GameBridge: Bonus spin ${i + 1}/${totalSpins} failed:`, spinError);
-          failedSpins++;
 
-          const errorEntry = {
-            spinId: `bonus_failed_${i}`,
-            grid: [] as string[][],
-            winnings: 0,
-            isWin: false,
-            waysWins: [] as WaysWin[],
-            winLevel: 'none',
+          this.updateSpinInQueue(placeholderId, {
+            status: 'failed',
             error: spinError instanceof Error ? spinError.message : 'Bonus spin failed',
-          };
-          outcomes.push(errorEntry);
+          });
 
-          // Stop processing on error — partial results will be sent
+          // Stop processing on error
           break;
         }
       }
@@ -1368,32 +1313,51 @@ export class GameBridge {
     } finally {
       this.bonusProcessing = false;
 
+      // Refresh balance from blockchain and send final queue update
       if (!this.destroyed && this.engine) {
-        // Refresh balance from blockchain
-        let availableBalance = 0;
         try {
-          const freshBalance = await this.engine.getBalance();
-          const finalState = this.engine.getState();
-          availableBalance = Math.max(0, freshBalance - finalState.reservedBalance) / 1_000_000;
+          await this.engine.getBalance();
         } catch {
-          const fallbackState = this.engine.getState();
-          availableBalance = Math.max(0, fallbackState.balance - fallbackState.reservedBalance) / 1_000_000;
+          // Balance refresh is best-effort
         }
-
-        // Send BONUS_SPIN_RESULTS
-        this.sendToGame({
-          type: 'BONUS_SPIN_RESULTS',
-          payload: {
-            outcomes,
-            totalWinnings,
-            totalSpins,
-            completedSpins: outcomes.length - failedSpins,
-            failedSpins,
-            triggeringSpinId,
-            availableBalance,
-          },
-        } as BonusSpinResultsMessage);
+        this.sendSpinQueueUpdate();
       }
+    }
+  }
+
+  /**
+   * Insert bonus spin placeholders into the queue immediately after the triggering spin.
+   * Sends a SPIN_QUEUE update after insertion.
+   */
+  private insertBonusSpinsAfter(triggeringSpinId: string, bonusSpinIds: string[]): void {
+    const triggerIndex = this.spinQueue.findIndex(
+      (s) => s.spinId === triggeringSpinId || s.clientSpinId === triggeringSpinId
+    );
+
+    const insertIndex = triggerIndex !== -1 ? triggerIndex + 1 : this.spinQueue.length;
+
+    const placeholders: QueuedSpinItem[] = bonusSpinIds.map((id) => ({
+      spinId: id,
+      betAmount: 0,
+      mode: 0, // bonus
+      timestamp: Date.now(),
+      status: 'pending' as const,
+    }));
+
+    this.spinQueue.splice(insertIndex, 0, ...placeholders);
+    this.trimQueue();
+    this.sendSpinQueueUpdate();
+  }
+
+  /**
+   * Replace a bonus spin placeholder ID with the real spin ID from the engine,
+   * and mark it as submitted.
+   */
+  private replaceBonusSpinId(placeholderId: string, realSpinId: string): void {
+    const index = this.spinQueue.findIndex((s) => s.spinId === placeholderId);
+    if (index !== -1) {
+      this.spinQueue[index] = { ...this.spinQueue[index], spinId: realSpinId, status: 'submitted' };
+      this.sendSpinQueueUpdate();
     }
   }
 

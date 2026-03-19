@@ -64,9 +64,7 @@
 	let baseBet = $state(40); // Base bet from contract (defaults to 40)
 	let kickerAmount = $state(20); // Kicker amount from contract (defaults to 20)
 	let pendingSpinId: string | null = $state(null);
-	let isAutoBonusMode = $state(false); // Track if we're in auto bonus spin mode
-	let isAutoSpinning = $state(false); // Prevent multiple simultaneous auto-spins
-	let bonusSpinIntervalId: ReturnType<typeof setInterval> | null = $state(null); // Track bonus spin interval timer
+	// Bonus spins are processed by the bridge and arrive via SPIN_QUEUE updates
 	let isDisplayingResults = $state(false); // Track when displaying results before next spin
 	let winSequenceCompleteTimeout: ReturnType<typeof setTimeout> | null = null; // Track win sequence completion timeout
 	let voiAddress = $state<string | null>(null);
@@ -205,9 +203,6 @@
 			window.removeEventListener('message', messageHandler);
 			messageHandler = null;
 		}
-		// Clean up bonus spin interval
-		console.log('🧹 Component destroying, clearing bonus spin interval');
-		clearBonusSpinInterval();
 		// Clean up win sequence timeout
 		if (winSequenceCompleteTimeout) {
 			clearTimeout(winSequenceCompleteTimeout);
@@ -570,25 +565,6 @@
 			isSpinning = false;
 			pendingSpinId = null;
 			isDisplayingResults = false;
-			
-			// After all spins complete, ensure bonus spin interval is running if needed
-			// The interval should continue running regardless of UI state
-			// It will keep adding spins every 3 seconds as long as bonusSpins > 0
-			if (bonusSpins > 0 && isAutoBonusMode) {
-				setTimeout(() => {
-					checkAndAutoSubmitBonusSpin();
-				}, 500);
-			}
-		}
-
-		// Ensure bonus spin interval is running after a short delay
-		// With no modal blocking the UI, we can immediately re-check automation needs
-		if (bonusSpins > 0 && isAutoBonusMode) {
-			setTimeout(() => {
-				if (bonusSpins > 0 && isAutoBonusMode) {
-					checkAndAutoSubmitBonusSpin();
-				}
-			}, 500);
 		}
 
 		const displayState: DisplayState = {
@@ -673,20 +649,8 @@
 			applyArc200ModePreference(newCredits);
 		}
 
-		// Exit auto bonus mode if bonus spins ran out
-		if (bonusSpins === 0 && isAutoBonusMode) {
-			console.log('🛑 Bonus spins ran out, exiting auto bonus mode');
-			clearBonusSpinInterval();
-			isAutoBonusMode = false;
-			isAutoSpinning = false;
-		}
-
-		// If we just received bonus spins, kick off auto-submit immediately.
-		// Don't gate on current spinning state; the interval manages queueing safely.
-		if (newBonusSpins > previousBonusSpins) {
-			// Start interval immediately - it will continue running regardless of UI/processing state
-			checkAndAutoSubmitBonusSpin();
-		}
+		// Bonus spins are now processed automatically by the bridge via SPIN_QUEUE.
+		// The game does not need to send SPIN_REQUEST for bonus spins.
 	}
 
 	/**
@@ -776,20 +740,6 @@
 			pendingSpinId = null;
 		}
 		isRefreshingBalance = false;
-
-		// Exit auto bonus mode on error to prevent stuck state
-		if (isAutoBonusMode) {
-			// Reset interval but keep auto mode so we can recover
-			clearBonusSpinInterval();
-			isAutoSpinning = false;
-			// Re-sync bonus spin balance and restart automation if spins remain
-			sendMessage({ type: 'GET_CREDIT_BALANCE' });
-			setTimeout(() => {
-				if (bonusSpins > 0 && isAutoBonusMode) {
-					checkAndAutoSubmitBonusSpin();
-				}
-			}, 500);
-		}
 
 		console.error('❌ Game error:', payload);
 	}
@@ -900,23 +850,9 @@
 	function handleSpin(): void {
 		lastError = null;
 
-		// If user manually clicks spin during auto bonus mode, exit auto mode
-		// This allows user to take control
-		// BUT: if we're in auto bonus mode and the interval is running, this is an auto-spin
-		// so we should NOT exit auto mode. Only exit if it's a manual click (interval not running)
-		if (isAutoBonusMode && !isAutoSpinning && bonusSpinIntervalId === null) {
-			console.log('👤 Manual spin click detected, exiting auto bonus mode');
-			isAutoBonusMode = false;
-		}
-		
-		// Mark that we're auto-spinning if in auto bonus mode
-		if (isAutoBonusMode && bonusSpinIntervalId !== null) {
-			isAutoSpinning = true;
-		}
-
-		// Auto-detect bonus spins: if user has bonus spins, automatically use bonus mode (0)
-		// Otherwise use the selected mode
-		const actualMode = bonusSpins > 0 ? 0 : mode;
+		// Bonus spins are handled automatically by the bridge via SPIN_QUEUE.
+		// The game only sends regular spin requests (mode 1/2/4).
+		const actualMode = mode;
 		
 		// Work with normalized VOI units (balance is already in VOI from bridge)
 		const betAmountVOI = actualMode === 0 ? 0 : betAmount;
@@ -971,12 +907,6 @@
 			waitingForOutcome = true;
 		}
 
-		// Optimistically decrement bonus spins if using bonus mode
-		if (actualMode === 0 && bonusSpins > 0) {
-			bonusSpins = Math.max(0, bonusSpins - 1);
-			console.log('🎰 Decremented bonus spin (optimistic)', { bonusSpins });
-		}
-
 		// Send W2W spin request
 		sendMessage({
 			type: 'SPIN_REQUEST',
@@ -993,11 +923,6 @@
 	 * Handle bet amount change
 	 */
 	function handleBetChange(newBetAmount: number): void {
-		// Exit auto bonus mode if user manually changes bet amount
-		if (isAutoBonusMode) {
-			isAutoBonusMode = false;
-			isAutoSpinning = false;
-		}
 		betAmount = newBetAmount;
 	}
 
@@ -1005,11 +930,6 @@
 	 * Handle mode change
 	 */
 	function handleModeChange(newMode: number): void {
-		// Exit auto bonus mode if user manually changes mode away from bonus
-		if (newMode !== 0 && isAutoBonusMode) {
-			isAutoBonusMode = false;
-			isAutoSpinning = false;
-		}
 		mode = newMode;
 		// Refresh credit balance when switching modes
 		if (newMode === 0 || newMode === 1) {
@@ -1045,113 +965,8 @@
 		}, 300); // Small delay to ensure smooth transition
 	}
 
-	/**
-	 * Clear the bonus spin interval timer
-	 */
-	function clearBonusSpinInterval(): void {
-		if (bonusSpinIntervalId !== null) {
-			console.log('🛑 Clearing bonus spin interval');
-			clearInterval(bonusSpinIntervalId);
-			bonusSpinIntervalId = null;
-		}
-	}
-
-	/**
-	 * Start the bonus spin interval timer (submits spins every 3 seconds)
-	 */
-	function startBonusSpinInterval(): void {
-		// Don't start if already running
-		if (bonusSpinIntervalId !== null) {
-			console.log('⏭️ Bonus spin interval already running, skipping start');
-			return;
-		}
-
-		// Enter auto bonus mode if not already in it
-		if (!isAutoBonusMode) {
-			isAutoBonusMode = true;
-		}
-		
-		// Mark that we're auto-spinning
-		isAutoSpinning = true;
-
-		// Set up interval to submit spins every 3 seconds
-		// This interval should continue running regardless of processing state
-		bonusSpinIntervalId = setInterval(() => {
-			// Check if we should continue submitting
-			// Only check for auto mode and bonus spins - don't block on processing states
-			if (!isAutoBonusMode || bonusSpins === 0) {
-				console.log('🛑 Bonus spin interval stopping:', { isAutoBonusMode, bonusSpins });
-				clearBonusSpinInterval();
-				isAutoBonusMode = false;
-				isAutoSpinning = false;
-				return;
-			}
-
-			// Remove the pending spins limit - bonus spins should queue continuously
-			// The queue will handle processing in order, and we want to keep adding spins
-			// every 3 seconds without waiting for previous spins to complete
-
-			// Submit a spin
-			try {
-				console.log('🎰 Auto-queuing bonus spin', { bonusSpins, pendingSpins });
-				handleSpin();
-			} catch (error) {
-				console.error('❌ Auto bonus spin failed:', error);
-				// Don't clear interval on error - let it retry on next interval
-				// Only clear if it's a critical error that prevents continuation
-			}
-		}, 3000); // 3 seconds
-
-		console.log('▶️ Bonus spin interval started (3s interval)', { bonusSpins });
-	}
-
-	/**
-	 * Check if we should auto-submit bonus spins and start the interval
-	 * This should start the interval whenever we have bonus spins, regardless of processing state
-	 */
-	function checkAndAutoSubmitBonusSpin(): void {
-		// Don't start if:
-		// - Already has an interval running
-		// - No bonus spins available
-		// The interval continues adding spins to the queue every 3 seconds regardless of UI state
-		if (bonusSpinIntervalId !== null) {
-			console.log('⏭️ Bonus spin interval already running, skipping checkAndAutoSubmitBonusSpin');
-			return;
-		}
-
-		if (bonusSpins === 0) {
-			console.log('⏭️ No bonus spins available, skipping interval start');
-			return;
-		}
-
-		// If we have bonus spins, start the interval
-		// The interval will continue running and adding spins regardless of:
-		// - isDisplayingResults
-		// - isSpinning
-		// - waitingForOutcome
-		// It only stops when bonusSpins reaches 0 or isAutoBonusMode is false
-		console.log('✅ Starting bonus spin interval check', { bonusSpins, isDisplayingResults });
-		startBonusSpinInterval();
-	}
-
-	/**
-	 * Exit bonus spin mode manually
-	 */
-	function exitBonusSpinMode(): void {
-		clearBonusSpinInterval();
-		isAutoBonusMode = false;
-		isAutoSpinning = false;
-		// Switch back to the previous mode (or default to VOI)
-		if (mode === 0) {
-			if (modeEnabled & 2) {
-				mode = 2; // VOI mode
-			} else if (modeEnabled & 4) {
-				mode = 4; // ARC200 mode
-			} else if (modeEnabled & 1 && credits > 0) {
-				mode = 1; // Credit mode
-			}
-		}
-	}
+	// Bonus spins are now handled entirely by the bridge via SPIN_QUEUE.
+	// The game no longer submits bonus spin requests or manages an auto-spin interval.
 
 	/**
 	 * Handle balance refresh
@@ -1536,8 +1351,6 @@
 	<!-- Bonus Spin Overlay -->
 	<W2WBonusSpinOverlay
 		bonusSpins={bonusSpins}
-		isAutoMode={isAutoBonusMode}
-		onExit={exitBonusSpinMode}
 	/>
 
 </div>

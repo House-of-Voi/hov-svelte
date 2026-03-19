@@ -218,15 +218,15 @@ Buffalo ways-to-win:
 - **Multiplier**: 1.5× applied to all payouts during bonus spins
 - **Mode**: Uses mode 0 (bonus spin) with bet_amount = 0
 
-**Automatic Processing:** Bonus spins are processed automatically by the GameBridge. When an OUTCOME includes `bonusSpinsAwarded > 0`, the bridge:
+**Automatic Processing:** Bonus spins are processed automatically by the GameBridge via the `SPIN_QUEUE`. When an OUTCOME includes `bonusSpinsAwarded > 0`, the bridge:
 
-1. Waits for the triggering spin's claim to complete (awards bonus spins on-chain)
-2. Sends `BONUS_SPIN_START` to the game
-3. Processes each bonus spin sequentially (submit → outcome → claim)
-4. Sends `BONUS_SPIN_PROGRESS` after each spin completes
-5. Sends `BONUS_SPIN_RESULTS` with all outcomes when done
+1. Immediately inserts all bonus spins (as `pending`) into the `SPIN_QUEUE` right after the triggering spin
+2. Sends a `SPIN_QUEUE` update so the game sees all bonus spins at once
+3. Waits for the triggering spin's claim to complete (awards bonus spins on-chain)
+4. Processes each bonus spin sequentially (submit → outcome → claim)
+5. Updates each bonus spin's outcome in the `SPIN_QUEUE` as it becomes available
 
-Games should **not** send their own bonus `SPIN_REQUEST` messages. If a game attempts to send a bonus spin request while the bridge is processing, it will receive a `BONUS_PROCESSING` error.
+Games receive all bonus spin information through `SPIN_QUEUE` updates only — no separate bonus events. Regular spins can still be submitted during bonus processing and will be appended to the end of the queue.
 
 See the [PostMessage API Reference](../plans/game-integration/07-postmessage-api.md) for full message type documentation.
 

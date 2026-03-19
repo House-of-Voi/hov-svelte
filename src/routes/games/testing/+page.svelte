@@ -138,36 +138,36 @@
 		return generateW2WBigWinGrid();
 	}
 
-	// Process a batch of bonus spins with timed coordination
+	// Process a batch of bonus spins: immediately queue all as pending, then resolve outcomes one by one
 	async function processBonusSpinSequence(triggeringSpinId: string, totalSpins: number) {
 		bonusProcessing = true;
-		bonusProgress = { completed: 0, total: totalSpins };
 
-		const outcomes: Array<{
-			spinId: string;
-			grid: string[][];
-			winnings: number;
-			isWin: boolean;
-			waysWins: Array<{ symbol: string; ways: number; matchLength: number; payout: number }>;
-			winLevel: string;
-		}> = [];
-		let totalWinnings = 0;
+		// Step 1: Generate IDs and insert all bonus spins as pending immediately after the triggering spin
+		const bonusSpinIds: string[] = [];
+		for (let i = 0; i < totalSpins; i++) {
+			bonusSpinIds.push(`bonus_${triggeringSpinId}_${i}`);
+		}
 
-		// Simulate claim completion wait
+		const triggerIndex = spinQueue.findIndex((s) => s.spinId === triggeringSpinId);
+		const insertIndex = triggerIndex !== -1 ? triggerIndex + 1 : spinQueue.length;
+
+		const placeholders: QueuedSpinItem[] = bonusSpinIds.map((id) => ({
+			spinId: id,
+			betAmount: 0,
+			mode: 0,
+			timestamp: Date.now(),
+			status: 'pending' as const
+		}));
+
+		spinQueue.splice(insertIndex, 0, ...placeholders);
+		sendSpinQueueUpdate();
+
+		// Step 2: Simulate claim wait for triggering spin
 		await new Promise((r) => setTimeout(r, 1500));
 
-		// Send BONUS_SPIN_START
-		sendResponseToGame({
-			namespace: MESSAGE_NAMESPACE,
-			type: 'BONUS_SPIN_START',
-			payload: {
-				totalSpins,
-				triggeringSpinId
-			}
-		});
-
+		// Step 3: Process each bonus spin sequentially, updating outcomes as they resolve
 		for (let i = 0; i < totalSpins; i++) {
-			// Delay between spins
+			// Simulate processing delay
 			await new Promise((r) => setTimeout(r, 2000));
 
 			const grid = generateRandomW2WGrid();
@@ -183,18 +183,12 @@
 			if (winnings > 0) {
 				currentBalance = roundBalance(currentBalance + winnings);
 			}
-			totalWinnings += winnings;
 
 			// Decrement bonus spin counter
 			currentBonusSpins = Math.max(0, currentBonusSpins - 1);
 
-			// Generate bonus spin ID and add to queue as completed
-			const bonusSpinId = generateSpinId();
-			addSpinToQueueAsSubmitted(bonusSpinId, undefined, {
-				betAmount: 0,
-				mode: 0
-			});
-			updateSpinInQueue(bonusSpinId, {
+			// Update the placeholder in the queue with the outcome
+			updateSpinInQueue(bonusSpinIds[i], {
 				status: 'completed',
 				outcome: {
 					grid,
@@ -206,49 +200,10 @@
 					jackpotHit: false
 				}
 			});
-
-			const latestOutcome = {
-				spinId: bonusSpinId,
-				grid: grid as string[][],
-				winnings,
-				isWin,
-				waysWins: calculatedWins,
-				winLevel
-			};
-			outcomes.push(latestOutcome);
-
-			// Send BONUS_SPIN_PROGRESS
-			bonusProgress = { completed: i + 1, total: totalSpins };
-			sendResponseToGame({
-				namespace: MESSAGE_NAMESPACE,
-				type: 'BONUS_SPIN_PROGRESS',
-				payload: {
-					completed: i + 1,
-					total: totalSpins,
-					availableBalance: currentBalance,
-					latestOutcome
-				}
-			});
 		}
-
-		// Send BONUS_SPIN_RESULTS
-		sendResponseToGame({
-			namespace: MESSAGE_NAMESPACE,
-			type: 'BONUS_SPIN_RESULTS',
-			payload: {
-				outcomes,
-				totalWinnings,
-				totalSpins,
-				completedSpins: totalSpins,
-				failedSpins: 0,
-				triggeringSpinId,
-				availableBalance: currentBalance
-			}
-		});
 
 		// Reset bonus processing state
 		bonusProcessing = false;
-		bonusProgress = null;
 
 		// Send final balance updates
 		sendCreditBalanceUpdate(currentCredits, currentBonusSpins);
@@ -269,7 +224,6 @@
 	let currentBonusSpins = $state(0); // Track current bonus spin count
 	let currentCredits = $state(5000); // Track current credits for W2W games
 	let bonusProcessing = $state(false); // Whether bonus spin batch is in progress
-	let bonusProgress = $state<{ completed: number; total: number } | null>(null);
 
 	// Spin queue management
 	let spinQueue = $state<QueuedSpinItem[]>([]);
@@ -859,26 +813,9 @@
 				return;
 
 			case 'SPIN_REQUEST': {
-				// Guard: reject bonus spin requests during batch processing
-				const spinReqPayload = message.payload as {
-					reserved?: number;
-					mode?: number;
-				};
-				if (bonusProcessing && (spinReqPayload.reserved === 1 || spinReqPayload.mode === 0)) {
-					sendResponseToGame({
-						namespace: MESSAGE_NAMESPACE,
-						type: 'ERROR',
-						payload: {
-							code: 'BONUS_PROCESSING',
-							message: 'Bonus spins are being processed server-side. Please wait.',
-							recoverable: true,
-							requestId: (spinReqPayload as any).spinId
-						}
-					});
-					return;
-				}
-
 				// Add spin to queue - user will select outcome from queue panel
+				// Regular spins are always allowed, even during bonus processing (appended to end of queue)
+				// Note: The game should not send bonus spin requests (mode 0) — those are handled by the bridge via SPIN_QUEUE
 				const spinRequestPayload = message.payload as {
 					spinId?: string;
 					paylines?: number;
@@ -1093,7 +1030,6 @@
 		pendingSpinId={pendingSpinId}
 		{spinQueue}
 		{bonusProcessing}
-		{bonusProgress}
 		bind:isStuck={isOverlayStuck}
 		onClearLog={handleClearLog}
 		onClearQueue={handleClearQueue}

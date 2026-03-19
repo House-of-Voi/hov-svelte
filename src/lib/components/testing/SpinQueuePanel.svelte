@@ -5,12 +5,11 @@
 		queue: QueuedSpinItem[];
 		selectedSpinId?: string | null;
 		bonusProcessing?: boolean;
-		bonusProgress?: { completed: number; total: number } | null;
 		onClearQueue?: () => void;
 		onSelectSpin?: (spinId: string) => void;
 	}
 
-	let { queue = [], selectedSpinId = null, bonusProcessing = false, bonusProgress = null, onClearQueue, onSelectSpin }: Props = $props();
+	let { queue = [], selectedSpinId = null, bonusProcessing = false, onClearQueue, onSelectSpin }: Props = $props();
 
 	// Derived stats
 	let pendingCount = $derived(queue.filter(s => s.status === 'pending' || s.status === 'submitted').length);
@@ -21,6 +20,11 @@
 			.filter(s => s.status === 'pending' || s.status === 'submitted')
 			.reduce((sum, s) => sum + s.betAmount, 0)
 	);
+
+	// Derive bonus spin progress from queue state (mode 0 = bonus)
+	let bonusSpins = $derived(queue.filter(s => s.mode === 0));
+	let bonusTotal = $derived(bonusSpins.length);
+	let bonusCompleted = $derived(bonusSpins.filter(s => s.status === 'completed' || s.status === 'failed').length);
 
 	function getStatusColor(status: QueuedSpinItem['status']): string {
 		switch (status) {
@@ -93,17 +97,17 @@
 		{/if}
 	</div>
 
-	<!-- Bonus Progress Indicator -->
-	{#if bonusProcessing && bonusProgress}
+	<!-- Bonus Progress Indicator (derived from queue state) -->
+	{#if bonusProcessing && bonusTotal > 0}
 		<div class="bonus-progress">
 			<div class="bonus-progress-header">
 				<span class="bonus-progress-label">Bonus Round</span>
-				<span class="bonus-progress-count">{bonusProgress.completed}/{bonusProgress.total}</span>
+				<span class="bonus-progress-count">{bonusCompleted}/{bonusTotal}</span>
 			</div>
 			<div class="bonus-progress-bar">
 				<div
 					class="bonus-progress-fill"
-					style="width: {(bonusProgress.completed / bonusProgress.total) * 100}%"
+					style="width: {(bonusCompleted / bonusTotal) * 100}%"
 				></div>
 			</div>
 		</div>
